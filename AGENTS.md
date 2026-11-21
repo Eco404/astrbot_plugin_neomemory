@@ -1,5 +1,6 @@
 # NeoMemory 开发约定
 
+- 日常开发在 `dev` 分支进行，`main` 用于正式发布。修改内部协议、数据库格式或准备发布时遵循[版本规则](docs/adr/开发版与正式版的版本规则.md)。
 - Python 使用 Conda `astrbot`。测试以 AstrBot v4.29.3 源码为宿主基线。在仓库根目录运行
   `PYTHONPATH=data/references/AstrBot-v4.29.3:. /home/coder/apps/miniconda3/envs/astrbot/bin/python -m pytest -q`。
 - 新工作先明确目标、接口、验证与退出条件；重大数据语义变更单独记录在 `docs/adr/`。
