@@ -188,7 +188,7 @@ def main():
     parser.add_argument(
         "--fixture",
         type=Path,
-        default=Path("docs/evaluations/fixtures/recall-selection.json"),
+        default=Path(__file__).resolve().parents[1] / "tests/fixtures/recall-selection.json",
     )
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--embed", action="store_true")
