@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Build artifacts.
+dist/
+
+# Runtime data, temporary files, and local reference checkouts.
+data/
+
+# Local credentials and provider test material.
+docs/api_key.md
+docs/persona
+
+# Editor and OS files.
+.DS_Store
+.idea/
+.vscode/
+*.swp

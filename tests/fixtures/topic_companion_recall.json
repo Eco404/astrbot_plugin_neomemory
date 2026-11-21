@@ -1,0 +1,97 @@
+{
+  "prompt_study_sha256": "285b05cc4aac41de4c5aaa7ca04af981c480bfe87e37f91bceef53ebf54423b4",
+  "models": [
+    "gpt-6-luna",
+    "gpt-5.6-luna"
+  ],
+  "arms": [
+    "baseline",
+    "companion"
+  ],
+  "cases": [
+    {
+      "id": "signal",
+      "text": "我们什么时候约好可以暂时把难说的事放一放？后来真的用过吗？",
+      "required_groups": [
+        [
+          "e1"
+        ],
+        [
+          "e2"
+        ]
+      ],
+      "other_support": []
+    },
+    {
+      "id": "turn",
+      "text": "我们一起做事时，我怎么告诉你轮到你搭把手了？",
+      "required_groups": [
+        [
+          "e1"
+        ],
+        [
+          "e2"
+        ]
+      ],
+      "other_support": []
+    },
+    {
+      "id": "same_form",
+      "text": "那天夜里我怎么一直没回消息？",
+      "required_groups": [
+        [
+          "e2"
+        ]
+      ],
+      "other_support": []
+    },
+    {
+      "id": "unaccepted",
+      "text": "柜台上那张空白贴纸是干什么的？",
+      "required_groups": [
+        [
+          "e2"
+        ]
+      ],
+      "other_support": []
+    },
+    {
+      "id": "one_occasion",
+      "text": "那张展签校对的时候我们先做了什么？",
+      "required_groups": [
+        [
+          "e1",
+          "a1"
+        ]
+      ],
+      "other_support": []
+    },
+    {
+      "id": "amend",
+      "text": "玩猜字时，要一点提示和要揭晓分别该用什么信号？",
+      "required_groups": [
+        [
+          "e3"
+        ]
+      ],
+      "other_support": [
+        "e1",
+        "e2"
+      ]
+    },
+    {
+      "id": "revisit",
+      "text": "我有没有过把没想好的话留到后来跟你说的经历？",
+      "required_groups": [
+        [
+          "e1"
+        ],
+        [
+          "e2"
+        ]
+      ],
+      "other_support": []
+    }
+  ],
+  "protocol": "All seven graphs share one synthetic memory space for each branch. Four model x rule snapshots plus common member-only control. Each query gets fresh unreinforced state, no chat history. Passive hook defaults, comparable fresh nodes, actual model-produced topic text, importance and contains edges; query evaluation uses final injected IDs, unrelated members/topics, UTF-8 bytes, no answering model. A required group counts when an original node is delivered; related topics count separately. No sorting or retrieval tuning from outputs. Partial/failed model output leaves that graph unmeasurable for that branch, not an empty changes list."
+}

@@ -1,0 +1,627 @@
+{
+  "dev": {
+    "nodes": [
+      {
+        "node_id": "t1",
+        "node_type": "event",
+        "title": "桐叶剧团的备用幕布",
+        "content_text": "桐叶剧团巡演要用的备用幕布借放在镇文化馆西楼，唐师傅留了侧门钥匙，随时可以取。"
+      },
+      {
+        "node_id": "t2",
+        "node_type": "event",
+        "title": "小满剧社的红幕布",
+        "content_text": "小满剧社把红色前幕送去干洗，得等到周三傍晚才能取回。"
+      },
+      {
+        "node_id": "t3",
+        "node_type": "event",
+        "title": "黎明舞台租出蓝色幕布",
+        "content_text": "黎明舞台组把蓝色天幕租借给木偶展，月底归还。"
+      },
+      {
+        "node_id": "t4",
+        "node_type": "event",
+        "title": "杏花班的旧布景",
+        "content_text": "杏花班把老街布景暂放在美术教室，用封条压住了翘边。"
+      },
+      {
+        "node_id": "t5",
+        "node_type": "event",
+        "title": "鹭湾剧团的纱幕",
+        "content_text": "鹭湾剧团向北岸礼堂借到一幅薄纱，测试了投影透光效果后才收下。"
+      },
+      {
+        "node_id": "t6",
+        "node_type": "event",
+        "title": "雁鸣社的黑幕",
+        "content_text": "雁鸣社要给黑幕后面缝两道包边，方老师把布搬进服装间。"
+      },
+      {
+        "node_id": "t7",
+        "node_type": "event",
+        "title": "桂树班的旅行箱",
+        "content_text": "演出用的空木箱装了橡胶脚垫，推过舞台时就安静多了。"
+      },
+      {
+        "node_id": "t8",
+        "node_type": "event",
+        "title": "晨雾剧场的换景",
+        "content_text": "晨雾剧场把换景时间提早了两分钟，后台举牌提示舞监。"
+      },
+      {
+        "node_id": "t9",
+        "node_type": "event",
+        "title": "双鹤剧社的升降幕",
+        "content_text": "双鹤剧社让电工把升降幕开关迁到左翼，从侧台控制。"
+      },
+      {
+        "node_id": "t10",
+        "node_type": "event",
+        "title": "白帆剧社的隔音帘",
+        "content_text": "白帆剧社从旧电影院购入隔音帘，帘上破口由缝纫组补好。"
+      },
+      {
+        "node_id": "t11",
+        "node_type": "event",
+        "title": "木偶松线",
+        "content_text": "小鹿木偶的一根提线绕在鹿角上，解开后把两根主线换成了蜡绳。"
+      },
+      {
+        "node_id": "t12",
+        "node_type": "event",
+        "title": "狐狸的口形机关",
+        "content_text": "木偶狐狸的下颌合不上，我把长橡皮圈换短，开口和闭口都顺畅了。"
+      },
+      {
+        "node_id": "t13",
+        "node_type": "event",
+        "title": "无障碍场次的节目单",
+        "content_text": "志愿者把剧情梗概录成音频，让看不清节目单的听众也能提前了解故事。"
+      },
+      {
+        "node_id": "t14",
+        "node_type": "event",
+        "title": "避开半拍迟滞",
+        "content_text": "排练每到鼓声就慢半拍，大家约好看鼓手的手腕下落，不再等声音传来才起步。"
+      },
+      {
+        "node_id": "t15",
+        "node_type": "event",
+        "title": "后台失物",
+        "content_text": "蓝色水壶是小演员留下的，已经交给前台失物招领。"
+      },
+      {
+        "node_id": "t16",
+        "node_type": "event",
+        "title": "修补月亮道具",
+        "content_text": "道具月亮裂开后用双层宣纸和米浆粘牢，透光度没有改变。"
+      },
+      {
+        "node_id": "t17",
+        "node_type": "atomic",
+        "title": "谢幕时的灯光",
+        "content_text": "巡演统一用琥珀色侧光谢幕，只有摄影彩排例外，那一回要白光。"
+      },
+      {
+        "node_id": "t18",
+        "node_type": "event",
+        "title": "听障观众的字幕屏",
+        "content_text": "开演前把侧边字幕屏抬高了一格，最后一排也能越过人头读到台词。"
+      },
+      {
+        "node_id": "t19",
+        "node_type": "topic",
+        "title": "让更多观众看懂演出",
+        "content_text": "我们逐步改善演出的无障碍体验，既为视力不便的人提供可听的梗概，也给听障观众调整了字幕设备。"
+      },
+      {
+        "node_id": "t20",
+        "node_type": "event",
+        "title": "听众区的脚步声",
+        "content_text": "乐队录音时借了软底鞋，进出观众席时不再留下脚步声。"
+      },
+      {
+        "node_id": "t21",
+        "node_type": "event",
+        "title": "侧门的软坡",
+        "content_text": "运输灯架经过南侧门的高坎时，我们找来一块铝板搭坡，装车省力了。"
+      },
+      {
+        "node_id": "t22",
+        "node_type": "event",
+        "title": "舞台上的钟",
+        "content_text": "道具钟的摆锤影响走位，拆掉摆锤后改用录好的报时声。"
+      }
+    ],
+    "cases": [
+      {
+        "id": "D1",
+        "kind": "specific",
+        "query": "桐叶剧团寄存的备用幕布，找谁拿钥匙？",
+        "relevant": [
+          "t1"
+        ],
+        "history": []
+      },
+      {
+        "id": "D2",
+        "kind": "specific",
+        "query": "白帆的隔音帘之前是从哪里买的？",
+        "relevant": [
+          "t10"
+        ],
+        "history": []
+      },
+      {
+        "id": "D3",
+        "kind": "specific",
+        "query": "需要给摄影师彩排的时候，谢幕用哪种光？",
+        "relevant": [
+          "t17"
+        ],
+        "history": []
+      },
+      {
+        "id": "D4",
+        "kind": "specific",
+        "query": "那只小鹿牵引用的绳最后换成什么？",
+        "relevant": [
+          "t11"
+        ],
+        "history": []
+      },
+      {
+        "id": "D5",
+        "kind": "specific",
+        "query": "狐狸嘴巴闭不上时，我们是怎样修好的？",
+        "relevant": [
+          "t12"
+        ],
+        "history": []
+      },
+      {
+        "id": "D6",
+        "kind": "paraphrase",
+        "query": "为了让不方便用眼睛阅读的观众也能知道故事，志愿者想了什么办法？",
+        "relevant": [
+          "t13",
+          "t19"
+        ],
+        "history": []
+      },
+      {
+        "id": "D7",
+        "kind": "paraphrase",
+        "query": "排舞的人听到节奏才迈步总是太迟，后来他们盯着谁的哪个动作？",
+        "relevant": [
+          "t14"
+        ],
+        "history": []
+      },
+      {
+        "id": "D8",
+        "kind": "paraphrase",
+        "query": "怎么让很重的演出设备跨过门口那个坎？",
+        "relevant": [
+          "t21"
+        ],
+        "history": []
+      },
+      {
+        "id": "D9",
+        "kind": "history",
+        "query": "那后来搁哪了？",
+        "relevant": [
+          "t1"
+        ],
+        "history": [
+          {
+            "role": "user",
+            "text": "我在整理桐叶剧团带去巡演的备用幕布。"
+          }
+        ]
+      },
+      {
+        "id": "D10",
+        "kind": "history",
+        "query": "最后是怎么固定的？",
+        "relevant": [
+          "t16"
+        ],
+        "history": [
+          {
+            "role": "user",
+            "text": "记得舞台上那轮破了的月亮吗？"
+          }
+        ]
+      },
+      {
+        "id": "D11",
+        "kind": "broad",
+        "query": "我们让不同观众都能理解演出的过程中做过哪些改变？",
+        "relevant": [
+          "t19",
+          "t13",
+          "t18"
+        ],
+        "history": []
+      },
+      {
+        "id": "D12",
+        "kind": "broad",
+        "query": "我们修理木偶时遇到过什么问题？",
+        "relevant": [
+          "t11",
+          "t12"
+        ],
+        "history": []
+      },
+      {
+        "id": "D13",
+        "kind": "negative_near",
+        "query": "桐叶剧团买幕布时是谁垫的运费？",
+        "relevant": [],
+        "history": []
+      },
+      {
+        "id": "D14",
+        "kind": "negative_near",
+        "query": "小满剧社的红幕布重多少公斤？",
+        "relevant": [],
+        "history": []
+      },
+      {
+        "id": "D15",
+        "kind": "negative_near",
+        "query": "字幕屏是在哪一届电影节上得奖的？",
+        "relevant": [],
+        "history": []
+      },
+      {
+        "id": "D16",
+        "kind": "negative_far",
+        "query": "那次去冰岛看极光租了哪款汽车？",
+        "relevant": [],
+        "history": []
+      },
+      {
+        "id": "D17",
+        "kind": "negative_far",
+        "query": "家里的竹笛是谁在生日时送给我的？",
+        "relevant": [],
+        "history": []
+      },
+      {
+        "id": "D18",
+        "kind": "negative_near",
+        "query": "哪几位演员签了为期三年的海外巡演合同？",
+        "relevant": [],
+        "history": []
+      }
+    ],
+    "members": {
+      "t19": [
+        "t13",
+        "t18"
+      ]
+    }
+  },
+  "holdout": {
+    "nodes": [
+      {
+        "node_id": "h1",
+        "node_type": "event",
+        "title": "鹿溪站的手抄水尺",
+        "content_text": "鹿溪站测水尺的电子探头进水了，阿璇每天落潮前手抄刻度，把纸单收在蓝铁盒里。"
+      },
+      {
+        "node_id": "h2",
+        "node_type": "event",
+        "title": "柳浦站的信号中断",
+        "content_text": "柳浦站低水位时丢失遥测信号，我们把天线往岸上挪高了一米。"
+      },
+      {
+        "node_id": "h3",
+        "node_type": "event",
+        "title": "铜湾站的浮标",
+        "content_text": "铜湾站的旧浮标压舱块松动，维修组换上了一块三角形的配重。"
+      },
+      {
+        "node_id": "h4",
+        "node_type": "event",
+        "title": "乌桕桥的刻度尺",
+        "content_text": "乌桕桥桩上刻度尺的一部分被藻膜盖住，用长柄软刷清干净了。"
+      },
+      {
+        "node_id": "h5",
+        "node_type": "event",
+        "title": "银沙站的电池舱",
+        "content_text": "银沙站的监测器电池舱渗水，用了新的密封圈才通过浸泡测试。"
+      },
+      {
+        "node_id": "h6",
+        "node_type": "event",
+        "title": "石榴港迁移设备",
+        "content_text": "石榴港因河床疏浚要挪动仪器，我们把流速仪临时架到了检修船。"
+      },
+      {
+        "node_id": "h7",
+        "node_type": "event",
+        "title": "南井站的盐度读数",
+        "content_text": "南井站连续测出的盐度偏高，复核时发现水样瓶内残留着上次的海水。"
+      },
+      {
+        "node_id": "h8",
+        "node_type": "event",
+        "title": "桃堤站测流",
+        "content_text": "桃堤站水草缠住旋桨，清理后改在桥孔中央测流速。"
+      },
+      {
+        "node_id": "h9",
+        "node_type": "event",
+        "title": "雾岬站的雨量筒",
+        "content_text": "雾岬站雨量筒里落了树叶，志愿者装上可拆洗的格栅。"
+      },
+      {
+        "node_id": "h10",
+        "node_type": "event",
+        "title": "梅湾站测温",
+        "content_text": "梅湾站把温度计放得太靠近石墙，后来移进了背阴处的木箱。"
+      },
+      {
+        "node_id": "h11",
+        "node_type": "event",
+        "title": "岸边的夜巡地图",
+        "content_text": "夜间巡河怕手电照不清纸图，我们在分岔口贴反光三角条，三角尖朝安全出口。"
+      },
+      {
+        "node_id": "h12",
+        "node_type": "event",
+        "title": "修复口述档案",
+        "content_text": "老人述说渡口变迁的录音里持续嗡响，技术员关掉屋里的电风扇重新录了一遍。"
+      },
+      {
+        "node_id": "h13",
+        "node_type": "event",
+        "title": "整理影像底片",
+        "content_text": "翻拍旧渡船照片时底片卷曲，用两片无酸纸压平后才送去扫描。"
+      },
+      {
+        "node_id": "h14",
+        "node_type": "atomic",
+        "title": "借阅底片的条件",
+        "content_text": "原底片只能在资料室查看。如果只是核对船名，馆员可以发带水印的缩小扫描件。"
+      },
+      {
+        "node_id": "h15",
+        "node_type": "event",
+        "title": "认领河边长椅",
+        "content_text": "纪念长椅的木条由木工社团更换，椅背原先刻的年份照原样保留。"
+      },
+      {
+        "node_id": "h16",
+        "node_type": "event",
+        "title": "雏鸟观察",
+        "content_text": "巡堤时看到小鸟在巢外，志愿者拉了细绳保持距离，远远地观察亲鸟回来喂食。"
+      },
+      {
+        "node_id": "h17",
+        "node_type": "event",
+        "title": "低视力访客的预约",
+        "content_text": "访客要用手触摸渡轮模型，讲解员约他在闭馆前半小时来，当时人少更方便。"
+      },
+      {
+        "node_id": "h18",
+        "node_type": "event",
+        "title": "潮声的口述副本",
+        "content_text": "档案组备份河岸口述音频时分成两份，原声保存在本地，整理过的副本交给社区电台。"
+      },
+      {
+        "node_id": "h19",
+        "node_type": "topic",
+        "title": "保留渡口老资料",
+        "content_text": "我们帮助整理渡口过去的故事，把老人的回忆录清楚、把卷曲的旧照片压平，又安排了音频副本的去处。"
+      },
+      {
+        "node_id": "h20",
+        "node_type": "event",
+        "title": "沉积物的瓶盖",
+        "content_text": "装底泥的玻璃瓶用白色盖，贴了画着小铲子的标签，跟水样瓶区分。"
+      },
+      {
+        "node_id": "h21",
+        "node_type": "event",
+        "title": "河道图的颜色",
+        "content_text": "制图组把季节性干涸的支沟改成点线，图例里还注明了调查月份。"
+      },
+      {
+        "node_id": "h22",
+        "node_type": "event",
+        "title": "迁回木桩",
+        "content_text": "整修驳岸后，系船木桩被移回旧石梯旁，方便小艇靠岸时递缆。"
+      }
+    ],
+    "cases": [
+      {
+        "id": "H1",
+        "kind": "specific",
+        "query": "鹿溪站探头进水之后，谁把纸质读数收在哪里？",
+        "relevant": [
+          "h1"
+        ],
+        "history": []
+      },
+      {
+        "id": "H2",
+        "kind": "specific",
+        "query": "复核南井站盐度时，水样瓶里发现了什么？",
+        "relevant": [
+          "h7"
+        ],
+        "history": []
+      },
+      {
+        "id": "H3",
+        "kind": "specific",
+        "query": "无酸纸后来用在档案的哪一步？",
+        "relevant": [
+          "h13",
+          "h19"
+        ],
+        "history": []
+      },
+      {
+        "id": "H4",
+        "kind": "specific",
+        "query": "想核对旧船叫什么，可以拿到哪种扫描件？",
+        "relevant": [
+          "h14"
+        ],
+        "history": []
+      },
+      {
+        "id": "H5",
+        "kind": "specific",
+        "query": "水样瓶和底泥瓶是怎么区分开的？",
+        "relevant": [
+          "h20"
+        ],
+        "history": []
+      },
+      {
+        "id": "H6",
+        "kind": "paraphrase",
+        "query": "天黑以后碰到岔路，靠什么知道朝哪边能安全离开？",
+        "relevant": [
+          "h11"
+        ],
+        "history": []
+      },
+      {
+        "id": "H7",
+        "kind": "paraphrase",
+        "query": "老人说话的声音里一直有背景噪音，当时怎么消掉的？",
+        "relevant": [
+          "h12"
+        ],
+        "history": []
+      },
+      {
+        "id": "H8",
+        "kind": "paraphrase",
+        "query": "那位不容易看清模型的参观者被安排在什么时候来？",
+        "relevant": [
+          "h17"
+        ],
+        "history": []
+      },
+      {
+        "id": "H9",
+        "kind": "history",
+        "query": "那后来放哪了？",
+        "relevant": [
+          "h6"
+        ],
+        "history": [
+          {
+            "role": "user",
+            "text": "我想起石榴港疏浚时临时搬走的流速仪了。"
+          }
+        ]
+      },
+      {
+        "id": "H10",
+        "kind": "history",
+        "query": "后来怎么解决的？",
+        "relevant": [
+          "h2"
+        ],
+        "history": [
+          {
+            "role": "agent",
+            "text": "刚才讲到柳浦站退水时传不出数据。"
+          }
+        ]
+      },
+      {
+        "id": "H11",
+        "kind": "broad",
+        "query": "整理渡口老档案时，我们都保存或修复了哪些材料？",
+        "relevant": [
+          "h19",
+          "h12",
+          "h13",
+          "h18"
+        ],
+        "history": []
+      },
+      {
+        "id": "H12",
+        "kind": "broad",
+        "query": "这些水文观测站出过什么故障？",
+        "relevant": [
+          "h1",
+          "h2",
+          "h3",
+          "h4",
+          "h5",
+          "h7",
+          "h8",
+          "h9",
+          "h10"
+        ],
+        "history": []
+      },
+      {
+        "id": "H13",
+        "kind": "negative_near",
+        "query": "鹿溪站电子探头的保修期还剩几个月？",
+        "relevant": [],
+        "history": []
+      },
+      {
+        "id": "H14",
+        "kind": "negative_near",
+        "query": "原底片上那艘船的船长叫什么名字？",
+        "relevant": [],
+        "history": []
+      },
+      {
+        "id": "H15",
+        "kind": "negative_near",
+        "query": "哪位志愿者因为更换铜湾浮标获得了奖金？",
+        "relevant": [],
+        "history": []
+      },
+      {
+        "id": "H16",
+        "kind": "negative_far",
+        "query": "山顶滑雪场办年卡一共花了多少钱？",
+        "relevant": [],
+        "history": []
+      },
+      {
+        "id": "H17",
+        "kind": "negative_far",
+        "query": "买到天文摄影比赛的票了吗？",
+        "relevant": [],
+        "history": []
+      },
+      {
+        "id": "H18",
+        "kind": "negative_near",
+        "query": "去夜巡之前我们在哪儿给手电筒充的电？",
+        "relevant": [],
+        "history": []
+      }
+    ],
+    "members": {
+      "h19": [
+        "h12",
+        "h13",
+        "h18"
+      ]
+    }
+  }
+}

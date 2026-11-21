@@ -1,0 +1,3 @@
+# Unified diffs require one space on empty context lines. Check the patched
+# source separately with git apply --check --whitespace=error-all.
+docs/patches/*.patch whitespace=-blank-at-eol

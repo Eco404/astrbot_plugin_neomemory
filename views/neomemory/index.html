@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>NeoMemory</title><link rel="stylesheet" href="./style.css" /><link rel="stylesheet" href="./select.css" /></head>
+<body>
+<a class="skip-link" href="#main">跳至主要内容</a>
+<aside class="sidebar">
+  <div class="brand"><span class="brand-mark" data-icon="layers" aria-hidden="true"></span><div>NeoMemory<small>陪伴中的长期记忆</small></div></div>
+  <nav aria-label="主要导航">
+    <button aria-label="记忆" title="记忆" data-page="memory" aria-current="page"><span data-icon="memory" aria-hidden="true"></span><span>记忆</span></button>
+    <button aria-label="笔记" title="笔记" data-page="notes"><span data-icon="notes" aria-hidden="true"></span><span>笔记</span></button>
+    <button aria-label="模型" title="模型" data-page="models"><span data-icon="models" aria-hidden="true"></span><span>模型</span></button>
+    <button aria-label="设置" title="设置" data-page="settings"><span data-icon="settings" aria-hidden="true"></span><span>设置</span></button>
+    <button aria-label="维护" title="维护" data-page="maintenance"><span data-icon="maintenance" aria-hidden="true"></span><span>维护</span></button>
+  </nav>
+  <div class="sidebar-footer"><span data-icon="clock" aria-hidden="true"></span><div><strong>后台持续运行</strong><p>关闭页面，不会中断任务。</p></div></div>
+</aside>
+<main id="main" tabindex="-1">
+<div id="header-anchor" aria-hidden="true"></div>
+<header class="page-header">
+  <div class="page-heading"><h1 id="page-title">记忆</h1><p id="page-description" class="muted">查阅经历、了解彼此，让每次对话有所承接。</p></div>
+  <p id="status" role="status" aria-live="polite" data-state="loading">正在连接…</p>
+</header>
+<div id="space-anchor" aria-hidden="true"></div>
+<div id="space-bar" class="space-bar">
+  <div class="space-label"><span data-icon="space" aria-hidden="true"></span><label for="space">记忆空间</label></div>
+  <div class="row"><select id="space"><option value="">请选择空间</option></select><button id="refresh" class="icon-button" aria-label="刷新" title="刷新当前空间"><span data-icon="refresh" aria-hidden="true"></span></button><button id="more-spaces" hidden>更多空间</button></div>
+</div>
+<div id="page-memory" class="page">
+<div class="switches" role="tablist" aria-label="记忆内容"><button data-kind="nodes" role="tab" aria-selected="true">长期记忆</button><button data-kind="profiles" role="tab" aria-selected="false" tabindex="-1">用户画像</button><button data-kind="relationships" role="tab" aria-selected="false" tabindex="-1">人格关系</button><button data-kind="short_term" role="tab" aria-selected="false" tabindex="-1">短期记忆</button></div>
+<section class="memory-collection"><form id="memory-filter" class="row"><div class="memory-search grow"><label for="memory-q">搜索标题或正文</label><div class="search-input-row"><input id="memory-q" type="search" maxlength="500" placeholder="寻找一段记忆…" /><button type="submit" class="search-button"><span data-icon="search" aria-hidden="true"></span>查询</button></div></div><label id="memory-type-label"><span>浏览视角</span><select id="memory-type"><option value="all">全部长期记忆</option><option value="topic">主题概况</option><option value="event">独立事件</option><option value="atomic">原子细节</option></select></label><label><span>状态</span><select id="memory-status"><option value="all">全部状态</option><option value="active">活跃</option><option value="historical">历史</option><option value="disabled">禁用</option><option value="superseded">已替代</option><option value="deleted">已删除</option></select></label><label id="memory-sort-label"><span>排序</span><select id="memory-sort"><option value="updated_desc">内容更新 · 最新优先</option><option value="updated_asc">内容更新 · 最早优先</option><option value="importance_desc">重要性 · 从高到低</option><option value="importance_asc">重要性 · 从低到高</option></select></label></form>
+<details id="memory-advanced"><summary>高级筛选<span id="memory-filter-count"></span></summary>
+<div class="advanced-memory-fields">
+<div class="memory-filter-field"><label for="memory-emotion">情绪</label><select id="memory-emotion"><option value="">全部情绪</option></select></div>
+<fieldset><legend>内容更新日期</legend><div class="memory-range">
+<div class="memory-filter-field"><label for="memory-date-from">开始日期</label><input id="memory-date-from" type="date" /></div>
+<div class="memory-filter-field"><label for="memory-date-to">结束日期</label><input id="memory-date-to" type="date" /></div></div></fieldset>
+<fieldset><legend>重要性范围</legend><div class="memory-range">
+<div class="memory-filter-field"><label for="memory-importance-min">最低</label><input id="memory-importance-min" type="number" min="0" max="1" step="any" placeholder="0" /></div>
+<div class="memory-filter-field"><label for="memory-importance-max">最高</label><input id="memory-importance-max" type="number" min="0" max="1" step="any" placeholder="1" /></div></div></fieldset>
+<button type="button" id="memory-clear-advanced" disabled>清除高级筛选</button>
+</div></details><p id="memory-meta" class="muted"></p><div id="memory-list" role="tabpanel" aria-label="记忆内容"></div></section><nav class="row floating-pagination" aria-label="记忆分页"><button id="memory-prev" disabled><span data-icon="arrowLeft" aria-hidden="true"></span>上一页</button><button id="memory-page" type="button" aria-controls="memory-picker" aria-expanded="false" title="选择页码" disabled>第 1 页</button>
+<div class="page-picker" id="memory-picker" hidden>
+  <div class="page-options" role="group" aria-label="页码"></div>
+  <form class="page-jump"><label><span>跳至</span> <input type="number" min="1" step="1" required inputmode="numeric" aria-label="目标页码"></label><span class="page-count"></span><button type="submit">前往</button></form>
+</div><button id="memory-next" disabled>下一页<span data-icon="arrowRight" aria-hidden="true"></span></button></nav>
+</div>
+<div id="page-notes" class="page" hidden>
+<section id="note-editor" hidden><h2 class="section-title"><span data-icon="notes" aria-hidden="true"></span>编辑笔记</h2><form id="note-form"><label><span>笔记正文</span><textarea id="note-content" maxlength="20000" required></textarea></label><div class="row"><button id="note-save" class="primary" type="submit">保存笔记</button><button id="note-cancel" type="button">取消编辑</button></div></form></section>
+<section><form id="notes-filter" class="row"><label class="grow"><span>搜索笔记</span><input id="notes-q" type="search" maxlength="500" placeholder="查找约定、想法或待办…" /></label><label><span>状态</span><select id="notes-status"><option value="active">活跃</option><option value="archived">已归档</option><option value="all">全部</option></select></label><button type="submit" class="search-button"><span data-icon="search" aria-hidden="true"></span>查询</button></form><p class="muted">笔记属于当前记忆空间，归档后不再提示 Agent，可随时恢复。修改以后台任务执行。</p><p id="note-job" class="muted" role="status"></p><div id="notes-list"></div></section><nav class="row floating-pagination" aria-label="笔记分页"><button id="notes-prev" disabled><span data-icon="arrowLeft" aria-hidden="true"></span>上一页</button><button id="notes-page" type="button" aria-controls="notes-picker" aria-expanded="false" title="选择页码" disabled>第 1 页</button>
+<div class="page-picker" id="notes-picker" hidden>
+  <div class="page-options" role="group" aria-label="页码"></div>
+  <form class="page-jump"><label><span>跳至</span><input type="number" min="1" step="1" required inputmode="numeric" aria-label="目标页码"></label><span class="page-count"></span><button type="submit">前往</button></form>
+</div><button id="notes-next" disabled>下一页<span data-icon="arrowRight" aria-hidden="true"></span></button></nav>
+
+</div>
+<div id="page-models" class="page" hidden><section><h2 class="section-title"><span data-icon="models" aria-hidden="true"></span>模型选择</h2><p class="muted">使用 AstrBot 已配置的 Provider，无需在这里复制密钥。短期摘要可使用独立模型，留空时沿用记忆 LLM。</p><p id="models-state" class="notice" hidden></p><div id="model-fields" class="fields"></div><div class="save-bar"><span id="models-draft-state" class="draft-state" role="status"></span><div class="row"><button id="models-save" class="primary" disabled>保存模型设置</button><button id="models-apply" hidden>重试应用已保存配置</button><button id="models-refresh">刷新模型列表</button></div></div></section><section><h2 class="section-title"><span data-icon="maintenance" aria-hidden="true"></span>测试连通性</h2><div class="row probe-controls"><label><span>类型</span><select id="probe-kind"><option value="llm">LLM</option><option value="embedding">Embedding</option></select></label><label><span>本次测试模型</span><select id="probe-provider"></select></label><button id="probe-start">开始测试</button></div><p class="muted">LLM 默认跟随上方记忆 LLM，Embedding 默认跟随向量模型；也可单独选择其他模型（含短期摘要模型）。测试只调用此处选中的 Provider，不保存模型设置。测试结果直接显示在这里。保存模型设置后立即用于新任务，已经开始的任务继续使用原模型。</p><div id="probe-result" role="status"></div></section></div>
+<div id="page-settings" class="page" hidden><section class="settings-panel"><h2 class="section-title"><span data-icon="settings" aria-hidden="true"></span>插件设置</h2><p class="muted">功能设置控制行为；高级参数用于调优。恢复默认后可继续编辑，保存后立即生效，无需重载插件；已经开始的任务继续使用原配置。</p><div id="settings-reload" class="notice" hidden></div><div class="switches" role="tablist" aria-label="设置层级"><button data-settings-group="功能" role="tab" aria-selected="true">功能设置</button><button data-settings-group="高级" role="tab" aria-selected="false" tabindex="-1">高级参数</button><button data-settings-group="文本清理" role="tab" aria-selected="false" tabindex="-1">文本清理</button><button data-settings-group="外观" role="tab" aria-selected="false" tabindex="-1">外观设置</button></div><label id="settings-search-label"><span>查找设置</span><input id="settings-search" type="search" placeholder="按名称、说明或参数名查找" /></label><div id="settings-fields" class="fields"></div>
+  <div id="cleaning-panel" hidden aria-labelledby="cleaning-heading">
+    <h2 id="cleaning-heading" class="section-title"><span data-icon="settings" aria-hidden="true"></span>文本清理</h2>
+    <p class="muted">规则对所有空间的新消息即时生效。拖动左侧手柄调整执行顺序。将条目拖到组名上可加入分组，拖到一级条目旁可移出。</p>
+    <div class="row"><button id="add-cleaning-group" type="button" disabled>添加分组</button><button id="add-cleaning-rule" class="primary" type="button" disabled>添加条目</button></div>
+    <p id="cleaning-status" class="muted" role="status"></p>
+    <div id="cleaning-list"></div>
+    <div id="cleaning-drop-end" hidden>移至一级末尾</div>
+  </div>
+<fieldset id="appearance-panel" hidden><legend>主题与显示</legend>
+  <label><span>显示模式</span><select id="appearance-mode"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+  <div><span>强调色</span><div id="appearance-swatches" class="row" role="group" aria-label="预设强调色"></div></div>
+  <div class="appearance-picker">
+    <input id="appearance-color" type="color" aria-label="自选颜色" title="自选颜色">
+    <input id="appearance-hex" type="text" maxlength="7" spellcheck="false" aria-label="HEX 色值">
+    <button id="appearance-pick" type="button" class="icon-button" aria-label="吸取颜色" title="吸取颜色"><span data-icon="pipette" aria-hidden="true"></span></button>
+    <input id="appearance-file" type="file" accept="image/*" hidden>
+  </div>
+  <canvas id="appearance-canvas" aria-label="点击图片取色" tabindex="0" hidden></canvas>
+  <div class="appearance-sliders"><label><span>饱和度</span><output id="appearance-saturation-value" for="appearance-saturation"></output><input id="appearance-saturation" type="range" min="0" max="100"></label>
+  <label><span>不透明度</span><output id="appearance-opacity-value" for="appearance-opacity"></output><input id="appearance-opacity" type="range" min="20" max="100"></label>
+  </div>
+  <button id="appearance-reset" type="button" class="reset-setting">恢复默认主题</button>
+</fieldset><div class="save-bar"><span id="settings-draft-state" class="draft-state" role="status"></span><div class="row"><button id="settings-discard" hidden>放弃设置</button><button id="settings-save" class="primary" disabled>保存设置</button><button id="settings-apply" hidden>重试应用已保存配置</button><button id="settings-reset-all" disabled>全部恢复默认</button><button id="settings-refresh">重新读取已保存设置</button></div></div><p id="settings-result" role="status"></p></section></div>
+<div id="page-maintenance" class="page" hidden>
+  <div class="switches" role="tablist" aria-label="维护内容"><button data-maintenance-tab="tasks" role="tab" aria-selected="true" tabindex="0">后台任务</button><button data-maintenance-tab="users" role="tab" aria-selected="false" tabindex="-1">用户管理</button><button data-maintenance-tab="manual" role="tab" aria-selected="false" tabindex="-1">人工维护</button><button data-maintenance-tab="recall" role="tab" aria-selected="false" tabindex="-1">召回测试</button><button data-maintenance-tab="status" role="tab" aria-selected="false" tabindex="-1">插件状态</button></div>
+  <section data-maintenance-content="tasks">
+    <h2 class="section-title"><span data-icon="clock" aria-hidden="true"></span>后台任务</h2>
+    <div class="row"><label><input id="all-tasks" type="checkbox" /> 查看所有空间</label><span class="muted">每 3 秒更新状态</span><button id="clear-completed-tasks" class="danger" aria-haspopup="dialog">清空已完成任务</button></div>
+    <div id="tasks"></div>
+    <div class="row maintenance-pagination"><button id="previous-tasks" disabled>上一页</button><button id="next-tasks" disabled>下一页</button></div>
+    <details id="task-detail-panel">
+      <summary>详细结果</summary>
+      <p id="task-diagnostics" class="muted"></p>
+      <pre id="task-detail">请选择要查看的任务。</pre>
+      <div id="task-sources" class="row"></div>
+      <details id="task-source-panel" hidden><summary>手动读取的任务原文</summary><pre id="task-source-content"></pre><button id="task-source-clear">清除任务原文展示</button></details>
+      <p id="restart-hint" class="muted"></p>
+      <label><span>放弃失败抽取的原因</span><input id="reject-reason" type="text" maxlength="2000" placeholder="记录为什么不再处理该批次" /></label>
+      <label><input id="reject-confirm" type="checkbox" /> 确认将该失败批次标记为不再自动抽取</label>
+      <button id="reject" class="mutation danger" disabled>放弃该失败批次</button>
+    </details>
+  </section>
+  <section data-maintenance-content="tasks" aria-labelledby="backlog-heading">
+    <h2 id="backlog-heading" class="section-title"><span data-icon="layers" aria-hidden="true"></span>待抽取原始记录</h2>
+    <p id="extraction-backlog" role="status">正在读取当前空间的待抽取数量…</p>
+  </section>
+  <section data-maintenance-content="tasks" aria-labelledby="ingress-heading">
+    <h2 id="ingress-heading" class="section-title"><span data-icon="clock" aria-hidden="true"></span>待写入记录</h2>
+    <p class="muted">这里显示尚未写入原始记录库的数据。已持久保存的待写记录会在重启后继续处理；同一会话流按顺序写入。</p>
+    <div class="ingress-metrics">
+      <div class="metric"><p id="ingress-count">正在读取待写数量…</p><progress id="ingress-entry-progress" max="1" value="0" aria-label="待写条数容量"></progress></div>
+      <div class="metric"><p id="ingress-bytes">正在读取待写容量…</p><progress id="ingress-byte-progress" max="1" value="0" aria-label="待写正文容量"></progress></div>
+    </div>
+    <p id="ingress-summary" class="muted"></p>
+    <div id="ingress-unpersisted" class="notice" role="status" hidden></div>
+    <div class="row"><button id="refresh-ingress">刷新待写记录</button><button id="retry-ingress" class="ingress-mutation" disabled>重试全部待写记录</button></div>
+    <p class="muted">列表仅显示状态和记录标识。点击“查看原文”后才会读取该条内容。容量满时不会自动淘汰已有待写记录。</p>
+    <div id="ingress-list"></div>
+    <div class="row maintenance-pagination"><button id="previous-ingress" disabled>上一页</button><button id="next-ingress" disabled>下一页</button></div>
+    <details id="ingress-detail-panel">
+      <summary>手动查看的原始记录</summary>
+      <pre id="ingress-detail">点击待写记录的“查看原文”。</pre>
+      <p class="muted">这里保留本次手动读取的结果；成功写入原始库后，该记录会从待写列表移除。</p>
+      <button id="clear-ingress-detail">清除本页原文展示</button>
+    </details>
+  </section>
+  <section data-maintenance-content="users" hidden id="identity-guide">
+    <h2 class="section-title"><span data-icon="space" aria-hidden="true"></span>账号与记忆空间</h2>
+    <p>一个逻辑用户代表一个人，可以关联多个社交账号。绑定关系在所有人格下生效，每个人格分别保存与这个人的私聊记忆。</p>
+    <details><summary>查看识别规则与示例</summary>
+      <ul>
+        <li>同一个 QQ 号通过两个 OneBot 机器人与同一人格聊天时，会进入同一个私聊记忆空间。两个机器人都列在这个账号的消息入口中。</li>
+        <li>同一人分别与人格「唯」和「璃」聊天时，两个人格各自保存与这个人的记忆。</li>
+        <li>同一人的 QQ 和 Telegram 账号可以手动绑定到一个逻辑用户，此后从任一账号联系同一人格都能延续记忆。QQ 官方机器人提供的 OpenID 和 OneBot 提供的 QQ 号也可以手动关联。</li>
+        <li>如果一个账号已有多个旧归属，请先选中要保留的逻辑用户，在「账号归属待确认」中查看各入口、人格空间和记忆数量。点击预览可核对该次转移的清理范围，确认后才会执行。</li>
+      </ul>
+    </details>
+  </section>
+  <section data-maintenance-content="users" hidden id="identities-panel">
+    <h2 class="section-title"><span data-icon="space" aria-hidden="true"></span>逻辑用户与账号</h2>
+    <p class="muted">这里列出当前空间的逻辑用户。</p>
+    <form id="identities-filter"><label for="identity-q">查找逻辑用户</label><input id="identity-q" type="search" maxlength="200" placeholder="名称、用户标识或账号" /><button type="submit">查询用户</button><button id="identities-refresh" type="button">刷新用户</button></form>
+    <p id="identities-status" class="muted" role="status"></p>
+    <label><span>选择逻辑用户</span><select id="identity-select"><option value="">请选择逻辑用户</option></select></label>
+    <div class="row"><button id="identities-prev" disabled>上一页用户</button><span id="identities-page" class="muted">第 1 页</span><button id="identities-next" disabled>下一页用户</button></div>
+    <fieldset id="identity-editor" class="identity-editor" disabled>
+      <legend>用户与账号设置</legend>
+      <p id="identity-id" class="muted"></p>
+      <form id="identity-rename-form" class="row"><label class="grow"><span>逻辑用户名称</span><input id="identity-name" type="text" maxlength="200" required /></label><button id="identity-rename" type="submit">保存名称</button></form>
+      <p class="muted">手动名称用于记忆中的用户称呼，不会随平台昵称变化而覆盖。</p>
+      <h3>已关联账号</h3>
+      <div id="identity-accounts"></div>
+      <div id="identity-conflicts" hidden></div>
+      <form id="identity-bind-form">
+        <h3>添加账号</h3>
+        <label><span>从当前查询结果选择账号</span><select id="identity-known-account"><option value="">手动填写账号</option></select></label>
+        <div class="row"><label class="grow"><span>平台实例标识</span><input id="identity-platform" type="text" maxlength="200" required placeholder="该账号所在的平台实例" /></label><label class="grow"><span>账号标识</span><input id="identity-account" type="text" maxlength="200" required placeholder="平台上的用户账号 ID" /></label><button id="identity-bind" type="submit">预览添加</button></div>
+        <p class="muted">添加和移除都需要再次确认。确认前会显示归属变化及需要清理的内容。</p>
+      </form>
+    </fieldset>
+  </section>
+  <section data-maintenance-content="manual" hidden>
+    <h2 class="section-title"><span data-icon="space" aria-hidden="true"></span>空间维护</h2>
+    <p id="availability" class="muted">等待选择空间。</p>
+    <div id="automatic-status" class="notice" role="status" hidden>
+      <p id="automatic-title" class="task-title"></p>
+      <p id="automatic-reason"></p>
+      <div id="automatic-jobs"></div>
+    </div>
+    <div class="row">
+      <button id="extract" class="mutation primary" disabled>整理待处理内容</button>
+      <button id="topic-consolidate" class="mutation" disabled>整理主题</button>
+      <button id="reindex" class="mutation" disabled>重建向量索引</button>
+    </div>
+    <p class="muted">整理仍遵循最低消息条数；数量不足时继续等待。其他互斥任务执行期间，相应操作会暂时停用。</p>
+    <details>
+      <summary>重构记忆</summary>
+      <fieldset id="section-selection"><legend>按板块重构</legend><div class="row">
+        <label><input type="checkbox" value="topics">主题</label>
+        <label><input type="checkbox" value="profiles">用户画像</label>
+        <label><input type="checkbox" value="relationship">人格关系</label>
+        <button id="section-rebuild" class="mutation danger" aria-haspopup="dialog" disabled>启动板块重构</button>
+      </div></fieldset>
+      <fieldset><legend>全量重构</legend>
+        <p>使用保留的原始记录和当前配置重新抽取。成功后删除旧记忆及其版本历史、画像、人格关系、短期摘要和治理记录；新记录从 v1 开始，随本次回放更新递增。失败时保留现有记忆，原始记录与独立笔记不受影响。</p>
+        <label><input id="rebuild-confirm" type="checkbox" /> 我已了解重构成功后会删除旧记忆及版本历史，无法回退</label>
+        <button id="rebuild" class="mutation danger" disabled>启动全量重构</button>
+      </fieldset>
+    </details>
+  </section>
+  <section data-maintenance-content="manual" hidden>
+    <h2 class="section-title"><span data-icon="memory" aria-hidden="true"></span>人工治理记忆</h2>
+    <p class="muted">当前代的全部状态均可查阅。禁用停止召回并可恢复；删除会保留墓碑和来源，不能用恢复按钮撤销。人工保护独立于状态。</p>
+    <div class="grid">
+      <div>
+        <label><span>选择节点</span><select id="node-select"><option value="">请先选择空间</option></select></label>
+        <div class="row"><button id="refresh-nodes">刷新节点</button><button id="previous-nodes" disabled>上一页</button><button id="next-nodes" disabled>下一页</button><button id="versions">查阅版本和来源</button></div>
+        <pre id="node-preview">尚未选择节点。</pre>
+        <details><summary>正文版本、标题操作、来源与关系</summary><pre id="version-detail">点击“查阅版本和来源”。</pre></details>
+      </div>
+      <fieldset id="governance-editor">
+        <label><span>治理动作</span><select id="action"><option value="edit">修改标题 / 正文 / 重要性 / 情绪</option><option value="split">拆分节点</option><option value="merge">合并节点</option><option value="disable">禁用</option><option value="restore">恢复已禁用节点</option><option value="delete">删除</option><option value="protect">开启人工保护</option><option value="unprotect">解除人工保护</option></select></label>
+        <label><span>标题</span><input id="node-title" type="text" placeholder="简短、具体地概括正文" /></label>
+        <p id="title-hint" class="muted">标题最多 60 个语义字符；完整用户占位符按一个字符计算。仅改标题不会改变正文版本、强度或人工保护。</p>
+        <label><span>修改后正文</span><textarea id="content"></textarea></label>
+        <label><span>重要性</span><input id="importance" type="number" min="0" max="1" step="0.01" value="0.5" /></label>
+        <div id="node-emotion-editor"></div>
+        <div id="merge-editor" hidden>
+          <form id="merge-filter" class="row"><label class="grow"><span>搜索同类型节点</span><input id="merge-q" type="search" maxlength="500" /></label><button id="merge-search" type="submit">查找候选</button></form>
+          <label><span>合并其他同类型节点（按 Ctrl / Command 多选）</span><select id="merge-nodes" multiple size="5"></select></label>
+          <div class="row"><button id="merge-prev" disabled>上一页候选</button><button id="merge-next" disabled>下一页候选</button></div><div id="merge-selected" class="row"></div>
+          <button id="compose-merge">用所选正文生成合并草稿</button>
+          <p class="muted">上方正文是最终保留的完整内容，当前主节点保留身份。请检查内容连贯性。</p>
+        </div>
+        <div id="split-editor" hidden><p>拆成 2–20 部分，每部分选择实际来源。请保留必要的上下文。</p><div id="split-parts"></div><button id="add-part">增加一部分</button></div>
+        <label id="delete-confirm-row" hidden><input id="delete-confirm" type="checkbox" /> 确认删除并保留墓碑，不能用恢复撤销</label>
+        <button id="draft-operation">预览治理操作</button>
+        <details><summary>高级操作载荷</summary><label><input id="use-json" type="checkbox" /> 使用下方 JSON 覆盖表单</label><label><span>操作载荷</span><textarea id="operation" spellcheck="false"></textarea></label><p class="muted">仅供高级用户检查与调整；正常编辑、拆分和合并无需手写 JSON。</p></details>
+        <label><span>治理原因</span><input id="governance-reason" type="text" maxlength="2000" /></label>
+        <button id="governance" class="mutation primary" disabled>提交治理任务</button>
+      </fieldset>
+    </div>
+  </section>
+  <section data-maintenance-content="recall" hidden aria-labelledby="recall-test-title">
+    <h2 class="section-title" id="recall-test-title"><span data-icon="search" aria-hidden="true"></span>召回测试</h2>
+    <form id="recall-test-form" class="row recall-controls">
+      <label class="grow"><span>测试查询</span><input id="recall-query" maxlength="4000" type="text" placeholder="输入想用来唤起记忆的一句话" required /></label>
+      <button id="recall-run" class="primary" type="submit" disabled>运行测试</button>
+    </form>
+    <p class="muted">使用已配置的向量模型和被动召回参数，仅按本次查询预览当前空间的长期记忆。</p>
+    <div id="recall-result" aria-live="polite"></div>
+  </section>
+  <section data-maintenance-content="recall" hidden aria-labelledby="recall-history-title">
+    <h2 class="section-title" id="recall-history-title"><span data-icon="clock" aria-hidden="true"></span>最近召回记录</h2>
+    <div class="row">
+      <label class="recall-recording-control"><input class="toggle" type="checkbox" role="switch" id="recall-recording" aria-describedby="recall-retention" disabled />记录实际召回</label>
+      <button id="recall-refresh" type="button"><span data-icon="refresh" aria-hidden="true"></span>刷新记录</button>
+    </div>
+    <p class="muted" id="recall-retention">所有空间合计保留最近 50 条，此处显示所选空间的记录。插件重载或重启后保留开关和记录，关闭开关会清空所有空间的记录。</p>
+    <div id="recall-history" aria-live="polite"></div>
+  </section>
+  <section data-maintenance-content="status" hidden><h2 class="section-title"><span data-icon="storage" aria-hidden="true"></span>存储状态</h2><div id="storage-usage"></div></section>
+  <section data-maintenance-content="status" hidden><h2 class="section-title"><span data-icon="maintenance" aria-hidden="true"></span>健康状态</h2>
+    <p class="muted" id="companion-delivery-issue" hidden></p>
+    <h3>最近一次记忆装配</h3>
+    <p class="muted">这是整个插件最近完成的装配，不限定为当前选中的空间；不是累计统计。刷新维护页面读取，重启后清空。</p>
+    <div id="context-budget-status">尚无装配记录。</div>
+    <details><summary>完整健康诊断</summary><pre id="health"></pre></details>
+  </section>
+
+</div>
+</main>
+<dialog id="cleaning-dialog" class="confirmation-dialog" aria-labelledby="cleaning-title">
+  <h2 id="cleaning-title"></h2>
+  <form id="cleaning-form">
+    <label id="cleaning-name-field"><span>名称</span><input id="cleaning-name" type="text" required /></label>
+    <div id="cleaning-rule-fields">
+      <label><span>所属分组</span><select id="cleaning-group"></select></label>
+      <label><span>执行顺序</span><input id="cleaning-position" type="number" min="1" step="1" /></label>
+      <label><span>规则类型</span><select id="cleaning-kind"><option value="literal">固定文本</option><option value="regex">正则表达式</option></select></label>
+      <div>
+        <label><span>匹配内容</span><textarea id="cleaning-pattern" rows="2" spellcheck="false"></textarea></label>
+        <label><span>替换为</span><textarea id="cleaning-replacement" rows="2" placeholder="留空即删除匹配内容" spellcheck="false"></textarea></label>
+        <label class="cleaning-markdown"><input id="cleaning-skip-markdown" type="checkbox">跳过 Markdown 代码与引用</label>
+        <p id="cleaning-regex-hint" class="muted">使用 Python 正则表达式。替换文本可用 <code>\1</code> 引用第一个捕获组。</p>
+      </div>
+    </div>
+    <div id="cleaning-delete-fields" hidden>
+      <p id="cleaning-delete-summary"></p>
+      <label id="cleaning-cascade-field"><input id="cleaning-cascade" type="checkbox" />同时删除组内条目</label>
+    </div>
+    <p id="cleaning-error" class="error" role="alert" hidden></p>
+    <div class="row"><button id="cleaning-cancel" type="button">取消</button><button id="cleaning-apply" type="submit" class="primary">保存</button></div>
+  </form>
+</dialog>
+<dialog id="settings-leave" class="confirmation-dialog" aria-labelledby="settings-leave-title" aria-describedby="settings-leave-description">
+  <h2 id="settings-leave-title">有未保存的设置</h2>
+  <p id="settings-leave-description">离开会放弃本页尚未保存的修改。</p>
+  <form method="dialog" class="row"><button value="discard" class="danger">放弃并离开</button><button value="stay" class="primary" autofocus>留下继续编辑</button></form>
+</dialog>
+
+<dialog id="cancel-task-dialog" class="confirmation-dialog" aria-labelledby="cancel-task-title" aria-describedby="cancel-task-target">
+  <h2 id="cancel-task-title">取消这项任务？</h2>
+  <p id="cancel-task-target"></p>
+  <form method="dialog" class="row"><button value="keep" autofocus>继续执行</button><button class="danger" value="cancel-task">确认取消任务</button></form>
+</dialog>
+<dialog id="section-rebuild-dialog" class="confirmation-dialog" aria-labelledby="section-rebuild-title" aria-describedby="section-rebuild-scope section-rebuild-description">
+  <h2 id="section-rebuild-title">确认重构所选板块？</h2>
+  <p id="section-rebuild-scope"></p>
+  <p id="section-rebuild-description"></p>
+  <form method="dialog" class="row"><button value="cancel" autofocus>取消</button><button id="section-rebuild-confirm" value="rebuild" class="danger">确认重构</button></form>
+</dialog>
+
+<dialog id="clear-completed-dialog" class="confirmation-dialog" aria-labelledby="clear-completed-title" aria-describedby="clear-completed-scope clear-completed-description">
+  <h2 id="clear-completed-title">清空已完成任务？</h2>
+  <p id="clear-completed-scope"></p>
+  <p id="clear-completed-description">清理所选范围内所有分页中成功完成的任务及其候选、检查点等残留。已生效记忆、笔记和原始记录保留；失败、已取消和运行中的任务不受影响。任务记录删除后不可恢复。</p>
+  <p id="clear-completed-error" class="error" role="alert" hidden></p>
+  <p id="clear-completed-progress" class="muted" role="status" hidden>正在清理，请稍候…</p>
+  <div class="row"><button id="clear-completed-cancel" autofocus>取消</button><button id="clear-completed-confirm" class="danger">确认清空</button></div>
+</dialog>
+<div id="notifications" class="notifications" role="region" aria-label="通知" aria-live="polite" aria-relevant="additions"></div>
+<dialog id="identity-confirm-dialog" class="confirmation-dialog" aria-labelledby="identity-confirm-title" aria-describedby="identity-confirm-summary">
+  <h2 id="identity-confirm-title">确认账号变更</h2>
+  <div id="identity-confirm-summary"></div>
+  <p id="identity-confirm-error" class="error" role="alert" hidden></p>
+  <p id="identity-confirm-progress" class="muted" role="status" hidden>正在提交后台任务，请稍候…</p>
+  <div class="row"><button id="identity-confirm-cancel" autofocus>取消</button><button id="identity-confirm-apply" class="danger">确认变更</button></div>
+</dialog>
+<script type="module" src="./app.js"></script>
+</body></html>

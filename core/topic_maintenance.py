@@ -1,0 +1,407 @@
+"""Low-frequency, resumable synthesis of existing memories into topics."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+
+try:
+    from ..storage.topic_store import TopicStore
+    from ..storage.topic_rebuild_stage import export_topics, persist_topic_stage, topic_rebuild_stage
+    from ..storage.topic_rebuild_publish import publish_topics, published_topics, topic_rebuild_basis
+except ImportError:
+    from storage.topic_store import TopicStore
+    from storage.topic_rebuild_stage import export_topics, persist_topic_stage, topic_rebuild_stage
+    from storage.topic_rebuild_publish import publish_topics, published_topics, topic_rebuild_basis
+
+from .extraction_apply import digest
+from .extraction_context import node_vectors, _rank_page_with_query_coverage
+from .jobs import RetryableJobError, ReviewRequired
+from .topic_prompt import (PROMPT_VERSION,
+                           build_messages, schema_for_prompt_version)
+from .topic_schema import VERSION, output_schema, parse_output
+from .candidate_feedback import compact_json_messages, correction_allowed, recovery_messages, validation_errors
+from .topic_regeneration import EXPLANATIONS, VERSION as RECOVERY_VERSION, refresh_feedback
+from .topic_evidence import collect_topic_evidence
+from .topic_budget import fit_topic_evidence, message_bytes
+
+
+class TopicMaintenanceMixin:
+    topic_prompt_version = PROMPT_VERSION
+
+    async def _topic_blockers(self, space_id, generation_id):
+        rows = await self.memory.database.fetchall(
+            "SELECT job_id,kind,error_type,error_code,created_at FROM memory_jobs "
+            "WHERE scope_key=? AND kind='topic_consolidate' AND state='failed' "
+            "AND COALESCE(json_extract(payload_json,'$.topic_inputs_replaced'),0)=0 "
+            "AND json_extract(payload_json,'$.expected_generation_id')=? ORDER BY created_at,job_id",
+            (space_id, generation_id))
+        return [dict(row) for row in rows]
+
+    async def _maybe_enqueue_topics(self, space, generation):
+        if not self.config.topic_consolidation_enabled:
+            return False
+        if await self._topic_blockers(space["space_id"], generation["generation_id"]):
+            return False
+        multiplier = 2 if space["space_type"] == "group" else 1
+        threshold = self.config.topic_min_changes * multiplier
+        seeds = await TopicStore(self.memory).dirty_nodes(
+            space["space_id"], generation["generation_id"], limit=threshold)
+        if not seeds or (len(seeds) < threshold and
+                time.time() - seeds[0]["updated_at"] < self.config.topic_idle_seconds * multiplier):
+            return False
+        key = "topics:auto:" + digest([generation["generation_id"],
+            [(node["node_id"], node["content_version"]) for node in seeds]])
+        # Failed automatic jobs retain their identity instead of repeatedly spending
+        # a fresh retry budget. The maintenance page can retry or reprepare them.
+        previous = await self.memory.database.fetchone(
+            "SELECT job_id FROM memory_jobs WHERE idempotency_key=?", (key,))
+        if previous:
+            return False
+        await self.jobs.submit("topic_consolidate", space["space_id"], {
+            "space_id": space["space_id"], "expected_generation_id": generation["generation_id"],
+            "before": time.time(), "request": {"automatic": True}}, key,
+            max_attempts=self.config.job_max_attempts, hide_on_success=True)
+        return True
+
+    async def _topic_context(self, space, generation_id, seeds, deadline):
+        limit = self.config.topic_context_nodes
+        ids = [node["node_id"] for node in seeds]
+        embeddings = self.runtime.recall.embeddings if self.runtime.recall is not None else None
+        if embeddings is None:
+            page = await self.memory.extraction_context_page(space["space_id"], generation_id,
+                                                              limit=limit, recent=True)
+            return list(dict.fromkeys(ids + [node["node_id"] for node in page["nodes"]]))[:limit]
+        seed_ids = set(ids)
+        queries, _ = await node_vectors(embeddings, seeds, space["space_id"], deadline=deadline)
+        best, covered, after = [], {}, ""
+        fingerprint = embeddings.fingerprint
+        while True:
+            page = await self.memory.extraction_context_page(space["space_id"], generation_id,
+                                                              after=after, limit=128)
+            neighbors = [node for node in page["nodes"] if node["node_id"] not in seed_ids]
+            if neighbors:
+                vectors, _ = await node_vectors(embeddings, neighbors, space["space_id"], deadline=deadline)
+                await asyncio.to_thread(_rank_page_with_query_coverage, best, covered,
+                                        neighbors, vectors, queries, limit)
+            if embeddings.fingerprint != fingerprint:
+                raise ReviewRequired("configuration_changed")
+            if not page["has_more"]:
+                break
+            after = page["after"]
+        for _, node_id in sorted(covered.values(), reverse=True) + best:
+            if node_id not in ids and len(ids) < limit:
+                ids.append(node_id)
+        return ids
+
+    async def _topic_index(self, job, checkpoint, receipt):
+        if self.runtime.recall is None or not receipt["changed_node_ids"]:
+            return
+        await self._save(job, checkpoint, "topic_index", checkpoint["done"], checkpoint["total"])
+        nodes = [await self.memory.get_node(node_id) for node_id in receipt["changed_node_ids"]]
+        try:
+            await node_vectors(self.runtime.recall.embeddings, nodes, job["scope_key"],
+                deadline=time.monotonic() + self.config.index_timeout_seconds, require_persisted=True)
+        except Exception as exc:
+            raise self._embedding_failure(exc) from None
+
+    async def _prepare_topic_window(self, store, space, generation_id, seeds, *, evidence_memory=None):
+        """Shrink optional roots and then seed batches without truncating member closures."""
+        deadline = time.monotonic() + self.config.extraction_timeout_seconds
+        persona, signature = await self._execution(space)
+        reserve = min(8192, self.config.extraction_max_prompt_bytes // 10)
+        usable = self.config.extraction_max_prompt_bytes - reserve
+        original_seed_count = len(seeds)
+        seed_batch = list(seeds)
+
+        async def fit(seed_ids, optional):
+            prepared = await store.prepare(space["space_id"], generation_id, seed_ids + optional, seed_ids=seed_ids)
+            options = {"related_topics": prepared["related_topics"], "allowed_user_ids": prepared["allowed_user_ids"],
+                       "prompt_version": self.topic_prompt_version}
+            nodes, edges = prepared["nodes"], prepared["edges"]
+            base = message_bytes(build_messages(persona, nodes, edges, **options))
+            diagnostics = {"base_prompt_bytes": base}
+            fitted = None
+            if base <= usable:
+                evidence = await collect_topic_evidence(evidence_memory or self.memory, self.sources, nodes, seed_ids)
+                fitted, diagnostics = await asyncio.to_thread(
+                    fit_topic_evidence, persona, nodes, edges, evidence, usable, **options)
+            diagnostics.update(reserved_feedback_bytes=reserve, max_prompt_bytes=self.config.extraction_max_prompt_bytes,
+                               original_seed_count=original_seed_count, seed_count=len(seed_ids),
+                               optional_roots_retained=len(optional), expanded_nodes=len(nodes),
+                               related_topics=len(prepared["related_topics"]))
+            if fitted is None:
+                return None, diagnostics
+            prepared["prompt_version"] = self.topic_prompt_version
+            prepared["evidence"] = fitted
+            return prepared, diagnostics
+
+        while seed_batch:
+            seed_ids = [node["node_id"] for node in seed_batch]
+            candidates = await self._topic_context(space, generation_id, seed_batch, deadline)
+            optional = [node_id for node_id in candidates if node_id not in seed_ids]
+            prepared, diagnostics = await fit(seed_ids, optional)
+            if prepared is None and optional:
+                prepared, diagnostics = await fit(seed_ids, [])
+                if prepared is not None:
+                    # An optional parent can expand to many members. Try later roots even if it cannot fit.
+                    retained = []
+                    for node_id in optional:
+                        trial, trial_diagnostics = await fit(seed_ids, retained + [node_id])
+                        if trial is not None:
+                            retained.append(node_id)
+                            prepared, diagnostics = trial, trial_diagnostics
+            if prepared is not None:
+                prepared["input_digest"] = digest({key: value for key, value in prepared.items() if key != "input_digest"})
+                return prepared, persona, signature, diagnostics
+            if len(seed_batch) == 1:
+                failure = ReviewRequired("prompt_budget_exceeded")
+                failure.budget = diagnostics
+                raise failure
+            seed_batch = seed_batch[:max(1, len(seed_batch) // 2)]
+
+    async def _topic_window(self, job, checkpoint, store, space, generation_id):
+        window = checkpoint["topic_window"]
+        receipt = await store.receipt(window["receipt_key"])
+        if receipt is not None:
+            return receipt
+        if len(window["prepared"]["nodes"]) < 2:
+            return await store.apply(job, window["prepared"], {"schema_version": VERSION, "changes": []},
+                                     receipt_key=window["receipt_key"])
+        persona, signature = await self._execution(space)
+        if signature != window["signature"]:
+            raise ReviewRequired("configuration_changed")
+        messages = build_messages(persona, window["prepared"]["nodes"], window["prepared"]["edges"],
+                                  evidence=window["prepared"].get("evidence", ()),
+                                  related_topics=window["prepared"].get("related_topics", ()),
+                                  allowed_user_ids=window["prepared"].get("allowed_user_ids"),
+                                  prompt_version=window["prepared"]["prompt_version"])
+        if digest(messages) != window["request_digest"]:
+            raise ReviewRequired("configuration_changed")
+        if sum(len(message["content"].encode()) for message in messages) > self.config.extraction_max_prompt_bytes:
+            raise ReviewRequired("prompt_budget_exceeded")
+        schema_version = schema_for_prompt_version(window["prepared"]["prompt_version"])
+        deadline = time.monotonic() + self.config.extraction_timeout_seconds
+        async with asyncio.timeout_at(deadline) as window_timeout:
+            while True:
+                if "raw" not in window:
+                    request = list(messages)
+                    if window.get("regeneration"):
+                        archived = await self.jobs.get_candidate(job["job_id"], window["regeneration"]["candidate_id"])
+                        if archived["window"]["prepared"]["input_digest"] != window["prepared"]["input_digest"]:
+                            raise ReviewRequired("context_changed")
+                        if window["regeneration"].pop("refresh_feedback", False):
+                            window["errors"] = refresh_feedback(archived["window"]["raw"],
+                                archived["window"].get("errors", []), schema_version=schema_version,
+                                context=json.loads(messages[1]["content"]))
+                        request = recovery_messages(messages, archived["window"]["raw"], window.get("errors", []), window["regeneration"]["version"])
+                    elif window.get("errors"):
+                        request += [{"role": "user", "content": "上次候选未通过校验，请依据相同输入重新生成完整候选。错误："
+                                    + json.dumps(window["errors"], ensure_ascii=False)}]
+                    original_bytes = message_bytes(request)
+                    if window.get("regeneration") and original_bytes > self.config.extraction_max_prompt_bytes:
+                        request = compact_json_messages(request)
+                        window["request_transport"] = {"format": "json-whitespace.v1",
+                            "original_bytes": original_bytes, "transport_bytes": message_bytes(request),
+                            "canonical_base_digest": window["request_digest"], "transport_digest": digest(request)}
+                        await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
+                    else:
+                        window.pop("request_transport", None)
+                    if message_bytes(request) > self.config.extraction_max_prompt_bytes:
+                        raise ReviewRequired("prompt_budget_exceeded")
+                    window.pop("response_diagnostics", None)
+                    await self._save(job, checkpoint, "topic_model", checkpoint["done"], checkpoint["total"])
+                    options = {}
+                    if self.config.extraction_output_format != "text":
+                        options = {"output_format": self.config.extraction_output_format,
+                                   "output_schema": output_schema(schema_version)}
+                    diagnostics = {}
+                    try:
+                        window["raw"] = await self.runtime.adapter.generate(request,
+                            provider_id=self.config.llm_provider_id,
+                            timeout_seconds=max(.001, deadline - time.monotonic()),
+                            diagnostics=diagnostics, **options)
+                    except asyncio.CancelledError:
+                        if window_timeout.expired():
+                            window["response_diagnostics"] = diagnostics
+                            await self._save(job, checkpoint, "topic_model", checkpoint["done"], checkpoint["total"])
+                        raise
+                    except Exception as exc:
+                        window["response_diagnostics"] = diagnostics
+                        await self._save(job, checkpoint, "topic_model", checkpoint["done"], checkpoint["total"])
+                        status = getattr(exc, "status_code", None)
+                        if not isinstance(exc, PermissionError) and (
+                                isinstance(exc, (TimeoutError, ConnectionError, OSError))
+                                or type(exc).__name__ in {"APIConnectionError", "APITimeoutError"}
+                                or status in (408, 429) or (isinstance(status, int) and status >= 500)):
+                            raise RetryableJobError("provider_temporary_failure") from None
+                        raise ReviewRequired("provider_unavailable") from None
+                    window["response_diagnostics"] = diagnostics
+                    await self._save(job, checkpoint, "topic_validate", checkpoint["done"], checkpoint["total"])
+                try:
+                    diagnostics = window.get("response_diagnostics", {})
+                    if diagnostics.get("finish_reason") == "length" or diagnostics.get("response_status") == "incomplete":
+                        window["errors"] = [{"path": "$", "type": "output_incomplete"}]
+                        await self._save(job, checkpoint, "topic_validate", checkpoint["done"], checkpoint["total"])
+                        raise ReviewRequired("invalid_topic_output")
+                    _, current_signature = await self._execution(space)
+                    if current_signature != signature:
+                        raise ReviewRequired("configuration_changed")
+                    prepared = window["prepared"]
+                    output = parse_output(window["raw"], expected_schema_version=schema_version,
+                        window_user_ids=prepared["allowed_user_ids"])
+                    return await store.apply(job, window["prepared"], output, receipt_key=window["receipt_key"])
+                except PermissionError:
+                    raise ReviewRequired("protected_candidate") from None
+                except ValueError as exc:
+                    if str(exc) in {"topic context changed", "topic membership changed", "topic member structure changed", "topic generation is unavailable"}:
+                        raise ReviewRequired("context_changed") from None
+                    errors = validation_errors(exc, window["raw"], output_schema(schema_version), EXPLANATIONS,
+                        context=json.loads(messages[1]["content"]), pipeline="topic")
+                    window["errors"] = errors
+                    await self._save(job, checkpoint, "topic_validate", checkpoint["done"], checkpoint["total"])
+                    if (not self.config.extraction_auto_regeneration
+                            or not correction_allowed(errors, EXPLANATIONS)
+                            or window["corrections"] >= window["correction_limit"]):
+                        raise ReviewRequired("invalid_topic_output") from None
+                    candidate_id = await self.jobs.archive_candidate(job["job_id"], job["lease_token"],
+                                                                    window, "invalid_topic_output")
+                    window["corrections"] += 1
+                    window.pop("raw")
+                    window["regeneration"] = {"version": RECOVERY_VERSION, "candidate_id": candidate_id}
+                    await self._save(job, checkpoint, "correcting", checkpoint["done"], checkpoint["total"])
+
+    async def _consolidate_topics(self, job, *, stage_for=None):
+        store = TopicStore(self.memory)
+        payload = job["payload"]
+        if payload.get("topic_inputs_replaced"):
+            raise ReviewRequired("context_changed")
+        space = await self.memory.get_space(job["scope_key"])
+        if job["kind"] == "rebuild":
+            generation = {"generation_id": payload["topic_generation_id"]}
+        else:
+            generation = await self.memory.get_active_generation(space["space_id"])
+            if generation["generation_id"] != payload["expected_generation_id"]:
+                raise ReviewRequired("context_changed")
+        checkpoint = dict(job["checkpoint"])
+        checkpoint.setdefault("done", 0)
+        checkpoint.setdefault("topics", [])
+        if "total" not in checkpoint:
+            checkpoint["total"] = await store.count_dirty(space["space_id"], generation["generation_id"],
+                                                         before=payload.get("before"), review_before=payload.get("review_before"))
+        while True:
+            if "topic_window" not in checkpoint:
+                seeds = await store.dirty_nodes(space["space_id"], generation["generation_id"],
+                                                limit=8, before=payload.get("before"), review_before=payload.get("review_before"))
+                if not seeds:
+                    break
+                await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
+                try:
+                    async with asyncio.timeout(self.config.extraction_timeout_seconds):
+                        prepared, persona, signature, budget = await self._prepare_topic_window(
+                            store, space, generation["generation_id"], seeds, evidence_memory=stage_for)
+                except TimeoutError:
+                    raise RetryableJobError("context_embedding_timeout") from None
+                except ReviewRequired as exc:
+                    if hasattr(exc, "budget"):
+                        checkpoint["topic_budget"] = exc.budget
+                        await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
+                    raise
+                except Exception as exc:
+                    raise self._embedding_failure(exc, context=True) from None
+                checkpoint["topic_budget"] = budget
+                checkpoint["topic_window"] = {"prepared": prepared, "signature": signature,
+                    "budget": budget,
+                    "request_digest": digest(build_messages(persona, prepared["nodes"], prepared["edges"],
+                        evidence=prepared["evidence"], related_topics=prepared["related_topics"], allowed_user_ids=prepared["allowed_user_ids"], prompt_version=self.topic_prompt_version)),
+                    "receipt_key": digest([job["job_id"], prepared["input_digest"], VERSION]),
+                    "corrections": 0, "correction_limit": self.config.extraction_max_regenerations}
+                await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
+            try:
+                receipt = await self._topic_window(job, checkpoint, store, space, generation["generation_id"])
+            except TimeoutError:
+                raise RetryableJobError("topic_timeout") from None
+            version = checkpoint["topic_window"]["prepared"]["prompt_version"]
+            checkpoint["prompt_versions"] = sorted(set(checkpoint.get("prompt_versions", [])) | {version})
+            if stage_for is None:
+                await self._topic_index(job, checkpoint, receipt)
+            else:
+                await persist_topic_stage(stage_for, self.memory, job, checkpoint["topic_window"], receipt)
+            checkpoint["done"] += receipt["reviewed_count"]
+            checkpoint["topics"] = list(dict.fromkeys(checkpoint["topics"] + receipt["topic_ids"]))
+            checkpoint.pop("topic_window")
+            await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
+        versions = checkpoint.get("prompt_versions", [])
+        return {"reviewed_count": checkpoint["done"], "topic_ids": checkpoint["topics"],
+                "generation_id": generation["generation_id"], "protocol": VERSION,
+                "prompt_version": versions[0] if len(versions) == 1 else None,
+                "prompt_versions": versions}
+
+    async def _replace_topics(self, job):
+        space_id = job["scope_key"]
+        generation_id = job["payload"]["expected_generation_id"]
+        result = await published_topics(self.memory, job["job_id"])
+        if result is None:
+            generation = await self.memory.get_active_generation(space_id)
+            if not generation or generation["generation_id"] != generation_id:
+                raise ReviewRequired("context_changed")
+            basis = await topic_rebuild_basis(self.memory, space_id, generation_id)
+            checkpoint = dict(job["checkpoint"])
+            if "basis" not in checkpoint:
+                checkpoint["basis"] = basis
+                await self._save(job, checkpoint, "topic_prepare")
+            if checkpoint["basis"] != basis:
+                raise ReviewRequired("context_changed")
+            async with topic_rebuild_stage(self.memory, space_id, generation_id, job) as stage:
+                worker = self.snapshot()
+                worker.memory = stage
+                synthesis = await worker._consolidate_topics({**job, "checkpoint": checkpoint}, stage_for=self.memory)
+                drafts, reviewed = await export_topics(stage)
+            done = len(reviewed)
+            checkpoint = {"basis": basis, "done": done, "total": done,
+                          "prompt_versions": synthesis["prompt_versions"]}
+            await self._save(job, checkpoint, "topic_index", done, done)
+            if self.runtime.recall is not None and drafts:
+                nodes = [{"node_id": draft["node_id"], "content_version": 1, "content_text": draft["content"]}
+                         for draft in drafts]
+                try:
+                    await node_vectors(self.runtime.recall.embeddings, nodes, space_id,
+                        deadline=time.monotonic() + self.config.index_timeout_seconds, require_persisted=True)
+                except Exception as exc:
+                    raise self._embedding_failure(exc) from None
+            await self._save(job, checkpoint, "topic_publish", done, done)
+            async def invalidate_nodes(namespace, ids):
+                try:
+                    await self.runtime.cache.invalidate_nodes(namespace, ids)
+                except Exception as exc:
+                    raise self._embedding_failure(exc) from None
+
+            try:
+                result = await publish_topics(self.memory, job, generation_id, drafts, reviewed, basis,
+                    invalidate_nodes=invalidate_nodes if self.runtime.cache is not None else None)
+            except ValueError as exc:
+                if str(exc) == "topic context changed":
+                    raise ReviewRequired("context_changed") from None
+                raise
+        return {"generation_id": generation_id, "reviewed_count": result["reviewed_count"],
+                "topic_ids": result["topic_ids"], "removed_count": len(result["removed_node_ids"])}
+
+    async def _rebuild_topics(self, job, checkpoint, space, generation_id):
+        """Keep synthesis checkpoints inside the rebuild lease and unpublished generation."""
+        checkpoint.setdefault("topic_before", time.time())
+        worker = self.snapshot()
+
+        async def save(_job, topic_checkpoint, step, done=0, total=None):
+            checkpoint["topic_synthesis"] = topic_checkpoint
+            await self._save(job, checkpoint, f"{step}:{done}/{total or 0}",
+                             checkpoint["done"], checkpoint["total"])
+
+        worker._save = save
+        nested = {**job, "checkpoint": checkpoint.get("topic_synthesis", {}),
+                  "payload": {**job["payload"], "topic_generation_id": generation_id,
+                              "before": checkpoint["topic_before"]}}
+        result = await worker._consolidate_topics(nested)
+        checkpoint["topic_result"] = result
+        checkpoint.pop("topic_synthesis", None)
+        return result
