@@ -15,6 +15,7 @@ from astrbot.api import logger
 from astrbot.core.agent.message import TextPart
 
 try:
+    from ..core.shared_recall import deliver_shared, search_shared
     from ..core.active_recall import ActiveFilters, merge_active_result
     from ..core.context_bundle import assemble_context
     from ..core.embeddings import EmbeddingService
@@ -23,13 +24,14 @@ try:
     from ..core.memory_text import memory_texts, user_reference_ids
     from ..core.persona_policy import is_supported_persona
     from ..core.recall_history import RecallHistory, recall_snapshot
-    from ..core.retrieval import RecallPolicy, RecallResult, RecallService
+    from ..core.retrieval import RecallPolicy, RecallResult, RecallService, render_nodes
     from ..core.strength import StrengthPolicy
     from ..core.short_term import conversation_key
     from ..core.short_term_prompts import host_has_summary
     from ..storage.cache_store import CacheStore
     from ..storage.context_store import ContextStore
 except ImportError:
+    from core.shared_recall import deliver_shared, search_shared
     from core.active_recall import ActiveFilters, merge_active_result
     from core.context_bundle import assemble_context
     from core.embeddings import EmbeddingService
@@ -38,7 +40,7 @@ except ImportError:
     from core.memory_text import memory_texts, user_reference_ids
     from core.persona_policy import is_supported_persona
     from core.recall_history import RecallHistory, recall_snapshot
-    from core.retrieval import RecallPolicy, RecallResult, RecallService
+    from core.retrieval import RecallPolicy, RecallResult, RecallService, render_nodes
     from core.strength import StrengthPolicy
     from core.short_term import conversation_key
     from core.short_term_prompts import host_has_summary
@@ -276,16 +278,50 @@ class MemoryRuntime:
             req.extra_user_content_parts[:] = [part for part in req.extra_user_content_parts if part is not old]
             req._neomemory_part = None
 
+    async def _shared_candidates(self, space, result, query, deadline, **options):
+        if not self.recall or not query or time.monotonic() >= deadline - .05:
+            return []
+        try:
+            async with asyncio.timeout_at(deadline - .05):
+                return await search_shared(self.plugin.memory_store, self.plugin.source_store, self.recall,
+                    result, space, query, deadline - .05, **options)
+        except Exception as exc:
+            self.error("shared_recall", exc)
+            return []
+
+    async def _shared_text(self, space_id, text, candidates, deadline, **options):
+        if not candidates or time.monotonic() >= deadline - .015:
+            return text, []
+        try:
+            async with asyncio.timeout_at(deadline - .015):
+                return await deliver_shared(self.plugin.memory_store, text, candidates,
+                    space_id=space_id, budget=self.config.recall_budget_tokens, **options)
+        except Exception as exc:
+            self.error("shared_admission", exc)
+            return text, []
+
     async def test_recall(self, space_id, query):
         started = time.monotonic()
         empty = RecallResult(space_id)
         service = self.recall
         if service is None:
             return recall_snapshot("test", query, started, empty, reason="向量召回服务尚未就绪")
-        result = await self._invoke(service.preview, None, space_id, query)
-        if result is None:
-            return recall_snapshot("test", query, started, empty, reason="插件正在停止")
-        return recall_snapshot("test", query, started, result)
+
+        async def preview():
+            result = await service.preview(space_id, query)
+            deadline = started + self.config.recall_deadline_seconds
+            candidates = await self._shared_candidates(None, result, query, deadline, preview=True)
+            if candidates and result.hits:
+                valid = await self.plugin.memory_store.revalidate_recall(space_id, result.generation_id,
+                    {n["node_id"]: n["content_version"] for n in result.hits})
+                current = {n["node_id"]: n for n in valid}
+                result.hits = [{**n, **current[n["node_id"]]} for n in result.hits if n["node_id"] in current]
+                result.text = render_nodes(result.hits, result.user_names)
+            text, external = await self._shared_text(space_id, result.text, candidates, deadline)
+            return recall_snapshot("test", query, started, result, text=text, hits=result.hits + external)
+
+        snapshot = await self._invoke(preview, None)
+        return snapshot if snapshot is not None else recall_snapshot("test", query, started, empty, reason="插件正在停止")
 
     async def passive(self, event, req) -> None:
         return await self._invoke(copy.copy(self)._passive, None, event, req)
@@ -374,6 +410,8 @@ class MemoryRuntime:
                     snapshot = task.result()
                 else:
                     result = task.result()
+            shared = (await self._shared_candidates(space, result, query, deadline, current_names=current_names)
+                      if self.config.recall_enabled else [])
             self.diagnostics["last_recall"] = result.diagnostics
             if result.diagnostics.get("missing_node_vectors"):
                 self.schedule_index(space["space_id"])
@@ -397,15 +435,16 @@ class MemoryRuntime:
             self.diagnostics["last_context"] = {**bundle.diagnostics,
                 "space_id": space["space_id"], "request_id": uuid.uuid4().hex,
                 "recorded_at": time.time()}
-            if bundle.text and not self.closing:
+            rendered, external = await self._shared_text(space["space_id"], bundle.text, shared, deadline)
+            if rendered and not self.closing:
                 if not await self._binding_current(space, identity):
                     return
-                part = TextPart(text=bundle.text).mark_as_temp()
+                part = TextPart(text=rendered).mark_as_temp()
                 req.extra_user_content_parts.append(part)
                 req._neomemory_part = part
                 # Credit only the whole long-term entries which survived the
                 # shared context budget and final transaction check.
-                injected, returned = bundle.text, bundle.hits
+                injected, returned = rendered, bundle.hits + external
                 result.hits = bundle.hits
                 self.reinforce_returned(result, event)
         except Exception as exc:
@@ -458,6 +497,7 @@ class MemoryRuntime:
         result = None
         reason = None
         text = ""
+        external = []
         try:
             deadline = started + self.config.active_deadline_seconds
             async with asyncio.timeout(self.config.active_deadline_seconds):
@@ -482,6 +522,7 @@ class MemoryRuntime:
                             result.diagnostics["active_recall_degraded"] = type(exc).__name__
                     else:
                         result.diagnostics["deadline_exceeded"] = True
+                shared = await self._shared_candidates(space, result, query, deadline, filters=filters, current_names=names)
                 # 在耗时向量步骤后读取当前状态，避免返回等待期间已删除的笔记。
                 notes = await self.plugin.memory_store.list_notes(space_id=space["space_id"],
                     query=query.strip(), limit=filters.limit) if filters.includes_notes else []
@@ -498,6 +539,8 @@ class MemoryRuntime:
                 self.diagnostics["last_active_recall"] = result.diagnostics
                 if result.diagnostics.get("missing_node_vectors"):
                     self.schedule_index(space["space_id"])
+                result.text, external = await self._shared_text(space["space_id"], result.text, shared, deadline,
+                    filters=filters, remaining=filters.limit - len(result.hits) - result.diagnostics["returned_notes"])
                 if result.text:
                     if not await self._binding_current(space, identity):
                         return "账号绑定已变更，请重新查询当前记忆。"
@@ -519,7 +562,7 @@ class MemoryRuntime:
             response = "主动回忆暂时不可用。"
         if ticket is not None and result is not None:
             await self.recall_history.append(ticket, result.space_id, recall_snapshot(
-                "active", query, started, result, text=text, hits=result.hits if text else [], reason=reason))
+                "active", query, started, result, text=text, hits=result.hits + external if text else [], reason=reason))
         return response
 
     async def notes(self, event, action: str, content: str = "", note_id: str = "", query: str = "",

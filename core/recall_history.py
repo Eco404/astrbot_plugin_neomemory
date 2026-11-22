@@ -72,6 +72,8 @@ def recall_snapshot(mode, query, started, result, *, text=None, hits=None, reaso
     items = [
         {"node_id": hit["node_id"], "node_type": hit["node_type"], "score": hit.get("score"),
          "title": render_display_text(hit.get("title") or "", result.user_names),
+         **({"source_scene": hit["source_scene"], "source_space_id": hit["external_space_id"]}
+            if "external_space_id" in hit else {}),
          **({"similarity": hit["similarity"]} if "similarity" in hit else {})}
         for hit in (result.hits if hits is None else hits)
     ]

@@ -6,6 +6,7 @@ function nodeList(items) {
     const row = element('li');
     row.append(element('strong', item.title || item.node_id));
     const fields = [labels[item.node_type] || item.node_type];
+    if (item.source_scene) fields.push('其他空间 · ' + item.source_scene);
     if (item.score != null) fields.push('综合分 ' + item.score.toFixed(3));
     if (item.similarity != null) fields.push('相似度 ' + item.similarity.toFixed(3));
     if (item.reason) fields.push(item.reason);
