@@ -17,6 +17,9 @@ const originalGet = window.AstrBotPluginView.apiGet;
 const originalPost = window.AstrBotPluginView.apiPost;
 window.topicSubmissionKeys = [];
 window.AstrBotPluginView.apiPost = async (endpoint, body) => {
+ if(endpoint === 'tasks/model-preview')return body.kind==='section_rebuild'
+   ? {window:{mode:'windows',providers:['llm-first','llm-1'],missing_windows:1,basis:'chat'},topic:{mode:'missing',providers:[]}}
+   : {topic:{mode:'fixed',provider_id:'llm-1',providers:['llm-1'],basis:'plugin'}};
  if(endpoint === 'tasks' && body.kind === 'topic_consolidate') {
    window.topicSubmissionKeys.push(body.idempotency_key);
    if(window.topicSubmissionKeys.length === 1) throw new Error('synthetic lost response');
@@ -102,9 +105,11 @@ async def main():
             await page.locator("#topic-consolidate:not([disabled])").wait_for()
             assert not await page.locator('#request-key, #new-key').count()
             await page.locator("#topic-consolidate").click()
+            await page.get_by_role("button", name="启动任务", exact=True).click()
             await page.locator('#notifications').get_by_text('未确认任务是否提交成功。', exact=False).wait_for()
             await page.locator("#topic-consolidate").click()
-            assert await page.locator("#topic-consolidate").is_disabled()
+            await page.get_by_role("button", name="启动任务", exact=True).click()
+            await page.wait_for_function("document.querySelector('#topic-consolidate').disabled")
             await page.wait_for_function("testCalls.some(c=>c.endpoint==='tasks'&&c.body.kind==='topic_consolidate')")
             await page.locator('[data-maintenance-tab="tasks"]').click()
             await page.locator("#tasks article").filter(has_text="整理主题").wait_for()
@@ -144,10 +149,15 @@ async def main():
             await page.evaluate("window.topicBusy=false")
             await rebuild.click()
             await dialog.get_by_role("button", name="确认重构").click()
+            assert await dialog.is_visible()
+            await dialog.get_by_label("仅用于缺少模型的窗口").select_option("llm-1")
+            await dialog.get_by_label("主题整理模型").select_option("llm-first")
+            await dialog.get_by_role("button", name="确认重构").click()
             await page.locator("#tasks article").filter(has_text="按板块重构").filter(has_text="完成").wait_for()
             assert await page.locator('[data-maintenance-tab="tasks"]').get_attribute("aria-selected") == "true"
             submitted = await page.evaluate("testCalls.filter(c=>c.body.kind==='section_rebuild').map(c=>c.body)")
             assert len(submitted) == 1 and submitted[0]["space_id"] == "space-2"
+            assert submitted[0]["model_selection"] == {"missing_window_provider_id": "llm-1", "topic_provider_id": "llm-first"}
             assert submitted[0]["sections"] == ["topics", "profiles", "relationship"]
             card = page.locator("#tasks article").filter(has_text="parallel-progress")
             assert "尝试 1 / 2" in await card.inner_text()

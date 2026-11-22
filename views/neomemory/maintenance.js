@@ -1,3 +1,4 @@
+import { initTaskModels } from './task-models.js';
 import { initRecallInspector } from './recall.js';
 import { taskTiming, taskFeedback } from './task-progress.js';
 import { $, element, notify, pretty, on, onSearchForm, newKey, emotionLabels, emotionEntries, enhanceSelect, setupTabs } from './ui.js';
@@ -17,6 +18,8 @@ export function initMaintenance(ui) {
   const pendingSubmissionKeys = new Map();
   let backlogEpoch = null;
   const recall = initRecallInspector(ui);
+  const confirmModelTask = initTaskModels(ui);
+  const modelJobs = new Set(['extract', 'rebuild', 'section_rebuild', 'topic_consolidate', 'topic_rebuild', 'profile_rebuild', 'relationship_rebuild', 'context_rebuild']);
   setupTabs('[data-maintenance-tab]', tab => {
     for (const section of document.querySelectorAll('[data-maintenance-content]')) {
       section.hidden = section.dataset.maintenanceContent !== tab.dataset.maintenanceTab;
@@ -115,7 +118,7 @@ export function initMaintenance(ui) {
     relationship.disabled = ui.spaceType() !== 'private';
     if (relationship.disabled) relationship.checked = false;
     $('section-rebuild').disabled = !allowed || !document.querySelector('#section-selection input:checked');
-    $('section-rebuild-confirm').disabled = !allowed;
+    $('section-rebuild-confirm').disabled = state.posting;
     $('rebuild').disabled = !allowed || !$('rebuild-confirm').checked;
     $('reject').disabled = !allowed || !state.detail || state.detail.kind !== 'extract' || state.detail.state !== 'failed'
       || state.detail.scope_key !== spaceId() || !$('reject-confirm').checked || !$('reject-reason').value.trim();
@@ -230,6 +233,12 @@ export function initMaintenance(ui) {
   }
   async function taskMutation(endpoint, job, extra = {}) {
     if (state.posting) return;
+    if (extra.fresh && modelJobs.has(job.kind)) {
+      const selection = await confirmModelTask({ kind: job.kind, space_id: job.scope_key, job_id: job.job_id },
+        '重新准备' + kinds[job.kind] + '？', '将按当前空间和模型设置重新准备任务。', '重新准备');
+      if (!selection) return;
+      extra = { ...extra, model_selection: selection };
+    }
     await request(endpoint, { job_id: job.job_id, ...extra });
     notify('任务状态已更新。'); await refreshTasks();
   }
@@ -640,31 +649,21 @@ export function initMaintenance(ui) {
   on('section-rebuild', 'click', async () => {
     const inputs = [...document.querySelectorAll('#section-selection input:checked')];
     const sections = inputs.map(input => input.value);
-    const dialog = $('section-rebuild-dialog'), epoch = ui.epoch();
-    $('section-rebuild-scope').textContent = '记忆空间 · ' + $('space').selectedOptions[0].textContent;
     const names = inputs.map(input => input.parentElement.textContent.trim()).join('、');
     const description = ['所选板块：' + names + '。'];
-    if (sections.includes('topics')) {
-      let preview;
-      try { preview = await bridge.apiGet('topics/rebuild-preview', { space_id: spaceId() }); }
-      catch { if (ui.current(epoch)) notify('读取主题重构范围失败，请重试。', true); return; }
-      if (!ui.current(epoch) || dialog.open) return;
-      const { eligible_members, protected_members, old_topics } = preview;
-      description.push(`当前可用成员 ${eligible_members} 个，受保护成员 ${protected_members} 个，将替换现有主题 ${old_topics} 个（含人工保护的主题）。`);
-      if (eligible_members < 2 && old_topics > 0) description.push(`可用成员不足两个，本次将清空现有的 ${old_topics} 个主题。`);
-    }
     if (sections.some(section => section !== 'topics')) description.push('画像或人格关系按原始会话顺序回放。');
     description.push('各分支成功后替换对应旧内容和版本历史，从 v1 重新计数。没有形成新内容时，对应板块将为空。');
-    $('section-rebuild-description').textContent = description.join('');
-    dialog.returnValue = 'cancel';
-    const closed = new Promise(resolve => dialog.addEventListener('close', resolve, { once: true }));
-    dialog.showModal();
-    await closed;
-    if (dialog.returnValue === 'rebuild' && ui.current(epoch)) await submit('section_rebuild', { sections });
+    const selection = await confirmModelTask({ kind: 'section_rebuild', space_id: spaceId(), sections },
+      '确认重构所选板块？', description.join(''), '确认重构');
+    if (selection) await submit('section_rebuild', { sections, model_selection: selection });
   });
-  on('topic-consolidate', 'click', () => submit('topic_consolidate'));
-  on('extract', 'click', () => submit('extract')); on('reindex', 'click', () => submit('reindex'));
-  on('rebuild', 'click', () => $('rebuild-confirm').checked && submit('rebuild'));
+  async function submitWithModels(kind, description = '') {
+    const selection = await confirmModelTask({ kind, space_id: spaceId() }, kinds[kind] + ' · 本次使用的模型', description, '启动任务');
+    if (selection) await submit(kind, { model_selection: selection });
+  }
+  on('topic-consolidate', 'click', () => submitWithModels('topic_consolidate'));
+  on('extract', 'click', () => submitWithModels('extract')); on('reindex', 'click', () => submit('reindex'));
+  on('rebuild', 'click', () => $('rebuild-confirm').checked && submitWithModels('rebuild', '成功后替换当前空间的旧记忆和版本历史。'));
   for (const id of ['rebuild-confirm', 'reject-confirm', 'reject-reason', 'operation']) on(id, 'input', buttons);
   on('reject', 'click', () => state.detail && submit('reject', { failed_job_id: state.detail.job_id, reason: $('reject-reason').value }));
   on('clear-completed-tasks', 'click', openClearCompleted);

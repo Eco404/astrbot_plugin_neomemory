@@ -40,6 +40,7 @@ const bridge = window.AstrBotPluginView;
 const state = { page: 'memory', epoch: 0, posting: false, spaces: [], offset: 0, ready: false, spacesRequest: 0 };
 const ui = {
   bridge, space: () => $('space').value, spaceType: () => state.spaces.find(space => space.space_id === $('space').value)?.space_type, epoch: () => state.epoch,
+  showSpaceBar(visible) { $('space-bar').hidden = !visible; scheduleStickyBars(); },
   current: (epoch) => epoch === state.epoch, page: () => state.page,
   async write(endpoint, body) {
     if (state.posting) throw new Error('另一项操作正在提交，请稍后重试。');
@@ -86,9 +87,17 @@ async function loadSpaces(append = false) {
   enhanceSelect($('space'));
   $('more-spaces').hidden = !result.has_more; state.offset += result.items.length;
   if (ui.space() !== previous) changed();
+  selectedSpace = ui.space();
 }
 function changed() { state.epoch += 1; memory.changed(); notes.changed(); maintenance.changed(); identities.changed(); }
-on('space', 'change', async () => { changed(); await pages[state.page].refresh(); });
+let selectedSpace = '';
+on('space', 'change', async () => {
+  const requested = ui.space();
+  $('space').value = selectedSpace;
+  if (!await settings.canChangeSpace()) return;
+  $('space').value = selectedSpace = requested;
+  changed(); await pages[state.page].refresh();
+});
 on('refresh', 'click', async () => { await loadSpaces(); await pages[state.page].refresh(); });
 on('more-spaces', 'click', () => loadSpaces(true));
 for (const node of document.querySelectorAll('[data-page]')) node.addEventListener('click', () => navigate(node.dataset.page).catch((error) => notify(error.message, true)));

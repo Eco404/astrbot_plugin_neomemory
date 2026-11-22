@@ -54,7 +54,22 @@
 
 </div>
 <div id="page-models" class="page" hidden><section><h2 class="section-title"><span data-icon="models" aria-hidden="true"></span>模型选择</h2><p class="muted">使用 AstrBot 已配置的 Provider，无需在这里复制密钥。短期摘要可使用独立模型，留空时沿用记忆 LLM。</p><p id="models-state" class="notice" hidden></p><div id="model-fields" class="fields"></div><div class="save-bar"><span id="models-draft-state" class="draft-state" role="status"></span><div class="row"><button id="models-save" class="primary" disabled>保存模型设置</button><button id="models-apply" hidden>重试应用已保存配置</button><button id="models-refresh">刷新模型列表</button></div></div></section><section><h2 class="section-title"><span data-icon="maintenance" aria-hidden="true"></span>测试连通性</h2><div class="row probe-controls"><label><span>类型</span><select id="probe-kind"><option value="llm">LLM</option><option value="embedding">Embedding</option></select></label><label><span>本次测试模型</span><select id="probe-provider"></select></label><button id="probe-start">开始测试</button></div><p class="muted">LLM 默认跟随上方记忆 LLM，Embedding 默认跟随向量模型；也可单独选择其他模型（含短期摘要模型）。测试只调用此处选中的 Provider，不保存模型设置。测试结果直接显示在这里。保存模型设置后立即用于新任务，已经开始的任务继续使用原模型。</p><div id="probe-result" role="status"></div></section></div>
-<div id="page-settings" class="page" hidden><section class="settings-panel"><h2 class="section-title"><span data-icon="settings" aria-hidden="true"></span>插件设置</h2><p class="muted">功能设置控制行为；高级参数用于调优。恢复默认后可继续编辑，保存后立即生效，无需重载插件；已经开始的任务继续使用原配置。</p><div id="settings-reload" class="notice" hidden></div><div class="switches" role="tablist" aria-label="设置层级"><button data-settings-group="功能" role="tab" aria-selected="true">功能设置</button><button data-settings-group="高级" role="tab" aria-selected="false" tabindex="-1">高级参数</button><button data-settings-group="文本清理" role="tab" aria-selected="false" tabindex="-1">文本清理</button><button data-settings-group="外观" role="tab" aria-selected="false" tabindex="-1">外观设置</button></div><label id="settings-search-label"><span>查找设置</span><input id="settings-search" type="search" placeholder="按名称、说明或参数名查找" /></label><div id="settings-fields" class="fields"></div>
+<div id="page-settings" class="page" hidden><section class="settings-panel"><h2 class="section-title"><span data-icon="settings" aria-hidden="true"></span>插件设置</h2><p class="muted">功能设置控制行为；高级参数用于调优。恢复默认后可继续编辑，保存后立即生效，无需重载插件；已经开始的任务继续使用原配置。</p><div id="settings-reload" class="notice" hidden></div><div class="switches" role="tablist" aria-label="设置层级"><button data-settings-group="功能" role="tab" aria-selected="true">功能设置</button><button data-settings-group="空间" role="tab" aria-selected="false" tabindex="-1">记忆空间</button><button data-settings-group="高级" role="tab" aria-selected="false" tabindex="-1">高级参数</button><button data-settings-group="文本清理" role="tab" aria-selected="false" tabindex="-1">文本清理</button><button data-settings-group="外观" role="tab" aria-selected="false" tabindex="-1">外观设置</button></div><label id="settings-search-label"><span>查找设置</span><input id="settings-search" type="search" placeholder="按名称、说明或参数名查找" /></label><div id="settings-fields" class="fields"></div>
+<div id="space-settings" hidden>
+  <p id="policy-status" class="muted" role="status"></p>
+  <form id="policy-form" hidden>
+    <h3 id="policy-persona-title">人格设置</h3>
+    <div id="policy-persona-fields" class="fields"></div>
+    <details id="policy-sources"><summary>当前空间已获准检索的来源</summary><ul id="policy-source-list"></ul></details>
+    <h3 id="policy-space-title">当前空间设置</h3>
+    <div id="policy-space-fields" class="fields"></div>
+    <div class="save-bar"><span id="policy-draft-state" class="draft-state" role="status"></span><div class="row">
+      <button type="button" id="policy-discard" hidden>放弃设置</button>
+      <button type="submit" id="policy-save" class="primary" disabled>保存空间设置</button>
+    </div></div>
+  </form>
+</div>
+
   <div id="cleaning-panel" hidden aria-labelledby="cleaning-heading">
     <h2 id="cleaning-heading" class="section-title"><span data-icon="settings" aria-hidden="true"></span>文本清理</h2>
     <p class="muted">规则对所有空间的新消息即时生效。拖动左侧手柄调整执行顺序。将条目拖到组名上可加入分组，拖到一级条目旁可移出。</p>
@@ -285,7 +300,7 @@
   <h2 id="section-rebuild-title">确认重构所选板块？</h2>
   <p id="section-rebuild-scope"></p>
   <p id="section-rebuild-description"></p>
-  <form method="dialog" class="row"><button value="cancel" autofocus>取消</button><button id="section-rebuild-confirm" value="rebuild" class="danger">确认重构</button></form>
+  <form method="dialog" id="task-model-form"><div id="task-model-fields"></div><div class="row"><button value="cancel" formnovalidate autofocus>取消</button><button id="section-rebuild-confirm" value="rebuild" class="danger">确认重构</button></div></form>
 </dialog>
 
 <dialog id="clear-completed-dialog" class="confirmation-dialog" aria-labelledby="clear-completed-title" aria-describedby="clear-completed-scope clear-completed-description">

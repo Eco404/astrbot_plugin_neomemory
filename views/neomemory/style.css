@@ -576,3 +576,8 @@ button.primary, button.primary:hover:not(:disabled) { background: var(--accent-s
 #cleaning-list [data-drop="after"] { box-shadow: 0 3px var(--accent); }
 #cleaning-list [data-drop="inside"], #cleaning-drop-end[data-drop] { outline: 2px dashed var(--accent); outline-offset: -2px; }
 #cleaning-drop-end { margin-block: 8px; padding: 12px; text-align: center; border: 1px dashed var(--line-control); border-radius: var(--radius); color: var(--text-muted); }
+
+.task-model-field { margin-block: 16px; }
+.task-model-field label { display: grid; gap: 5px; margin-block: 8px; }
+.task-model-field select { width: 100%; }
+#task-model-form > .row { justify-content: flex-end; margin-top: 20px; }

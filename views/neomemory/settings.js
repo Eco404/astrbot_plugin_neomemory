@@ -1,3 +1,4 @@
+import { initSpaceSettings } from './space-settings.js';
 import { initTextCleaning } from './text-cleaning.js';
 import { initAppearance } from './appearance.js';
 import { $, element, button, notify, on, setupTabs, enhanceSelect } from './ui.js';
@@ -20,6 +21,7 @@ export function initSettings(ui) {
     if (selected && !items.some((option) => option.value === selected)) { const option = element('option', selected + '（当前不可用）'); option.value = selected; items.push(option); }
     return items;
   }
+  const policy = initSpaceSettings(ui, choices);
   function field(key, meta) {
     const row = element('div', '', 'field'), id = 'setting-' + key;
     const label = element('label', meta.description || key); label.htmlFor = id;
@@ -75,20 +77,31 @@ export function initSettings(ui) {
   }
   async function canLeave(page) {
     if (!state.data || !['settings', 'models'].includes(page)) return true;
-    if (state.posting) { notify('正在提交，请稍后切换页面。'); return false; }
-    if (!dirtyCount(page)) return true;
+    if (state.posting || policy.saving()) { notify('正在提交，请稍后切换页面。'); return false; }
+    if (!dirtyCount(page) && !(page === 'settings' && policy.dirty())) return true;
+    if (!await confirmDiscard()) return false;
+    if (page === 'settings') policy.discard();
+    discard(page);
+    return true;
+  }
+  async function canChangeSpace() {
+    if (policy.saving()) { notify('正在保存空间设置。'); return false; }
+    if (!policy.dirty()) return true;
+    if (!await confirmDiscard(true)) return false;
+    policy.discard(); return true;
+  }
+  async function confirmDiscard(spaceOnly = false) {
     const dialog = $('settings-leave');
     if (dialog.open) return false;
+    $('settings-leave-description').textContent = spaceOnly ? '切换空间会放弃当前空间尚未保存的修改。' : '离开会放弃本页尚未保存的修改。';
     dialog.returnValue = 'stay';
     const closed = new Promise(resolve => dialog.addEventListener('close', resolve, { once: true }));
     dialog.showModal();
     await closed;
-    if (dialog.returnValue !== 'discard') return false;
-    discard(page);
-    return true;
+    return dialog.returnValue === 'discard';
   }
   window.addEventListener('beforeunload', event => {
-    if (state.data && ['settings', 'models'].some(page => dirtyCount(page))) {
+    if (policy.dirty() || (state.data && ['settings', 'models'].some(page => dirtyCount(page)))) {
       event.preventDefault();
       event.returnValue = '';
     }
@@ -117,12 +130,14 @@ export function initSettings(ui) {
       else if (meta.group === state.group && (!query || `${key} ${meta.description} ${meta.hint}`.toLowerCase().includes(query))) settings.push(field(key, meta));
     }
     const showAppearance = state.group === '外观';
-    const showCleaning = state.group === '文本清理';
+    const showCleaning = state.group === '文本清理', showPolicy = state.group === '空间';
+    $('space-settings').hidden = !showPolicy;
+    if (ui.page() === 'settings') ui.showSpaceBar(showPolicy);
     $('cleaning-panel').hidden = !showCleaning;
-    $('settings-draft-state').closest('.save-bar').hidden = $('settings-result').hidden = showCleaning;
+    $('settings-draft-state').closest('.save-bar').hidden = $('settings-result').hidden = showCleaning || showPolicy;
     $('appearance-panel').hidden = !showAppearance;
     $('appearance-panel').disabled = state.posting || !state.data.can_save;
-    $('settings-search-label').hidden = $('settings-fields').hidden = showAppearance || showCleaning;
+    $('settings-search-label').hidden = $('settings-fields').hidden = showAppearance || showCleaning || showPolicy;
     $('settings-fields').replaceChildren(...settings); $('model-fields').replaceChildren(...models);
     if (!settings.length) $('settings-fields').append(element('p', '没有符合当前条件的设置。', 'muted'));
     const pending = state.data.applied === false && !state.data.external_change;
@@ -149,6 +164,7 @@ export function initSettings(ui) {
   async function refresh(force = false) {
     if (state.data && !force) {
       render();
+      if (ui.page() === 'settings' && state.group === '空间') await policy.refresh();
       if (ui.page() === 'settings' && state.group === '文本清理') await cleaning.refresh();
       return;
     }
@@ -161,6 +177,7 @@ export function initSettings(ui) {
       else { state.models = { llm: [], embedding: [] }; notify('Provider 列表暂不可用，已保存的模型仍保留。', true); }
       if (force) await appearance.load();
       renderProbe(true); render();
+      if (ui.page() === 'settings' && state.group === '空间') await policy.refresh();
       if (ui.page() === 'settings' && state.group === '文本清理') await cleaning.refresh();
     })();
     try { await state.loading; } finally { state.loading = null; }
@@ -214,6 +231,7 @@ export function initSettings(ui) {
   setupTabs('[data-settings-group]', tab => {
     state.group = tab.dataset.settingsGroup;
     render();
+    if (state.group === '空间') policy.refresh();
     if (state.group === '文本清理') cleaning.refresh();
   });
   on('settings-search', 'input', render); on('settings-save', 'click', () => save('settings')); on('models-save', 'click', () => save('models'));
@@ -226,5 +244,5 @@ export function initSettings(ui) {
   on('settings-apply', 'click', () => save('settings', true)); on('models-apply', 'click', () => save('models', true));
   on('settings-refresh', 'click', () => refresh(true)); on('models-refresh', 'click', async () => { state.models = await ui.bridge.apiGet('models'); render(); });
   on('probe-kind', 'change', () => renderProbe(true)); on('probe-provider', 'change', () => renderProbe()); on('probe-start', 'click', probe);
-  return { refresh, canLeave, loadAppearance: appearance.load };
+  return { refresh, canLeave, canChangeSpace, loadAppearance: appearance.load };
 }
