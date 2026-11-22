@@ -30,6 +30,11 @@ except ImportError:
 
 from .maintenance_api import PREFIX
 
+try:
+    from ..storage.space_policy import PERSONA_DEFAULTS, SPACE_DEFAULTS
+except ImportError:
+    from storage.space_policy import PERSONA_DEFAULTS, SPACE_DEFAULTS
+
 
 def _guard(handler):
     @wraps(handler)
@@ -39,6 +44,8 @@ def _guard(handler):
         except (SettingsConflict, JobConflict):
             return error_response("配置已变化或已有相关任务，请刷新；若宿主配置被外部修改，请先在宿主重载插件。", status_code=409,
                                   data={"error_code": "settings_or_model_test_conflict"})
+        except KeyError:
+            return error_response("记忆空间不存在。", status_code=404)
         except SettingsUnavailable:
             return error_response("宿主配置当前无法保存。", status_code=503,
                                   data={"error_code": "settings_unavailable"})
@@ -66,6 +73,7 @@ class SettingsAPI:
         if not callable(register):
             return
         for path, method, handler in (("settings", "GET", self.get), ("settings", "POST", self.save),
+                                      ("space/policy", "GET", self.get_space_policy), ("space/policy", "POST", self.save_space_policy),
                                       ("appearance", "GET", self.get_appearance), ("appearance", "POST", self.save_appearance),
                                       ("text-cleaning", "GET", self.get_cleaning), ("text-cleaning", "POST", self.save_cleaning),
                                       ("models/probe", "POST", self.probe)):
@@ -87,6 +95,20 @@ class SettingsAPI:
     async def save(self):
         body = await self._body({"revision", "changes"})
         return json_response(await self.plugin.settings.save(**body))
+
+    @_guard
+    async def get_space_policy(self):
+        if not self.plugin.ready or self.plugin.terminating:
+            raise SettingsUnavailable()
+        return json_response(await self.plugin.memory_store.get_space_policy(request.query.get("space_id")))
+
+    @_guard
+    async def save_space_policy(self):
+        if not self.plugin.ready or self.plugin.terminating:
+            raise SettingsUnavailable()
+        body = await self._body({"space_id"}, optional=PERSONA_DEFAULTS | SPACE_DEFAULTS)
+        space_id = body.pop("space_id")
+        return json_response(await self.plugin.memory_store.set_space_policy(space_id, body))
 
     @_guard
     async def get_appearance(self):

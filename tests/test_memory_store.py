@@ -5,7 +5,7 @@ import pytest
 from core.identity import EventIdentity
 from core.memory_spaces import group_space, private_space
 from core.source_ingest import CapturedSource
-from storage.schema import CURRENT_SCHEMA_VERSION
+from storage.memory_schema import MEMORY_FORMAT
 from storage.memory_store import MemoryStore
 from storage.source_store import SourceStore
 
@@ -19,7 +19,7 @@ async def test_memory_store_initializes_spaces_and_generations(tmp_path):
     same = await store.get_or_create_space(private_space("p", "u"))
     group = await store.get_or_create_space(group_space("p", "adapter", "g"))
 
-    assert store.schema_version == CURRENT_SCHEMA_VERSION
+    assert store.schema_version == MEMORY_FORMAT
     assert private["space_id"] == same["space_id"]
     assert private["space_id"] != group["space_id"]
     active = await store.get_active_generation(private["space_id"])

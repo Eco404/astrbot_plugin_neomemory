@@ -50,6 +50,8 @@ async def test_routes_register_without_new_http_server(api):
         ("/astrbot_plugin_neomemory/text-cleaning", ("GET",)),
         ("/astrbot_plugin_neomemory/text-cleaning", ("POST",)),
         ("/astrbot_plugin_neomemory/models/probe", ("POST",)),
+        ("/astrbot_plugin_neomemory/space/policy", ("GET",)),
+        ("/astrbot_plugin_neomemory/space/policy", ("POST",)),
     }
     api.register(SimpleNamespace())
 

@@ -351,3 +351,31 @@ MEMORY_SCHEMA = (
     JOB_SCHEMA + CANDIDATE_SCHEMA + GOVERNANCE_SCHEMA + NOTE_SCHEMA
     + PIPELINE_SCHEMA + SHORT_TERM_SCHEMA + PROVENANCE_SCHEMA + PROVENANCE_CONTEXT_SCHEMA + VERSION_RETENTION_SCHEMA
 )
+
+
+MEMORY_FORMAT = "v2-dev.1"
+# Reserve a distinct SQLite version so a 1.0 installation refuses this layout.
+DEV_USER_VERSION = 2_000_001
+
+
+async def initialize_memory_schema(database):
+    from .space_policy import POLICY_SCHEMA
+
+    async with database.transaction() as connection:
+        version, = await (await connection.execute("PRAGMA user_version")).fetchone()
+        if version == DEV_USER_VERSION:
+            revision, = await (await connection.execute("SELECT revision FROM memory_format")).fetchone()
+            if revision != MEMORY_FORMAT:
+                raise RuntimeError(f"Unsupported memory format: {revision}")
+        elif version in (0, 1):
+            if version == 0:
+                for statement in MEMORY_SCHEMA:
+                    await connection.execute(statement)
+            for statement in POLICY_SCHEMA:
+                await connection.execute(statement)
+            await connection.execute("CREATE TABLE memory_format(revision TEXT NOT NULL)")
+            await connection.execute("INSERT INTO memory_format VALUES (?)", (MEMORY_FORMAT,))
+            await connection.execute(f"PRAGMA user_version = {DEV_USER_VERSION}")
+        else:
+            raise RuntimeError(f"Unsupported memory.db schema version: {version}")
+    return MEMORY_FORMAT

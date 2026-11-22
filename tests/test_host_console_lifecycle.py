@@ -12,7 +12,7 @@ from astrbot.core.config.astrbot_config import AstrBotConfig  # noqa: E402
 import main as plugin_module  # noqa: E402
 from core.config import NeoMemoryConfig  # noqa: E402
 from storage.job_store import JobConflict  # noqa: E402
-from storage.schema import CURRENT_SCHEMA_VERSION  # noqa: E402
+from storage.memory_schema import MEMORY_FORMAT  # noqa: E402
 from tests.test_recall_runtime import RuntimeContext, RuntimeEvent, seed  # noqa: E402
 from tests.test_recall_runtime import plugin_factory as _plugin_factory  # noqa: E402
 
@@ -46,7 +46,7 @@ async def test_recall_can_enable_through_real_host_config_without_reload(tmp_pat
         assert not (await reloaded.settings.get())["reload_required"]
         assert reloaded.console_store is not None and reloaded.note_service is not None
         assert {"note", "model_test"} <= set(reloaded.maintenance.runner.handlers)
-        assert reloaded.memory_store.schema_version == CURRENT_SCHEMA_VERSION
+        assert reloaded.memory_store.schema_version == MEMORY_FORMAT
     finally:
         await reloaded.terminate()
 

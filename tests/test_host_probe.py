@@ -26,7 +26,7 @@ import main as plugin_module  # noqa: E402
 from core.memory_spaces import private_space  # noqa: E402
 from core.source_ingest import normalize_event  # noqa: E402
 from main import NeoMemoryPlugin, SourceCaptureFilter  # noqa: E402
-from storage.schema import CURRENT_SCHEMA_VERSION  # noqa: E402
+from storage.memory_schema import MEMORY_FORMAT  # noqa: E402
 from storage.memory_store import MemoryStore  # noqa: E402
 from storage.source_store import SourceStore  # noqa: E402
 
@@ -148,7 +148,7 @@ async def test_memory_store_lifecycle_and_source_validation(tmp_path, monkeypatc
         assert health["maintenance"]["extraction_prompt_version"] == "extraction-prompt.v1"
         assert health["source_count"] == 1
         assert health["memory"]["node_count"] == 1
-        assert health["memory"]["schema_version"] == CURRENT_SCHEMA_VERSION
+        assert health["memory"]["schema_version"] == MEMORY_FORMAT
         assert health["memory"]["exists"] is True
     finally:
         await plugin.terminate()
@@ -223,7 +223,7 @@ async def test_stage_one_host_capture_and_restart(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ASTRBOT_ROOT", str(tmp_path / "astrbot"))
     context = FakeContext()
     plugin = NeoMemoryPlugin(context, {})
-    assert len(context.registered_web_apis) == 41
+    assert len(context.registered_web_apis) == 43
     assert any(path.endswith("/tasks/clear-completed") and methods == ["POST"]
                for path, _, methods, _ in context.registered_web_apis)
     assert all(
@@ -338,7 +338,7 @@ async def test_stage_one_plugin_manager_loads_real_plugin_layout(
     )
     assert metadata.star_cls is not None
     assert metadata.star_cls.ready is True
-    assert len(context.registered_web_apis) == 41
+    assert len(context.registered_web_apis) == 43
     assert any(path.endswith("/tasks/clear-completed") and methods == ["POST"]
                for path, _, methods, _ in context.registered_web_apis)
     await manager._terminate_plugin(metadata)
