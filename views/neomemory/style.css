@@ -287,8 +287,10 @@ html { scroll-padding-bottom: 96px; }
 .empty-state p { max-width: 52ch; margin: 8px auto; }
 
 /* Form density stays consistent between settings, models and maintenance. */
-.fields { margin: 12px 0 0; }
-.field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(140px, .8fr) auto; gap: 18px; align-items: center; border-bottom: 1px solid var(--line-soft); padding: 18px 0; }
+.fields { margin: 12px 0 0; --field-columns: minmax(0, 1fr) minmax(140px, .8fr) auto; }
+#policy-space-fields { display: grid; grid-template-columns: var(--field-columns); }
+#policy-space-fields > .field { grid-column: 1 / -1; grid-template-columns: subgrid; }
+.field { display: grid; grid-template-columns: var(--field-columns); gap: 18px; align-items: center; border-bottom: 1px solid var(--line-soft); padding: 18px 0; }
 .field:last-child { border-bottom: 0; }
 .field label { margin: 0; color: var(--text); font-weight: 550; }
 .field small { display: block; color: var(--text-muted); font-weight: 400; font-size: 12px; line-height: 1.6; margin-top: 5px; overflow-wrap: anywhere; }
@@ -298,7 +300,7 @@ html { scroll-padding-bottom: 96px; }
 :is(.field, .recall-recording-control, .cleaning-row) input.toggle:checked { background: var(--accent); border-color: var(--accent); }
 :is(.field, .recall-recording-control, .cleaning-row) input.toggle:checked::after { background: var(--accent-ink); transform: translateX(15px); }
 :is(.field, .recall-recording-control, .cleaning-row) input.toggle:disabled { opacity: .48; cursor: not-allowed; }
-#settings-fields .toggle { justify-self: end; }
+#page-settings .fields .toggle { justify-self: end; }
 #settings-search { max-width: 480px; }
 #page-settings .switches { margin-top: 18px; }
 .save-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0 -6px; padding: 14px 0 6px; border-top: 1px solid var(--line-soft); }
@@ -386,7 +388,8 @@ button, select, summary, input[type="checkbox"] { touch-action: manipulation; }
   .sidebar { padding: 22px 10px 14px; }
   .brand { gap: 8px; font-size: 16px; margin-inline: 3px; }
   main { padding-right: 0; }
-  .field { gap: 12px; grid-template-columns: minmax(0, 1fr) minmax(120px, .85fr) auto; }
+  .fields { --field-columns: minmax(0, 1fr) minmax(120px, .85fr) auto; }
+  .field { gap: 12px; }
   .grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 900px) {
@@ -437,7 +440,8 @@ button, select, summary, input[type="checkbox"] { touch-action: manipulation; }
   .card .body { font-size: 14px; }
   .memory-detail, .memory-relations-body { padding-left: 10px; }
   .memory-detail .version-derivation { padding: 10px; }
-  .field { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 16px 0; }
+  .fields { --field-columns: minmax(0, 1fr) auto; }
+  .field { gap: 10px; padding: 16px 0; }
   .field-description { grid-column: 1 / -1; }
   :is(.field, .recall-recording-control, .cleaning-row) input.toggle { grid-column: 1; }
   .save-bar > .row { gap: 8px; }

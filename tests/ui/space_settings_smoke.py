@@ -13,9 +13,10 @@ from tests.ui.full_smoke import MOCK_BRIDGE, QuietHandler
 POLICY = r"""
 const get = window.AstrBotPluginView.apiGet, post = window.AstrBotPluginView.apiPost;
 const persona = {shared_recall_enabled:false,allow_group_read_private:false,external_limit:2,external_budget_percent:20};
+const defaults = {...persona, exclude_from_shared_recall:false,model_mode:'inherit',provider_id:'',topic_provider_id:''};
 const policies = {};
 function policy(id) {
- return {space_id:id,persona_id:'demo',...persona,exclude_from_shared_recall:false,model_mode:'inherit',
+ return {space_id:id,persona_id:'demo',defaults,...persona,exclude_from_shared_recall:false,model_mode:'inherit',
    provider_id:'',topic_provider_id:'',shared_spaces:persona.shared_recall_enabled ? [{space_id:'space-1',display_label:'林川'}] : [],...policies[id]};
 }
 window.AstrBotPluginView.apiGet = async (endpoint,args) => endpoint==='space/policy' ? policy(args.space_id) : get(endpoint,args);
@@ -48,6 +49,32 @@ async def main():
             await page.locator('[data-page="settings"]').click()
             await page.get_by_role('tab', name='记忆空间').click()
             await expect(page.locator('#space-bar')).to_be_visible()
+            await expect(page.locator('#policy-save')).to_be_disabled()
+            for width in (1280, 390):
+                await page.set_viewport_size({'width': width, 'height': 844})
+                for group, reference, target in [
+                    ('功能设置', 'setting-recall_enabled', 'policy-shared_recall_enabled'),
+                    ('高级参数', 'setting-recall_history_seconds', 'policy-external_limit'),
+                ]:
+                    await page.get_by_role('tab', name=group).click()
+                    ref = page.locator('#' + reference)
+                    ref_box = await ref.bounding_box()
+                    ref_reset = await ref.locator('..').get_by_role('button').bounding_box()
+                    await page.get_by_role('tab', name='记忆空间').click()
+                    control = page.locator('#' + target)
+                    box = await control.bounding_box()
+                    reset_box = await control.locator('..').get_by_role('button').bounding_box()
+                    for measurement in ('x', 'width'):
+                        assert abs(box[measurement] - ref_box[measurement]) <= 1
+                        assert abs(reset_box[measurement] - ref_reset[measurement]) <= 1
+                    assert abs(box['y'] + box['height']/2 - reset_box['y'] - reset_box['height']/2) <= 1
+            limit = page.locator('#policy-external_limit')
+            reset = limit.locator('..').get_by_role('button')
+            await expect(reset).to_be_disabled()
+            await limit.fill('4')
+            await reset.click()
+            await expect(limit).to_have_value('2')
+            await expect(reset).to_be_disabled()
             await expect(page.locator('#policy-save')).to_be_disabled()
             await page.locator('#policy-shared_recall_enabled').check()
             await page.locator('#policy-model_mode').select_option('fixed')

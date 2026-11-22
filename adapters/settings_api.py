@@ -107,7 +107,7 @@ class SettingsAPI:
     async def _with_shared_spaces(self, policy):
         sources = await self.plugin.memory_store.list_shared_spaces(policy["space_id"])
         labeled = await self.plugin.console_store.label_spaces(sources)
-        return {**policy, "shared_spaces": [
+        return {**policy, "defaults": PERSONA_DEFAULTS | SPACE_DEFAULTS, "shared_spaces": [
             {"space_id": s["space_id"], "display_label": s["display_label"]} for s in labeled
         ]}
 

@@ -62,6 +62,22 @@ export function initSpaceSettings(ui, modelChoices) {
       controls();
     });
     description.append(label, help); row.append(description, input);
+    // Fixed mode requires a provider. Restore inheritance on the model mode row.
+    if (key !== 'provider_id') {
+      const defaultValue = saved.defaults[key];
+      const reset = element('button', '恢复默认', 'reset-setting');
+      reset.type = 'button';
+      reset.setAttribute('aria-label', name + '恢复默认');
+      const updateReset = () => { reset.disabled = input.disabled || draft[key] === defaultValue; };
+      updateReset();
+      input.addEventListener('input', updateReset);
+      reset.addEventListener('click', () => {
+        if (input.type === 'checkbox') input.checked = defaultValue;
+        else input.value = defaultValue;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      row.append(reset);
+    }
     return row;
   }
   function render() {
