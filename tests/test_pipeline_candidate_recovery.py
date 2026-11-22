@@ -44,7 +44,7 @@ async def test_topic_rules_get_schema_feedback_and_one_commit(environment, fault
             assert len(messages) == 4
             assert json.loads(messages[-2]['content']) == bad
             feedback = json.loads(messages[-1]['content'])
-            assert feedback['protocol'] == 'topic-regeneration.v2-dev.1'
+            assert feedback['protocol'] == 'topic-regeneration.v2'
             assert feedback['errors'][0]['type'] == code
             if fault == 'title':
                 assert feedback['errors'][0]['constraints']['x-readable-maxLength'] == 60

@@ -64,7 +64,7 @@ async def test_topic_declared_rules_recover_against_same_inputs(environment, fau
             assert topics[0]['node_id'] == previous['node_id']
             assert topics[0]['content_version'] == previous['content_version']
         feedback = json.loads(messages[-1]['content'])
-        assert feedback['protocol'] == 'topic-regeneration.v2-dev.1'
+        assert feedback['protocol'] == 'topic-regeneration.v2'
         error = feedback['errors'][0]
         assert error['type'] == code and error['path'] == path
         initial_rules, initial_schema_text = messages[0]['content'].split('\nJSON schema:\n')

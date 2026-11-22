@@ -9,7 +9,7 @@ from .extraction_schema import SCHEMA_VERSION
 from .profile_memory_prompt import GROUP_PROFILE_MAX_TAGS, GROUP_PROFILE_MAX_DESCRIPTION_CHARS
 from .candidate_feedback import FIELD_RULES as _FIELD_RULES, field_feedback
 
-VERSION = "candidate-regeneration.v2-dev.1"
+VERSION = "candidate-regeneration.v2"
 _FIELDS = frozenset({
     "schema_version", "result", "reason", "node_changes", "local_ref", "node_type", "operation",
     "node_id", "base_node_ids", "expected_version", "content", "title", "importance", "source_ids", "event_time", "start", "end", "text",

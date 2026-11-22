@@ -18,7 +18,8 @@ async def test_upgrade_from_release_preserves_spaces_and_persists_policies(tmp_p
     await db.close()
     memory = MemoryStore(path)
     await memory.open()
-    assert memory.schema_version == MEMORY_FORMAT
+    assert memory.schema_version == MEMORY_FORMAT == 2
+    assert (await memory.database.fetchone("PRAGMA user_version"))[0] == 2
     assert (await memory.get_space_policy('s1'))['model_mode'] == 'inherit'
     await memory.set_space_policy('s1', {'model_mode': 'fixed', 'provider_id': 'test-chat'})
     await memory.close()

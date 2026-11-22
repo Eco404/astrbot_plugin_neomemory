@@ -37,8 +37,8 @@ async def test_restored_topic_descriptor_sends_original_protocol_and_errors(envi
     checkpoint = saved['checkpoint']
     window = checkpoint['topic_window']
     errors = window['errors']
-    assert window['regeneration']['version'] == 'topic-regeneration.v2-dev.1'
-    expected = recovery_messages(e.adapter.calls[0], raw, errors, 'topic-regeneration.v2-dev.1')
+    assert window['regeneration']['version'] == 'topic-regeneration.v2'
+    expected = recovery_messages(e.adapter.calls[0], raw, errors, 'topic-regeneration.v2')
     e.adapter.on_generate = None
     e.adapter.output = valid
     restart(e)

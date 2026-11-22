@@ -6,7 +6,7 @@ from core.prompts import (
 
 
 def test_prompt_declares_the_same_basis_contract_as_the_validator():
-    assert resolve_extraction_prompt_version() == PROMPT_VERSION == "extraction-prompt.v2-dev.1"
+    assert resolve_extraction_prompt_version() == PROMPT_VERSION == "extraction-prompt.v2"
     assert schema_for_prompt_version(PROMPT_VERSION) == SCHEMA_VERSION == "extraction.v1"
     schema = extraction_json_schema()
     assert "base_node_ids" in schema["$defs"]["NodeChange"]["required"]

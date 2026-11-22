@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from .extraction_errors import DuplicateJSONKey, ExtractionCapacityError
 from .relationship_state import SLOT_OPERATIONS
 
-TOPIC_RECOVERY_VERSION = "topic-regeneration.v2-dev.1"
+TOPIC_RECOVERY_VERSION = "topic-regeneration.v2"
 SHORT_TERM_RECOVERY_VERSION = "short-term-regeneration.v1"
 
 # Schema field rules share error classification and feedback. Limits themselves

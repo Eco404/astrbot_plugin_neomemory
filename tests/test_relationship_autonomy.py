@@ -21,7 +21,7 @@ def test_current_contract_keeps_subjective_autonomy_with_independent_slots():
         'format': 'relationship.slots.v1', 'long_term': {'body': '我不相信这只是巧合。', 'observed_at': 100.},
         'aftereffect': {'body': '', 'observed_at': None}}}}
     current = build_extraction_prompt(**inputs)
-    assert PROMPT_VERSION == 'extraction-prompt.v2-dev.1'
+    assert PROMPT_VERSION == 'extraction-prompt.v2'
     assert schema_for_prompt_version(PROMPT_VERSION) == 'extraction.v1'
     relationship = json.loads(current[1]['content'])['known_relationship']
     assert 'state_text' not in relationship
@@ -56,7 +56,7 @@ async def test_relationship_continues_until_change_without_creating_objective_fa
     neutral = await capture(sources, '水壶已经洗干净了。', number=2)
     batch = await current.prepare(space_id=space['space_id'], source_ids=(neutral.source_id,), persona='独立人格')
     assert batch.relationship['state']['long_term']['body'] == old_text
-    assert batch.prompt_version == 'extraction-prompt.v2-dev.1'
+    assert batch.prompt_version == 'extraction-prompt.v2'
     unchanged = output()
     unchanged.update(schema_version='extraction.v1', coverage_changes=[])
     await current.apply(batch, json.dumps(unchanged), model_id='fixture')

@@ -12,7 +12,7 @@ from .relationship_state import relationship_slots
 from .extraction_observations import TEMPORAL_SEMANTICS, source_observation_fields
 from .extraction_schema import MAX_OUTPUT_CHARS, SCHEMA_VERSION, extraction_json_schema
 
-PROMPT_VERSION = "extraction-prompt.v2-dev.1"
+PROMPT_VERSION = "extraction-prompt.v2"
 
 FORWARDED_SOURCE_RULE = (
     "【转发消息】有 forwarded_messages 的来源中，外层 actor 只负责转发及 content_text 里的附言。"
