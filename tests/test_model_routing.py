@@ -123,3 +123,20 @@ async def test_topic_stage_uses_the_confirmed_model_of_its_members(environment):
     result = await execute(env, await enqueue_and_claim(env, "topic_rebuild"))
     assert result["state"] == "succeeded", result
     assert calls == [("stage-chat", "stage-override")]
+
+
+@pytest.mark.asyncio
+async def test_existing_multi_stream_replay_resumes_its_original_cursor(environment):
+    env = environment
+    await source(env, "alternate", 3)
+    await source(env, "alternate", 4)
+    job = await enqueue_and_claim(env, "rebuild")
+    job["payload"].pop("model_policy")
+
+    async def original_order_only(*args, **kwargs):
+        pytest.fail("existing replay has no per-stream offsets")
+
+    env.engine.replay_plan = original_order_only
+    result = await execute(env, job)
+    assert result["state"] == "succeeded", result
+    assert result["result"]["source_count"] == 4

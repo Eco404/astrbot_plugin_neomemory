@@ -877,7 +877,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                     window = checkpoint["window"]
                     source_ids, cursor = window["source_ids"], window["source_cursor"]
                 else:
-                    if len(payload["highwater"]) > 1:
+                    # Jobs created before stream offsets used one frozen insertion cursor.
+                    if "model_policy" in payload and len(payload["highwater"]) > 1:
                         plan = await self.replay_plan(space, payload, checkpoint.get("stream_offsets", {}))
                         if plan is None:
                             checkpoint["pending"] = payload["total"] - checkpoint["done"]
