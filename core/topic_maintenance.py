@@ -27,6 +27,9 @@ from .topic_evidence import collect_topic_evidence
 from .topic_budget import fit_topic_evidence, message_bytes
 
 
+TOPIC_CONTEXT_ERRORS = {"topic context changed", "topic membership changed", "topic member structure changed", "topic generation is unavailable"}
+
+
 class TopicMaintenanceMixin:
     topic_prompt_version = PROMPT_VERSION
 
@@ -56,9 +59,13 @@ class TopicMaintenanceMixin:
         # Failed automatic jobs retain their identity instead of repeatedly spending
         # a fresh retry budget. The maintenance page can retry or reprepare them.
         previous = await self.memory.database.fetchone(
-            "SELECT job_id FROM memory_jobs WHERE idempotency_key=?", (key,))
+            "SELECT job_id,state FROM memory_jobs WHERE idempotency_key=? OR idempotency_key GLOB ? "
+            "ORDER BY created_at DESC,rowid DESC LIMIT 1", (key, key + ":*"))
         if previous:
-            return False
+            if previous["state"] != "succeeded":
+                return False
+            # The same body versions can need review again after an explicit unlock.
+            key += ":" + previous["job_id"]
         await self.jobs.submit("topic_consolidate", space["space_id"], {
             "space_id": space["space_id"], "expected_generation_id": generation["generation_id"],
             "before": time.time(), "request": {"automatic": True}}, key,
@@ -71,11 +78,12 @@ class TopicMaintenanceMixin:
         embeddings = self.runtime.recall.embeddings if self.runtime.recall is not None else None
         if embeddings is None:
             page = await self.memory.extraction_context_page(space["space_id"], generation_id,
-                                                              limit=limit, recent=True)
+                                                              limit=limit, recent=True, prefer_writable=True)
             return list(dict.fromkeys(ids + [node["node_id"] for node in page["nodes"]]))[:limit]
         seed_ids = set(ids)
         queries, _ = await node_vectors(embeddings, seeds, space["space_id"], deadline=deadline)
-        best, covered, after = [], {}, ""
+        writable, readonly = ([], {}), ([], {})
+        after = ""
         fingerprint = embeddings.fingerprint
         while True:
             page = await self.memory.extraction_context_page(space["space_id"], generation_id,
@@ -83,16 +91,20 @@ class TopicMaintenanceMixin:
             neighbors = [node for node in page["nodes"] if node["node_id"] not in seed_ids]
             if neighbors:
                 vectors, _ = await node_vectors(embeddings, neighbors, space["space_id"], deadline=deadline)
-                await asyncio.to_thread(_rank_page_with_query_coverage, best, covered,
-                                        neighbors, vectors, queries, limit)
+                for protected, (best, covered) in ((False, writable), (True, readonly)):
+                    indices = [i for i, node in enumerate(neighbors) if bool(node["manual_protected"]) == protected]
+                    if indices:
+                        await asyncio.to_thread(_rank_page_with_query_coverage, best, covered,
+                            [neighbors[i] for i in indices], [vectors[i] for i in indices], queries, limit)
             if embeddings.fingerprint != fingerprint:
                 raise ReviewRequired("configuration_changed")
             if not page["has_more"]:
                 break
             after = page["after"]
-        for _, node_id in sorted(covered.values(), reverse=True) + best:
-            if node_id not in ids and len(ids) < limit:
-                ids.append(node_id)
+        for best, covered in (writable, readonly):
+            for _, node_id in sorted(covered.values(), reverse=True) + best:
+                if node_id not in ids and len(ids) < limit:
+                    ids.append(node_id)
         return ids
 
     async def _topic_index(self, job, checkpoint, receipt):
@@ -123,7 +135,9 @@ class TopicMaintenanceMixin:
             base = message_bytes(build_messages(persona, nodes, edges, **options))
             diagnostics = {"base_prompt_bytes": base}
             fitted = None
-            if base <= usable:
+            if not store.can_propose_changes(prepared):
+                fitted = []
+            elif base <= usable:
                 evidence = await collect_topic_evidence(evidence_memory or self.memory, self.sources, nodes, seed_ids)
                 fitted, diagnostics = await asyncio.to_thread(
                     fit_topic_evidence, persona, nodes, edges, evidence, usable, **options)
@@ -166,12 +180,17 @@ class TopicMaintenanceMixin:
         receipt = await store.receipt(window["receipt_key"])
         if receipt is not None:
             return receipt
-        if len(window["prepared"]["nodes"]) < 2:
-            return await store.apply(job, window["prepared"], {"schema_version": VERSION, "changes": []},
-                                     receipt_key=window["receipt_key"])
         persona, signature = await self._execution(space)
         if signature != window["signature"]:
             raise ReviewRequired("configuration_changed")
+        if not store.can_propose_changes(window["prepared"]):
+            try:
+                return await store.apply(job, window["prepared"], {"schema_version": VERSION, "changes": []},
+                                         receipt_key=window["receipt_key"])
+            except ValueError as exc:
+                if str(exc) in TOPIC_CONTEXT_ERRORS:
+                    raise ReviewRequired("context_changed") from None
+                raise
         messages = build_messages(persona, window["prepared"]["nodes"], window["prepared"]["edges"],
                                   evidence=window["prepared"].get("evidence", ()),
                                   related_topics=window["prepared"].get("related_topics", ()),
@@ -253,9 +272,9 @@ class TopicMaintenanceMixin:
                         window_user_ids=prepared["allowed_user_ids"])
                     return await store.apply(job, window["prepared"], output, receipt_key=window["receipt_key"])
                 except PermissionError:
-                    raise ReviewRequired("protected_candidate") from None
+                    raise ReviewRequired("task_write_not_permitted") from None
                 except ValueError as exc:
-                    if str(exc) in {"topic context changed", "topic membership changed", "topic member structure changed", "topic generation is unavailable"}:
+                    if str(exc) in TOPIC_CONTEXT_ERRORS:
                         raise ReviewRequired("context_changed") from None
                     errors = validation_errors(exc, window["raw"], output_schema(schema_version), EXPLANATIONS,
                         context=json.loads(messages[1]["content"]), pipeline="topic")

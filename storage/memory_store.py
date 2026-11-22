@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .topic_dependencies import invalidate_unlocked_reviews
+
 import inspect
 import json
 import math
@@ -797,10 +799,13 @@ class MemoryStore(RecallStoreMixin, ProvenanceStoreMixin, ExtractionContextStore
                 raise ValueError("reason exceeds 2000 characters")
         async with self.database.transaction() as connection:
             cursor = await connection.execute(
-                "SELECT node_id FROM memory_nodes WHERE node_id = ?", (node_id,)
+                "SELECT manual_protected FROM memory_nodes WHERE node_id = ?", (node_id,)
             )
-            if await cursor.fetchone() is None:
+            current = await cursor.fetchone()
+            if current is None:
                 raise KeyError(f"unknown memory node: {node_id}")
+            if current["manual_protected"] and not protected:
+                await invalidate_unlocked_reviews(connection, node_id)
             await connection.execute(
                 """
                 UPDATE memory_nodes

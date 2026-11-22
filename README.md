@@ -33,7 +33,7 @@ NeoMemory 为 AstrBot 的人格提供长期记忆。它先保存聊天原文，�
 
 ## 数据与验证
 
-插件通过 AstrBot 的 `StarTools.get_data_dir("astrbot_plugin_neomemory")` 定位数据。待写队列、原始会话、派生记忆与向量缓存分别保存在 `ingress.db`、`source.db`、`memory.db` 和 `cache.db`。本开发版沿用 1.0.0 的四库 v1 结构。抽取协议和各实体的正文修订各自独立计数。
+插件通过 AstrBot 的 `StarTools.get_data_dir("astrbot_plugin_neomemory")` 定位数据。待写队列、原始会话、派生记忆与向量缓存分别保存在 `ingress.db`、`source.db`、`memory.db` 和 `cache.db`。本开发版沿用 1.0.0 的四库 v1 结构。抽取输出沿用 v1，长期和主题候选的纠正反馈使用 v2-dev.1。各实体的正文修订独立计数。
 
 抽取质量受模型影响。主题可能继承事件中的主体错误，画像可能遗漏限定，召回也可能遗漏相关记忆。维护页支持按空间复查原文、模拟召回和人工修订。维护指南、存储结构、模型协议与开发路线见[文档索引](docs/README.md)。
 

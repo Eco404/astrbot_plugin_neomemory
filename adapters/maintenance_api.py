@@ -10,11 +10,13 @@ from typing import Any
 from astrbot.api.web import error_response, json_response, request
 
 try:
+    from ..storage.topic_store import TopicStore
     from ..storage.console_store import ConsoleStore
     from ..storage.version_retention import mark_missing_version_references
     from ..storage.governance_store import validate_operation
     from ..storage.job_store import JobConflict, inspection_checkpoint
 except ImportError:
+    from storage.topic_store import TopicStore
     from storage.console_store import ConsoleStore
     from storage.version_retention import mark_missing_version_references
     from storage.governance_store import validate_operation
@@ -98,6 +100,7 @@ class MaintenanceAPI:
             ("recall/test", "POST", self.test_recall),
             ("recall/history", "GET", self.recall_history),
             ("recall/recording", "POST", self.recall_recording),
+            ("topics/rebuild-preview", "GET", self.topic_rebuild_preview),
             ("availability", "GET", self.availability), ("tasks", "POST", self.submit),
             ("tasks/retry", "POST", self.retry), ("tasks/cancel", "POST", self.cancel),
             ("tasks/delete", "POST", self.delete),
@@ -180,6 +183,12 @@ class MaintenanceAPI:
         space = await self._space(request.query.get("space_id"))
         count = await self.plugin.maintenance.pending_source_count(space)
         return json_response({"pending_count": count})
+
+    @_guard
+    async def topic_rebuild_preview(self):
+        space = await self._space(request.query.get("space_id"))
+        preview = await TopicStore(self.plugin.memory_store).rebuild_preview(space["space_id"])
+        return json_response(preview)
 
     @_guard
     async def availability(self):

@@ -161,7 +161,7 @@ async def test_protected_or_stale_topic_cannot_be_automatically_revised(env, sta
                                       ('{"summary_stale":true}', topic["node_id"]))
     batch = await prepared(env)
     job = await begin(env)
-    with pytest.raises(PermissionError):
+    with pytest.raises(ValueError, match="topic is read-only"):
         await store.apply(job, batch, output(nodes, topic, content="不应写入"))
     assert (await memory.get_node(topic["node_id"]))["content_version"] == 1
 
@@ -227,7 +227,7 @@ async def test_protected_member_cannot_gain_or_lose_a_relation(env):
     memory, store, _, _, nodes = env
     await memory.database.execute("UPDATE memory_nodes SET manual_protected=1 WHERE node_id=?", (nodes[0]["node_id"],))
     job = await begin(env)
-    with pytest.raises(PermissionError, match="protected member"):
+    with pytest.raises(ValueError, match="protected member"):
         await store.apply(job, await prepared(env), output(nodes))
 
 
@@ -277,3 +277,16 @@ async def test_manual_rereview_still_respects_frozen_node_cutoff(env):
                                        before=start, review_before=start)
     assert {node["node_id"] for node in selected} == {node["node_id"] for node in nodes[1:]}
     assert await store.count_dirty(space["space_id"], nodes[0]["generation_id"], before=start, review_before=start) == 2
+
+
+@pytest.mark.parametrize("unlock_topic", [False, True])
+async def test_unlock_invalidates_only_relevant_reviews(env, unlock_topic):
+    memory, store, _, space, nodes = env
+    topic = await initial_topic(env)
+    target = topic if unlock_topic else nodes[0]
+    await memory.set_manual_protection(target["node_id"], True)
+    await memory.set_manual_protection(target["node_id"], False)
+    pending = await store.dirty_nodes(space["space_id"], target["generation_id"])
+    expected = nodes if unlock_topic else nodes[:1]
+    assert {n["node_id"] for n in pending} == {n["node_id"] for n in expected}
+    assert (await memory.get_node(target["node_id"]))["content_version"] == target["content_version"]

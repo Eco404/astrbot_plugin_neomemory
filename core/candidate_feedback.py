@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from .extraction_errors import DuplicateJSONKey, ExtractionCapacityError
 from .relationship_state import SLOT_OPERATIONS
 
-TOPIC_RECOVERY_VERSION = "topic-regeneration.v1"
+TOPIC_RECOVERY_VERSION = "topic-regeneration.v2-dev.1"
 SHORT_TERM_RECOVERY_VERSION = "short-term-regeneration.v1"
 
 # Schema field rules share error classification and feedback. Limits themselves
@@ -404,7 +404,24 @@ def enrich_feedback(errors, decoded, schema, *, context=None, pipeline=None):
 
 def _fixed_context_feedback(error, item, decoded, known, sources, context):
     code, path = error['type'], error['path']
-    if code == 'topic_update_identity':
+    if code == 'readonly_node':
+        error['actual_value'] = _value_at(decoded, _location(path))
+        error['writable_nodes'] = [key for key, node in known.items()
+                                   if node.get('status') == 'active' and not node.get('manual_protected')]
+    elif code == 'topic_locked_membership':
+        error['actual_value'] = item['topic_id']
+        error['unavailable_members'] = [edge['target_node_id'] for edge in context.get('edges', [])
+            if edge['source_node_id'] == item['topic_id'] and edge['relation_type'] == 'contains'
+            and (known[edge['target_node_id']]['status'] not in {'active', 'historical'}
+                 or known[edge['target_node_id']].get('summary_stale'))]
+    elif code == 'topic_protected_membership':
+        previous = {edge['target_node_id'] for edge in context.get('edges', [])
+                    if edge['source_node_id'] == item.get('topic_id') and edge['relation_type'] == 'contains'}
+        protected = {key for key, node in known.items() if node.get('manual_protected')}
+        chosen = set(item.get('member_ids', []))
+        error['remove_from_proposal'] = sorted((chosen - previous) & protected)
+        error['restore_in_proposal'] = sorted((previous - chosen) & protected)
+    elif code == 'topic_update_identity':
         available = {node_id: node for node_id, node in known.items()
             if node['node_type'] == 'topic' and node.get('status') == 'active'
             and not any(node.get(flag) for flag in ('manual_protected', 'read_only', 'summary_stale'))}

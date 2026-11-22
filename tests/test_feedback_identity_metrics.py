@@ -61,6 +61,6 @@ async def test_member_feedback_does_not_offer_a_protected_new_member(environment
                                context=json.loads(prompt[1]["content"]), pipeline="topic")
     assert set(errors[0]["constraints"]["enum"]) == {node["node_id"] for node in nodes[:2]}
     output["changes"][0]["member_ids"][1] = nodes[2]["node_id"]
-    with pytest.raises(PermissionError, match="protected member"):
+    with pytest.raises(CandidateValidationError, match="protected member"):
         await store.apply(job, prepared, output)
     assert not await env.memory.database.fetchall("SELECT * FROM topic_receipts")

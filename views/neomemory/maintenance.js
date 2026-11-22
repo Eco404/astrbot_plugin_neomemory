@@ -211,7 +211,7 @@ export function initMaintenance(ui) {
     $('task-diagnostics').textContent = summary.join(' · ');
     $('task-sources').replaceChildren();
     for (const sourceId of result.source_ids || []) taskAction($('task-sources'), '读取原文 ' + sourceId, () => readTaskSource(result, sourceId));
-    $('restart-hint').textContent = result.kind === 'note' && result.state === 'failed' ? '笔记冲突需要返回笔记页，重新读取并编辑。断点重试保留原始版本条件，不会覆盖更新后的正文。' : result.regenerate_window_available ? '“重新生成当前窗口”会保留已完成进度和原候选，仅重新调用当前窗口的模型。输入或配置已变化时需要重新准备整个任务。' : result.restart_required ? '该任务需要按当前配置重新准备。请使用“重新准备后重试”。' : result.kind === 'short_term' && result.state === 'cancelled' ? '该短期摘要窗口已停止；使用“从断点重试”或“重新准备后重试”恢复处理。' : '';
+    $('restart-hint').textContent = result.kind === 'note' && result.state === 'failed' ? '笔记冲突需要返回笔记页，重新读取并编辑。断点重试保留原始版本条件，不会覆盖更新后的正文。' : result.restart_required ? '该任务需要按当前配置重新准备。请使用“重新准备后重试”。' : result.regenerate_window_available ? '“重新生成当前窗口”会保留已完成进度和原候选，仅重新调用当前窗口的模型。输入或配置已变化时需要重新准备整个任务。' : result.kind === 'short_term' && result.state === 'cancelled' ? '该短期摘要窗口已停止；使用“从断点重试”或“重新准备后重试”恢复处理。' : '';
     buttons();
   }
   function clearTaskSource() { state.rawRequest += 1; $('task-source-content').textContent = ''; $('task-source-panel').hidden = true; }
@@ -644,7 +644,15 @@ export function initMaintenance(ui) {
     $('section-rebuild-scope').textContent = '记忆空间 · ' + $('space').selectedOptions[0].textContent;
     const names = inputs.map(input => input.parentElement.textContent.trim()).join('、');
     const description = ['所选板块：' + names + '。'];
-    if (sections.includes('topics')) description.push('主题从当前有效事件与原子重新归纳，包含对人工保护主题的替换。');
+    if (sections.includes('topics')) {
+      let preview;
+      try { preview = await bridge.apiGet('topics/rebuild-preview', { space_id: spaceId() }); }
+      catch { if (ui.current(epoch)) notify('读取主题重构范围失败，请重试。', true); return; }
+      if (!ui.current(epoch) || dialog.open) return;
+      const { eligible_members, protected_members, old_topics } = preview;
+      description.push(`当前可用成员 ${eligible_members} 个，受保护成员 ${protected_members} 个，将替换现有主题 ${old_topics} 个（含人工保护的主题）。`);
+      if (eligible_members < 2 && old_topics > 0) description.push(`可用成员不足两个，本次将清空现有的 ${old_topics} 个主题。`);
+    }
     if (sections.some(section => section !== 'topics')) description.push('画像或人格关系按原始会话顺序回放。');
     description.push('各分支成功后替换对应旧内容和版本历史，从 v1 重新计数。没有形成新内容时，对应板块将为空。');
     $('section-rebuild-description').textContent = description.join('');

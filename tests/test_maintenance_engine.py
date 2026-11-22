@@ -281,10 +281,10 @@ async def test_protected_candidate_can_be_reviewed_and_explicitly_rejected(envir
     env.adapter.output = json.dumps(output([node(env.records[0].source_id, old=protected, content="不应自动覆盖")]))
     failed = await execute(env, await enqueue_and_claim(env))
     assert failed["state"] == "failed"
-    assert failed["error_code"] == "protected_candidate"
+    assert failed["error_code"] == "readonly_node"
     review = await env.engine.describe(failed["job_id"])
     assert review["available_at"] == failed["available_at"]
-    assert review["error_code"] == "protected_candidate"
+    assert review["error_code"] == "readonly_node"
     assert review["candidate"]["node_changes"][0]["content"] == "不应自动覆盖"
     assert review["source_ids"] == [r.source_id for r in env.records]
     rejection = await enqueue_and_claim(env, "reject", key="reject", failed_job_id=failed["job_id"])

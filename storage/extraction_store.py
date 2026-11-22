@@ -137,16 +137,17 @@ async def _node(
         or current["generation_id"] != batch.generation_id
     ):
         raise ValueError("node belongs to another space or generation")
+    if bool(current["manual_protected"]) != snapshot["manual_protected"]:
+        raise ValueError("node protection changed")
     if (
         current["content_version"] != snapshot["content_version"]
         or current["updated_at"] != snapshot["updated_at"]
         or current["status"] != snapshot["status"]
-        or bool(current["manual_protected"]) != snapshot["manual_protected"]
         or current["title"] != snapshot.get("title")
     ):
         raise ValueError("stale node snapshot; prepare extraction again")
     if writable and (current["manual_protected"] or current["status"] != "active"):
-        raise PermissionError("protected or inactive node requires manual review")
+        raise InvalidExtractionCandidate("readonly_node", path, "candidate writes a read-only node")
     return current
 
 

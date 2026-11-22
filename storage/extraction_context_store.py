@@ -7,7 +7,7 @@ from .recall_store import _NODE_SELECT
 
 class ExtractionContextStoreMixin:
     async def extraction_context_page(
-        self, space_id, generation_id, *, after="", limit=128, recent=False,
+        self, space_id, generation_id, *, after="", limit=128, recent=False, prefer_writable=False,
     ):
         """按稳定节点ID遍历当前构建代；近期读取只用于保留有限上下文。"""
         if type(limit) is not int or not 1 <= limit <= 256:
@@ -28,6 +28,8 @@ class ExtractionContextStoreMixin:
                 conditions += " AND n.node_id>?"
                 values.append(after)
             order = "n.updated_at DESC,n.node_id" if recent else "n.node_id"
+            if recent and prefer_writable:
+                order = "n.manual_protected," + order
             cursor = await connection.execute(
                 _NODE_SELECT + f" WHERE {conditions} ORDER BY {order} LIMIT ?",
                 (*values, limit + 1),

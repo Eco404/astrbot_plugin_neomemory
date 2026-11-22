@@ -27,6 +27,7 @@ window.testGetRelations = [];
 testJobs.push({job_id:'job-publish-topic',kind:'topic_rebuild',scope_key:'space-1',state:'running',step:'topic_publish'});
 testJobs.push({job_id:'job-rebuild-topic',kind:'rebuild',scope_key:'space-1',state:'succeeded',step:'topic_model:8/16',progress_done:20,progress_total:20});
 window.AstrBotPluginView.apiGet = async (endpoint,args={}) => {
+ if(endpoint==='topics/rebuild-preview')return {eligible_members:1,protected_members:3,old_topics:2};
  if(endpoint==='availability')return {available:!window.topicBusy,blocking_jobs:[],automatic:{state:'enabled',reason:null,blocking_jobs:[],topic_blocking_jobs:[{job_id:'failed-topic',kind:'topic_consolidate',error_code:'invalid_topic_output'}]}};
  if(endpoint==='memory/nodes' && args.space_id==='space-1' && args.node_type==='topic')
   return {items:[node('topic-1','topic')],generation_id:'gen-1',has_more:false};
@@ -135,6 +136,7 @@ async def main():
             dialog = page.get_by_role("dialog", name="确认重构所选板块？")
             label = await page.locator("#space option:checked").text_content()
             assert label in await dialog.inner_text() and "主题、用户画像、人格关系" in await dialog.inner_text()
+            assert "本次将清空现有的 2 个主题" in await dialog.inner_text()
             await dialog.get_by_role("button", name="取消").click()
             assert not await page.evaluate("testCalls.some(c=>c.body.kind==='section_rebuild')")
             await page.evaluate("window.topicBusy=true")

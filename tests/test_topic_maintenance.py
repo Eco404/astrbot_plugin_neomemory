@@ -20,7 +20,7 @@ async def test_topic_neighbors_cover_external_matches_across_pages(environment, 
     vectors = {"seed-a": [1, 0, 0], "seed-b": [0, 1, 0], "seed-b2": [0, 1, 0],
                "common": [.99, 0, .141], "shared": [0, .8, .6]}
     vectors.update({f"majority-{index}": [.96, 0, .28] for index in range(12)})
-    nodes = {key: {"node_id": key, "content_text": key, "content_version": 1} for key in vectors}
+    nodes = {key: {"node_id": key, "content_text": key, "content_version": 1, "manual_protected": False} for key in vectors}
     seeds = [nodes[key] for key in ("seed-a", "seed-b", "seed-b2")]
 
     async def page(_space, _generation, *, after, limit):
@@ -378,3 +378,55 @@ async def test_topic_correction_and_commit_restore_window_user(environment):
     node = await env.memory.get_node(result["result"]["topic_ids"][0])
     for text in [node["title"], node["content_text"], node["emotion"]["description"]]:
         assert "{{user:" + identity + "}}" in text
+
+
+@pytest.mark.asyncio
+async def test_single_eligible_seed_among_protected_neighbors_commits_empty_review(environment):
+    env = environment
+    first, *others = await seed(env, count=8)
+    for n in others:
+        await env.memory.set_manual_protection(n['node_id'], True)
+    job = await enqueue_and_claim(env, "topic_consolidate")
+    result = await execute(env, job)
+    assert result['state'] == 'succeeded', result['error_code']
+    assert result['result']['reviewed_count'] == 1 and not result['result']['topic_ids']
+    assert not env.adapter.calls
+    assert not await TopicStore(env.memory).count_dirty(first['space_id'], first['generation_id'])
+
+
+@pytest.mark.asyncio
+async def test_topic_corrects_protected_members_before_commit(environment):
+    env = environment
+    env.engine.config = replace(env.config, extraction_auto_regeneration=True)
+    nodes = await seed(env, count=3)
+    await env.memory.set_manual_protection(nodes[-1]['node_id'], True)
+    env.adapter.output = candidate(nodes)
+
+    async def correct(messages):
+        if len(env.adapter.calls) == 2:
+            issue, = json.loads(messages[-1]['content'])['errors']
+            assert issue['remove_from_proposal'] == [nodes[-1]['node_id']]
+            env.adapter.output = candidate(nodes[:2])
+
+    env.adapter.on_generate = correct
+    result = await execute(env, await enqueue_and_claim(env, 'topic_consolidate'))
+    assert result['state'] == 'succeeded', result['error_code']
+    assert len(env.adapter.calls) == 2 and len(result['result']['topic_ids']) == 1
+
+
+@pytest.mark.asyncio
+async def test_unlock_requeues_same_seed_after_automatic_success(environment):
+    env = environment
+    only, = await seed(env, count=1)
+    generation = await env.memory.get_active_generation(env.space["space_id"])
+    env.engine.config = replace(env.config, topic_min_changes=1)
+    for step in range(3):
+        if step:
+            await env.memory.set_manual_protection(only["node_id"], True)
+            await env.memory.set_manual_protection(only["node_id"], False)
+        assert await env.engine._maybe_enqueue_topics(env.space, generation)
+        assert not await env.engine._maybe_enqueue_topics(env.space, generation)
+        result = await execute(env, await env.engine.jobs.claim("topic-test", lease_seconds=60))
+        assert result["state"] == "succeeded" and result["result"]["reviewed_count"] == 1
+        assert not await env.engine._maybe_enqueue_topics(env.space, generation)
+    assert not env.adapter.calls

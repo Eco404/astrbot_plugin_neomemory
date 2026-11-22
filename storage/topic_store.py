@@ -47,6 +47,35 @@ class TopicStore:
         self.memory = memory
         self.database = memory.database
 
+    async def rebuild_preview(self, space_id):
+        row = await self.database.fetchone(
+            "SELECT COUNT(*) FILTER (WHERE eligible AND manual_protected=0) AS eligible_members, "
+            "COUNT(*) FILTER (WHERE eligible AND manual_protected=1) AS protected_members, "
+            "COUNT(*) FILTER (WHERE node_type='topic') AS old_topics FROM ("
+            "SELECT n.node_type,n.manual_protected, n.node_type<>'topic' AND n.status='active' "
+            "AND COALESCE(json_extract(n.metadata_json,'$.summary_stale'),0)=0 AS eligible "
+            "FROM memory_nodes n JOIN memory_generations g USING(generation_id) "
+            "WHERE n.space_id=? AND g.status='active')", (space_id,))
+        return dict(row)
+
+    @staticmethod
+    def can_propose_changes(prepared):
+        nodes = {n["node_id"]: n for n in prepared["nodes"]}
+        writable = [n for n in nodes.values() if n["status"] == "active"
+                    and not n["manual_protected"] and not n["metadata"].get("summary_stale")]
+        if sum(n["node_type"] != "topic" for n in writable) >= TOPIC_CREATE_MIN_MEMBERS:
+            return True
+        for topic in writable:
+            if topic["node_type"] == "topic":
+                members = [nodes[e["target_node_id"]] for e in prepared["edges"]
+                           if e["source_node_id"] == topic["node_id"] and e["relation_type"] == "contains"]
+                if (members or any(n["node_type"] != "topic" for n in writable)) and all(
+                    n["status"] in {"active", "historical"} and not n["metadata"].get("summary_stale")
+                    for n in members
+                ):
+                    return True
+        return False
+
     async def count_dirty(self, space_id, generation_id, *, before=None, review_before=None):
         row = await self.database.fetchone(
             "SELECT COUNT(*) AS count FROM memory_nodes n LEFT JOIN topic_reviews r ON r.node_id=n.node_id "
@@ -247,7 +276,7 @@ class TopicStore:
                         raise CandidateValidationError("topic_duplicate_update", ("changes", change_index), "topic updated twice")
                     handled.add(old["node_id"])
                     if old["manual_protected"] or old["status"] != "active" or old["metadata"].get("summary_stale"):
-                        raise PermissionError("protected or stale topic requires manual revision")
+                        raise CandidateValidationError("topic_update_identity", ("changes", change_index), "topic is read-only")
                 elif change["operation"] != "create" or change["topic_id"] is not None or change["expected_version"] is not None:
                     raise CandidateValidationError("topic_create_identity", ("changes", change_index), "invalid topic creation")
                 members = change["member_ids"]
@@ -258,7 +287,8 @@ class TopicStore:
                 if any(known[member_id]["status"] not in {"active", "historical"}
                        or known[member_id]["metadata"].get("summary_stale")
                        for member_id in previous_members):
-                    raise PermissionError("unavailable existing topic member requires manual revision")
+                    raise CandidateValidationError("topic_locked_membership", ("changes", change_index, "topic_id"),
+                        "unavailable existing topic member requires manual revision")
                 for member_index, member_id in enumerate(members):
                     member = known.get(member_id)
                     if (member is None or member["node_type"] == "topic"
@@ -269,7 +299,8 @@ class TopicStore:
                             f"changes[{change_index}].member_ids[{member_index}]: topic member must be an available input event/atomic ID")
                 if any(known[member_id]["manual_protected"]
                        for member_id in previous_members.symmetric_difference(members)):
-                    raise PermissionError("protected member relation requires manual revision")
+                    raise CandidateValidationError("topic_protected_membership", ("changes", change_index, "member_ids"),
+                        "protected member relation requires manual revision")
                 node_id, content_changed = await self._write_topic(
                     connection, generation, known, old, change, receipt_key, now)
                 topics.append(node_id)

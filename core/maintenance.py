@@ -772,7 +772,7 @@ class MaintenanceEngine(TopicMaintenanceMixin):
             await self._discard_images(job, space, source_ids)
             return receipt
         except PermissionError:
-            raise ReviewRequired("protected_candidate") from None
+            raise ReviewRequired("task_write_not_permitted") from None
         except ExtractionCapacityError as exc:
             window["validation_errors"] = [{"path": "$", "type": "output_capacity_exceeded",
                 "stage": "canonical", "actual_chars": exc.actual_chars, "limit_chars": exc.limit_chars}]
@@ -786,7 +786,9 @@ class MaintenanceEngine(TopicMaintenanceMixin):
             window["validation_errors"] = [{"path": exc.path, "type": exc.code}]
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
             raise ReviewRequired(exc.code) from None
-        except ValueError:
+        except ValueError as exc:
+            if str(exc) == "node protection changed":
+                raise ReviewRequired("context_changed") from None
             raise ReviewRequired("context_or_evidence_invalid") from None
 
     async def _discard_images(self, job, space, source_ids):

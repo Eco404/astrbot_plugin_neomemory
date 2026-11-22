@@ -95,10 +95,11 @@ async def make_node(api, **kwargs):
 def test_registration_uses_host_api_only(api):
     registrations = []
     api.register(SimpleNamespace(register_web_api=lambda *args: registrations.append(args)))
-    assert len(registrations) == 16
+    assert len(registrations) == 17
     assert not any(path.endswith(("/companion/preview", "/companion/backfill")) for path, *_ in registrations)
     assert {(row[0], tuple(row[2])) for row in registrations} >= {
         ("/astrbot_plugin_neomemory/tasks", ("GET",)),
+        ("/astrbot_plugin_neomemory/topics/rebuild-preview", ("GET",)),
         ("/astrbot_plugin_neomemory/extraction/backlog", ("GET",)),
         ("/astrbot_plugin_neomemory/recall/test", ("POST",)),
         ("/astrbot_plugin_neomemory/recall/history", ("GET",)),
@@ -567,3 +568,16 @@ async def test_recall_console_previews_and_scopes_optional_recording(api):
     await api.recall_recording()
     await history.append(ticket, space, {"query": "from old session"})
     assert payload(await api.recall_history()) == {"enabled": True, "records": []}
+
+
+@pytest.mark.asyncio
+async def test_topic_rebuild_preview_counts_current_space(api):
+    space = api.test_space['space_id']
+    await make_node(api)
+    await make_node(api, manual_protected=True)
+    await make_node(api, status='historical')
+    await api.plugin.memory_store.create_node(space_id=space, node_type='topic',
+        content_text='独立合成主题', source_ids=['source'], manual_protected=True)
+    api.test_query['space_id'] = space
+    assert payload(await api.topic_rebuild_preview()) == {
+        'eligible_members': 1, 'protected_members': 1, 'old_topics': 1}

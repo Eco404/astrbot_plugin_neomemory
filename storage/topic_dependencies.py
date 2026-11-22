@@ -24,3 +24,11 @@ async def write_member_dependencies(connection, topic_id, member_versions, *, no
             "INSERT OR IGNORE INTO node_participants(node_id,participant_kind,participant_id,display_name) "
             "SELECT ?,participant_kind,participant_id,display_name FROM node_participants WHERE node_id=?",
             (topic_id, member_id))
+
+
+async def invalidate_unlocked_reviews(connection, node_id):
+    """重新审阅解除保护的节点，以及解除保护主题的现有成员。"""
+    await connection.execute(
+        "DELETE FROM topic_reviews WHERE node_id=? OR node_id IN ("
+        "SELECT e.target_node_id FROM memory_edges e JOIN memory_nodes n ON n.node_id=e.source_node_id "
+        "WHERE n.node_id=? AND n.node_type='topic' AND e.relation_type='contains')", (node_id, node_id))

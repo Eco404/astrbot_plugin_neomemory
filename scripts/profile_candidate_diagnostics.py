@@ -23,7 +23,8 @@ MAX_RECORDS = 8
 # These maintenance errors follow a rejected apply operation. Transport errors,
 # generic timeouts, configuration changes and unfinished jobs do not prove this.
 COMMIT_REJECTION_REASONS = frozenset({
-    "context_or_evidence_invalid", "protected_candidate", "source_outside_window",
+    "context_or_evidence_invalid", "protected_candidate", "readonly_node", "task_write_not_permitted",
+    "source_outside_window",
     "evidence_user_mismatch", "node_outside_context", "node_type_mismatch",
     "expected_node_version_mismatch", "profile_user_mismatch", "group_profile_limit",
     "expected_profile_version_mismatch", "relationship_user_mismatch",

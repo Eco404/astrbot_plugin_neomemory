@@ -55,7 +55,7 @@ async def test_unavailable_existing_member_requires_revision_even_if_omitted(env
     else:
         await memory.update_node_status(nodes[0]["node_id"], state)
     candidate = output(nodes if retain else nodes[1:], topic)
-    with pytest.raises(PermissionError, match="existing topic member"):
+    with pytest.raises(ValueError, match="existing topic member"):
         await store.apply(await begin(env), await prepared(env), candidate)
     assert (await memory.get_node(topic["node_id"]))["content_version"] == topic["content_version"]
 
@@ -81,5 +81,5 @@ async def test_protected_historical_member_can_be_retained_but_not_removed(env, 
     if retain:
         assert (await store.apply(job, batch, candidate))["topic_ids"] == [topic["node_id"]]
     else:
-        with pytest.raises(PermissionError, match="protected member"):
+        with pytest.raises(ValueError, match="protected member"):
             await store.apply(job, batch, candidate)

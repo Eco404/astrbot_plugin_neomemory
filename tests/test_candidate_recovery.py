@@ -145,16 +145,16 @@ async def test_actual_conflicts_never_become_candidate_corrections(environment, 
     enable(env)
     old = await env.memory.create_node(space_id=env.space['space_id'], node_type='event',
         content_text='人工维护的独立经历。', source_ids=[env.records[0].source_id])
-    if conflict == 'protected':
-        await env.memory.database.execute('UPDATE memory_nodes SET manual_protected=1 WHERE node_id=?', (old['node_id'],))
-    else:
-        async def change_during_call(messages):
+    async def change_during_call(messages):
+        if conflict == 'protected':
+            await env.memory.set_manual_protection(old['node_id'], True)
+        else:
             await env.memory.update_node_content(old['node_id'], '外部更新后的内容。')
-        env.adapter.on_generate = change_during_call
+    env.adapter.on_generate = change_during_call
     env.adapter.output = json.dumps(output([node('s1', old=old)]))
     failed = await execute(env, await enqueue_and_claim(env))
     assert failed['state'] == 'failed'
-    assert failed['error_code'] in {'protected_candidate', 'context_or_evidence_invalid'}
+    assert failed['error_code'] == ('context_changed' if conflict == 'protected' else 'context_or_evidence_invalid')
     assert len(env.adapter.calls) == 1
     assert not await env.engine.jobs.list_candidates(failed['job_id'])
     assert not await env.memory.database.fetchall('SELECT * FROM extraction_batches')
@@ -363,3 +363,27 @@ def test_real_provider_probe_injects_only_its_designated_schema_fault(case, expe
         with pytest.raises(ValidationError) as failure:
             parse_extraction_output(raw, schema_version=SCHEMA_VERSION)
         assert [item['type'] for item in failure.value.errors()] == [expected]
+
+
+@pytest.mark.asyncio
+async def test_readonly_update_corrects_without_losing_unrelated_event(environment):
+    env = environment
+    enable(env)
+    old = await env.memory.create_node(space_id=env.space['space_id'], node_type='event',
+        content_text='已经确认的独立经历。', source_ids=[env.records[0].source_id], manual_protected=True)
+    good = node('s1', ref='local_new', content='新发生的独立事件。')
+    env.adapter.output = json.dumps(output([good, node('s1', old=old, ref='local_edit')]))
+
+    async def correct(messages):
+        if len(env.adapter.calls) == 2:
+            issue, = json.loads(messages[-1]['content'])['errors']
+            assert issue['type'] == 'readonly_node' and issue['path'] == '$.node_changes[1].node_id'
+            assert issue['actual_value'] not in issue['writable_nodes']
+            env.adapter.output = json.dumps(output([good]))
+
+    env.adapter.on_generate = correct
+    result = await execute(env, await enqueue_and_claim(env))
+    assert result['state'] == 'succeeded', result['error_code']
+    assert len(env.adapter.calls) == 2
+    assert (await env.memory.get_node(old['node_id']))['content_version'] == 1
+    assert len(await env.memory.database.fetchall('SELECT * FROM extraction_batches')) == 1

@@ -18,6 +18,8 @@ must appear in expected_versions. New split refs need no expected version.
 
 from __future__ import annotations
 
+from .topic_dependencies import invalidate_unlocked_reviews
+
 import hashlib
 import json
 import math
@@ -735,6 +737,8 @@ class GovernanceService:
     async def _state(self, connection, node, action, now, reason):
         node_id = node["node_id"]
         if action in {"protect", "unprotect"}:
+            if action == "unprotect" and node["manual_protected"]:
+                await invalidate_unlocked_reviews(connection, node_id)
             await connection.execute(
                 "UPDATE memory_nodes SET manual_protected=?,manual_protection_reason=?,updated_at=? WHERE node_id=?",
                 (

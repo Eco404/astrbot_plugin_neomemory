@@ -253,6 +253,7 @@ def test_topic_update_domain_and_version_are_fixed_and_protection_is_not_recover
 # Every named hard rule must be deliberately classified here. Numeric/cross-field
 # rules have structured metrics; format/runtime rules cannot invent a numeric fix.
 STRUCTURED = {
+    'readonly_node', 'topic_protected_membership', 'topic_locked_membership',
     'duplicate_values', 'unknown_event_time', 'event_time_interval', 'create_identity_invalid',
     'update_identity_required', 'node_content_too_long', 'neutral_emotion_conflict',
     'duplicate_edges', 'unknown_local_reference', 'edge_self_reference', 'source_sets_overlap',

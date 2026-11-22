@@ -9,7 +9,7 @@ from .extraction_schema import SCHEMA_VERSION
 from .profile_memory_prompt import GROUP_PROFILE_MAX_TAGS, GROUP_PROFILE_MAX_DESCRIPTION_CHARS
 from .candidate_feedback import FIELD_RULES as _FIELD_RULES, field_feedback
 
-VERSION = "candidate-regeneration.v1"
+VERSION = "candidate-regeneration.v2-dev.1"
 _FIELDS = frozenset({
     "schema_version", "result", "reason", "node_changes", "local_ref", "node_type", "operation",
     "node_id", "base_node_ids", "expected_version", "content", "title", "importance", "source_ids", "event_time", "start", "end", "text",
@@ -33,6 +33,7 @@ _EXPLANATIONS = {
     "profile_repeated_evidence_missing": "repeated_self_statement 至少需要本批两条本人直接自述；只有一条明确自述时使用 explicit_self_statement。",
     "interaction_confirmation_required": "accepted/completed 需要明确用户确认的直接来源子集；其他状态和纯主观感受的确认列表应为空。",
     "interaction_confirmation_invalid": "确认来源必须是直接来源中的当前逻辑用户发言；上下文、Agent 提议和其他用户发言不能替代确认。",
+    "readonly_node": "该字段引用的节点在固定窗口中只读。保留只读节点的正文、状态、关系和覆盖，只提交窗口内其他有依据的变化；没有变化时返回 no_change。",
     "node_outside_context": "只能更新或连接当前输入明确提供的已有节点，或本次候选实际声明的 local_* 节点。",
     "node_type_mismatch": "更新已有节点时 node_type 必须等于该节点在当前输入中的 node_type。",
     "expected_node_version_mismatch": "更新已有节点时 expected_version 必须等于当前输入中的 content_version，不能预先加一。",
@@ -118,7 +119,7 @@ def validation_feedback(archived, *, version=VERSION, schema_version=SCHEMA_VERS
 
     window = archived["window"]
     slots = window.get("image_slots", ())
-    if version != VERSION:
+    if version not in {"candidate-regeneration.v1", VERSION}:
         raise RegenerationContextError("regeneration_version_unsupported")
     if not collects_evidence(slots):
         return _extraction_feedback(archived, version, schema_version, context)
@@ -310,7 +311,7 @@ def build_messages(base_messages, window, archived, *, schema_version=None):
     """Append one rejected draft and one feedback message to the base request."""
     regeneration = window.get("regeneration", {})
     version = regeneration.get("version")
-    if version != VERSION:
+    if version not in {"candidate-regeneration.v1", VERSION}:
         raise RegenerationContextError("regeneration_version_unsupported")
     if archived is None or archived["candidate_id"] != regeneration.get("candidate_id"):
         raise RegenerationContextError("regeneration_candidate_unavailable")
@@ -335,7 +336,7 @@ _AUTOMATIC_ERRORS = frozenset({
     "invalid_image_evidence", "json_invalid", "duplicate_json_key", "literal_error", "string_pattern_mismatch",
     "missing", "extra_forbidden", "unknown_event_time", "event_time_interval",
     "create_identity_invalid", "update_identity_required", "unknown_local_reference",
-    "unknown_reference", "node_outside_context", "node_type_mismatch",
+    "readonly_node", "unknown_reference", "node_outside_context", "node_type_mismatch",
     "expected_node_version_mismatch", "expected_profile_version_mismatch",
     "expected_relationship_version_mismatch", "coverage_event_version_mismatch",
     "coverage_atomic_version_mismatch", "evidence_user_mismatch",
