@@ -23,6 +23,7 @@ try:
     from .adapters.external_memory import ExternalMemoryAdapter
     from .adapters.proactive_sync import ProactiveSync
     from .adapters.ingress_api import IngressAPI
+    from .adapters.chat_model_capture import requested_chat_route, observed_chat_route
     from .adapters.maintenance_api import MaintenanceAPI
     from .adapters.identity_api import IdentityAPI
     from .adapters.providers import ProviderAdapter
@@ -51,6 +52,7 @@ except ImportError:  # pragma: no cover - supports direct local loading in probe
     from adapters.external_memory import ExternalMemoryAdapter
     from adapters.proactive_sync import ProactiveSync
     from adapters.ingress_api import IngressAPI
+    from adapters.chat_model_capture import requested_chat_route, observed_chat_route
     from adapters.maintenance_api import MaintenanceAPI
     from adapters.identity_api import IdentityAPI
     from adapters.providers import ProviderAdapter
@@ -519,6 +521,9 @@ class NeoMemoryPlugin(Star):
             host_conversation_id=getattr(event, "_neomemory_conversation_id", None),
         )
         if source is not None:
+            route = observed_chat_route(event, resp)
+            if route:
+                source.metadata["chat_model"] = route
             event._neomemory_generated_text = source
             await self._persist_source(source)
 
@@ -527,6 +532,13 @@ class NeoMemoryPlugin(Star):
         """Attach bounded temporary recall without changing permanent history."""
         if self.ready and not self.terminating and self.runtime is not None:
             self.external_memory.connect()
+            if self.config.capture_agent_messages:
+                try:
+                    event._neomemory_chat_route = await requested_chat_route(self.context, event, req)
+                except Exception as exc:
+                    # Provider selection is optional metadata; the host continues its own request.
+                    event._neomemory_chat_route = {}
+                    logger.debug("NeoMemory chat route unavailable: %s", type(exc).__name__)
             if self.config.private_image_limit and self.config.capture_private_messages and event.get_message_type() == MessageType.FRIEND_MESSAGE:
                 components = getattr(getattr(event, "message_obj", None), "message", ()) or ()
                 event._neomemory_image_caption = unambiguous_caption(req, components)
