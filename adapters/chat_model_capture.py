@@ -19,7 +19,10 @@ async def requested_chat_route(context, event, request):
             return {}
         provider_id, basis = provider.meta().id, "session_config"
     route = {"provider_id": provider_id, "basis": basis}
-    model = getattr(request, "model", None) or (provider.get_model() if provider else None)
+    override = getattr(request, "model", None)
+    if isinstance(override, str) and override:
+        route["model_override"] = override
+    model = override or (provider.get_model() if provider else None)
     if isinstance(model, str) and model:
         route["requested_model"] = model
     return route

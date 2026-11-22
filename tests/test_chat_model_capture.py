@@ -15,6 +15,6 @@ async def test_request_route_remains_distinct_from_response_model(explicit):
     event = SimpleNamespace(get_extra=extra.get, unified_msg_origin="platform:FriendMessage:1")
     event._neomemory_chat_route = await requested_chat_route(context, event, SimpleNamespace(model="requested"))
     result = observed_chat_route(event, SimpleNamespace(raw_completion={"model": "reported"}))
-    assert result == {"provider_id": "chosen" if explicit else "chat", "requested_model": "requested",
+    assert result == {"provider_id": "chosen" if explicit else "chat", "requested_model": "requested", "model_override": "requested",
                       "basis": "request_provider" if explicit else "session_config", "reported_model": "reported"}
     assert observed_chat_route(SimpleNamespace(), SimpleNamespace(raw_completion={"model":"reported"})) == {"reported_model":"reported"}
