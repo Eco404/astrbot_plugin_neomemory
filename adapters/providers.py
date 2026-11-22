@@ -333,6 +333,7 @@ class ProviderAdapter:
         *,
         provider_id: str,
         timeout_seconds: float = 60,
+        model: str = "",
         require_no_context_truncation: bool = False,
         output_format: str = "text",
         output_schema: dict | None = None,
@@ -375,22 +376,23 @@ class ProviderAdapter:
                 capabilities = getattr(provider, "get_request_capabilities", None)
                 if not callable(capabilities) or "no_context_truncation.v1" not in capabilities():
                     raise InputPolicyUnsupportedError("no_context_truncation.v1 is unavailable")
+            model_options = {"model": model} if model else {}
             effective_format = output_format
             try:
                 if output_format != "text":
                     try:
                         owned = _structured_provider(provider, output_format, output_schema)
                         kwargs = {"allow_context_truncation": False} if require_no_context_truncation else {}
-                        response = await owned.text_chat(contexts=copy.deepcopy(contexts), **kwargs)
+                        response = await owned.text_chat(contexts=copy.deepcopy(contexts), **model_options, **kwargs)
                     except Exception as exc:
                         if output_format != "json_schema" or not _unsupported_schema_format(exc):
                             raise
                         effective_format = "text"
                 if effective_format == "text":
                     if require_no_context_truncation:
-                        response = await provider.text_chat(contexts=contexts, allow_context_truncation=False)
+                        response = await provider.text_chat(contexts=contexts, allow_context_truncation=False, **model_options)
                     else:
-                        response = await self.context.llm_generate(chat_provider_id=provider_id, contexts=contexts)
+                        response = await self.context.llm_generate(chat_provider_id=provider_id, contexts=contexts, **model_options)
                 if diagnostics is not None:
                     diagnostics.update(_response_diagnostics(response))
             except Exception as exc:

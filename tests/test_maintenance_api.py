@@ -95,7 +95,7 @@ async def make_node(api, **kwargs):
 def test_registration_uses_host_api_only(api):
     registrations = []
     api.register(SimpleNamespace(register_web_api=lambda *args: registrations.append(args)))
-    assert len(registrations) == 17
+    assert len(registrations) == 18
     assert not any(path.endswith(("/companion/preview", "/companion/backfill")) for path, *_ in registrations)
     assert {(row[0], tuple(row[2])) for row in registrations} >= {
         ("/astrbot_plugin_neomemory/tasks", ("GET",)),

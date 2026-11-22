@@ -245,3 +245,20 @@ class SourceScanner:
         for record, row in zip(records, rows, strict=True):
             record["scan_cursor"] = row["safe_cursor"]
         return SourcePage(records, rows[-1]["safe_cursor"], len(rows) == limit)
+
+    async def pending_stream(self, space, generation_id, stream_id, memory_path):
+        """Read one stream independently while other streams still have pending tails."""
+        query, args = self._scope_query(space)
+        sql = query + """
+            SELECT e.source_id,e.scan_cursor FROM eligible e WHERE e.stream_id=? AND e.replay_only=0
+            AND e.scan_cursor>COALESCE((SELECT scan_cursor FROM derived.derived_cursors WHERE generation_id=?),0)
+            AND NOT EXISTS (SELECT 1 FROM derived.extraction_batch_sources b
+                WHERE b.source_id=e.source_id AND b.generation_id=?) ORDER BY e.scan_cursor LIMIT 200"""
+        async with aiosqlite.connect(self.store.path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+            await connection.execute("ATTACH DATABASE ? AS derived", (memory_path.resolve().as_uri() + "?mode=ro",))
+            async with connection.execute(sql, (*args, stream_id, generation_id, generation_id)) as cursor:
+                refs = await cursor.fetchall()
+        records = await self.store.get_records(tuple(r[0] for r in refs)) if refs else []
+        # Committing a stream can leap over other streams. The per-source receipts
+        # advance this stream; the shared cursor must stay at its safe prefix.
+        return [dict(record, scan_cursor=0) for record in records]

@@ -52,6 +52,7 @@ from .extraction_window import WindowMessage, WindowPolicy, select_window
 from .forwarded_content import window_text
 from .parallel_rebuild import rebuild_sections
 from .context_rebuild import MODELS as CONTEXT_REBUILD_MODELS, extraction_envelope, scoped_messages
+from .model_routing import ModelRoutingMixin, ModelSelectionRequired, fixed_route, validate_selection
 from .jobs import JobRunner, RetryableJobError, ReviewRequired
 from .memory_spaces import RetiredIdentity
 from .persona_policy import is_supported_persona
@@ -68,7 +69,7 @@ def _schema_diagnostics(error: ValidationError):
         for item in error.errors(include_url=False, include_context=False, include_input=False)[:20]]
 
 
-class MaintenanceEngine(TopicMaintenanceMixin):
+class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
     """Model calls are outside transactions; every derived commit is lease fenced."""
 
     def __init__(self, sources, memory, runtime, config, persona_loader):
@@ -126,8 +127,6 @@ class MaintenanceEngine(TopicMaintenanceMixin):
             return {"state": "skipped", "reason": "unsupported_persona", "blocking_jobs": []}
         if not self.config.automatic_extraction_enabled:
             return {"state": "disabled", "reason": "automatic_extraction_disabled", "blocking_jobs": []}
-        if not self.config.llm_provider_id:
-            return {"state": "unconfigured", "reason": "llm_not_configured", "blocking_jobs": []}
         generation = await self.memory.get_active_generation(space_id)
         if generation is None:
             return {"state": "enabled", "reason": None, "blocking_jobs": []}
@@ -195,9 +194,8 @@ class MaintenanceEngine(TopicMaintenanceMixin):
                     continue
         if page.next_cursor != cursor:
             await self.pipeline.set_state("source_discovery_cursor", page.next_cursor)
-        if not self.config.automatic_extraction_enabled or not self.config.llm_provider_id:
+        if not self.config.automatic_extraction_enabled:
             return
-        self.runtime.adapter.llm_fingerprint(self.config.llm_provider_id, self.config.extraction_model_revision)
         rows = await self.memory.database.fetchall(
             "SELECT * FROM memory_spaces WHERE space_id>? ORDER BY space_id LIMIT 8", (self._space_after,))
         if not rows:
@@ -222,8 +220,7 @@ class MaintenanceEngine(TopicMaintenanceMixin):
                 generation = await self.memory.get_active_generation(space["space_id"])
                 if await self._maybe_enqueue_topics(space, generation):
                     continue
-                pending = await self._pending(space, generation["generation_id"])
-                decision = await self._decision(space, pending)
+                pending, decision = await self.live_plan(space, generation["generation_id"])
                 if decision.status == "waiting":
                     continue
                 key = "auto:" + digest([space["space_id"], generation["generation_id"],
@@ -303,13 +300,13 @@ class MaintenanceEngine(TopicMaintenanceMixin):
         return job
 
     async def enqueue(self, kind, space_id, idempotency_key, *, operation=None, reason="",
-                      failed_job_id=None, include_topics=False, automatic=False):
+                      failed_job_id=None, include_topics=False, automatic=False, model_selection=None):
         return await self.snapshot()._enqueue(kind, space_id, idempotency_key,
             operation=operation, reason=reason, failed_job_id=failed_job_id,
-            include_topics=include_topics, automatic=automatic)
+            include_topics=include_topics, automatic=automatic, model_selection=model_selection)
 
     async def _enqueue(self, kind, space_id, idempotency_key, *, operation=None, reason="",
-                       failed_job_id=None, include_topics=False, automatic=False):
+                       failed_job_id=None, include_topics=False, automatic=False, model_selection=None):
         if self.closing:
             raise ValueError("maintenance is stopping")
         if kind not in {"extract", "rebuild", "reindex", "governance", "reject", "topic_consolidate", "topic_rebuild", *CONTEXT_REBUILD_MODELS}:
@@ -323,6 +320,11 @@ class MaintenanceEngine(TopicMaintenanceMixin):
             if kind not in CONTEXT_REBUILD_MODELS:
                 raise ValueError("parallel topics require a context rebuild")
             request["include_topics"] = True
+        if model_selection:
+            validate_selection(model_selection)
+            if kind not in {"extract", "rebuild", "topic_consolidate", "topic_rebuild", *CONTEXT_REBUILD_MODELS}:
+                raise ValueError("this task does not use an extraction model")
+            request["model_selection"] = model_selection
         existing = await self._existing_request(idempotency_key, request)
         if existing:
             return existing
@@ -337,13 +339,23 @@ class MaintenanceEngine(TopicMaintenanceMixin):
         if include_topics:
             payload["include_topics"] = True
         if kind == "extract":
-            records = await self._pending(space, generation["generation_id"])
-            decision = await self._decision(space, records, manual=True)
+            records, decision = await self.live_plan(space, generation["generation_id"], manual=True)
             if decision.status == "waiting":
                 raise ValueError("pending messages are below the extraction minimum")
             return await self._submit_extract(space, generation, records, decision, idempotency_key, request=request)
-        if kind in {"extract", "rebuild", "topic_consolidate", "topic_rebuild", *CONTEXT_REBUILD_MODELS} and not self.config.llm_provider_id:
-            raise ValueError("configure an LLM provider first")
+        if kind == "rebuild" or kind in CONTEXT_REBUILD_MODELS:
+            payload["highwater"] = await self.scanner.highwater(space)
+            payload["total"] = await self.scanner.count(space, highwater=payload["highwater"])
+            if await self.scanner.has_deliveries(space, payload["highwater"]):
+                payload["replay_deliveries"] = True
+        if kind in {"rebuild", "topic_consolidate", "topic_rebuild", *CONTEXT_REBUILD_MODELS}:
+            policy = await self.memory.get_space_policy(space_id)
+            payload["model_policy"] = {key: policy[key] for key in ("model_mode", "provider_id", "topic_provider_id")}
+            payload["model_policy"]["default_provider_id"] = self.config.llm_provider_id
+            preview = await self.model_preview(kind, space, policy=policy, include_topics=include_topics,
+                                               selection=model_selection, highwater=payload.get("highwater"))
+            if any(row["mode"] == "missing" for row in preview.values()):
+                raise ModelSelectionRequired("model_required: select a model for the unresolved pipeline")
         if kind == "topic_consolidate":
             payload["before"] = time.time()
             payload["review_before"] = payload["before"]
@@ -351,12 +363,7 @@ class MaintenanceEngine(TopicMaintenanceMixin):
             raise ValueError("relationship rebuild requires a private space")
         if kind in CONTEXT_REBUILD_MODELS:
             payload["context_basis"] = await self.pipeline.context_basis(kind, generation["generation_id"])
-        if kind == "rebuild" or kind in CONTEXT_REBUILD_MODELS:
-            payload["highwater"] = await self.scanner.highwater(space)
-            payload["total"] = await self.scanner.count(space, highwater=payload["highwater"])
-            if await self.scanner.has_deliveries(space, payload["highwater"]):
-                payload["replay_deliveries"] = True
-        elif kind == "governance":
+        if kind == "governance":
             if not isinstance(operation, dict):
                 raise ValueError("governance operation is required")
             payload["operation"] = operation
@@ -379,14 +386,17 @@ class MaintenanceEngine(TopicMaintenanceMixin):
                                       max_attempts=self.config.job_max_attempts, hide_on_success=automatic)
 
     async def _submit_extract(self, space, generation, records, decision, key, *, request):
-        if not self.config.llm_provider_id:
-            raise ValueError("configure an LLM provider first")
         ids = decision.source_ids or (decision.blocked_source_id,)
         by_id = {row["source_id"]: row for row in records}
         payload = {"request": request, "space_id": space["space_id"],
             "expected_generation_id": generation["generation_id"], "source_ids": list(ids),
             "source_cursor": max(by_id[source_id]["scan_cursor"] for source_id in ids),
             "blocked": decision.status == "oversized"}
+        policy = await self.memory.get_space_policy(space["space_id"])
+        route = self.resolve_window_route(policy, [by_id[i] for i in ids], request.get("model_selection", {}))
+        if not route and not request.get("automatic"):
+            raise ModelSelectionRequired("model_required: select an extraction model")
+        payload["model_route"] = route
         return await self.jobs.submit("extract", space["space_id"], payload, key,
                                       max_attempts=self.config.job_max_attempts,
                                       hide_on_success=bool(request.get("automatic")))
@@ -423,7 +433,9 @@ class MaintenanceEngine(TopicMaintenanceMixin):
             self._read_hints.pop(generation_id, None)
         return result
 
-    async def retry(self, job_id, *, fresh=False, regenerate_window=False):
+    async def retry(self, job_id, *, fresh=False, regenerate_window=False, model_selection=None):
+        if model_selection and not fresh:
+            raise ValueError("model overrides require a fresh preparation")
         if type(fresh) is not bool or type(regenerate_window) is not bool or (fresh and regenerate_window):
             raise ValueError("retry modes must be mutually exclusive booleans")
         if regenerate_window:
@@ -432,7 +444,7 @@ class MaintenanceEngine(TopicMaintenanceMixin):
         if not job or job["state"] not in {"failed", "cancelled"}:
             raise ValueError("task must be failed or cancelled before retry")
         if job["kind"] == "short_term" and self.short_term is not None:
-            return await self.short_term.retry(job_id, fresh=fresh)
+            return await self.short_term.retry(job_id, fresh=fresh, **({"model_selection": model_selection} if model_selection else {}))
         if job["kind"] == "model_test" and self.model_tests is not None:
             return await self.model_tests.retry(job_id, fresh=fresh)
         if job["kind"] == "note" and fresh:
@@ -445,7 +457,8 @@ class MaintenanceEngine(TopicMaintenanceMixin):
         # old error record until successful submission, then resolve its blocker.
         created = await self.enqueue(kind, space, "restart:" + uuid.uuid4().hex,
             operation=job["payload"].get("operation"), reason=request.get("reason", ""),
-            failed_job_id=job["payload"].get("failed_job_id"), include_topics=bool(job["payload"].get("include_topics")))
+            failed_job_id=job["payload"].get("failed_job_id"), include_topics=bool(job["payload"].get("include_topics")),
+            model_selection=model_selection)
         await self.jobs.cancel(job_id)
         return created
 
@@ -473,6 +486,8 @@ class MaintenanceEngine(TopicMaintenanceMixin):
         result["automatic_correction_limit"] = window.get("correction_limit", 1) if window else None
         result["response_diagnostics"] = window.get("response_diagnostics", {})
         result["source_ids"] = window.get("source_ids", job["payload"].get("source_ids", []))
+        result["model_route"] = (window.get("model_route") or checkpoint.get("topic_window", {}).get("model_route")
+                                 or job["payload"].get("model_route"))
         result["candidate"] = None
         if checkpoint.get("window_index"):
             result["committed_window"] = dict(checkpoint["window_index"])
@@ -500,7 +515,7 @@ class MaintenanceEngine(TopicMaintenanceMixin):
             except ValueError:
                 result["candidate_format_invalid"] = True
         result["restart_required"] = bool(job["payload"].get("topic_inputs_replaced")) or job["error_code"] in {
-            "context_changed", "configuration_changed",
+            "context_changed", "configuration_changed", "model_required",
             "configuration_or_context_changed",
             "generation_changed", "summary_changed", "summary_context_changed", "model_test_configuration_changed"}
         if job["kind"] == "short_term":
@@ -540,11 +555,18 @@ class MaintenanceEngine(TopicMaintenanceMixin):
         await self.jobs.save_checkpoint(job["job_id"], job["lease_token"], checkpoint=checkpoint,
                                        step=step, progress_done=done, progress_total=total)
 
-    async def _execution(self, space):
+    async def _persona_text(self, space):
         persona = await self.persona_loader(space["persona_id"])
         if not isinstance(persona, str):
             raise ReviewRequired("persona_unavailable")
-        model = self.runtime.adapter.llm_fingerprint(self.config.llm_provider_id, self.config.extraction_model_revision)
+        return persona
+
+    async def _execution(self, space, route=None):
+        persona = await self._persona_text(space)
+        provider = self.config.llm_provider_id if route is None else route.get("provider_id")
+        model = self.runtime.adapter.llm_fingerprint(provider, self.config.extraction_model_revision) if provider else None
+        if route and route.get("model_override"):
+            model = digest([model, route["model_override"]])
         policy = self.policy(space)
         signature = digest({**({"output_format": self.config.extraction_output_format} if self.config.extraction_output_format != "text" else {}), "persona": persona, "model": model, "prompt": self.extraction.prompt_version,
             "references": REFERENCE_VERSION,
@@ -619,8 +641,18 @@ class MaintenanceEngine(TopicMaintenanceMixin):
             await self.extraction.flush_image_evidence(batch_id)
             await self._discard_images(job, space, source_ids)
             return receipt
-        persona, signature = await self._execution(space)
         window = checkpoint.get("window")
+        route = (window or {}).get("model_route") or job["payload"].get("model_route")
+        if route is None:
+            policy = job["payload"].get("model_policy")
+            if policy is None:
+                policy = await self.memory.get_space_policy(space["space_id"])
+            entries = await self.sources.get_records(tuple(source_ids))
+            route = self.resolve_window_route(policy, entries, job["payload"].get("request", {}).get("model_selection", {}),
+                default=policy.get("default_provider_id"))
+        if not self.provider_available(route.get("provider_id")):
+            raise ReviewRequired("model_required")
+        persona, signature = await self._execution(space, route)
         if window and window["signature"] != signature:
             raise ReviewRequired("configuration_changed")
         scoped_model = CONTEXT_REBUILD_MODELS.get(job["kind"])
@@ -644,7 +676,7 @@ class MaintenanceEngine(TopicMaintenanceMixin):
         if window and batch.input_digest != window["input_digest"]:
             raise ReviewRequired("context_changed")
         if not window:
-            window = {"source_ids": list(source_ids), "source_cursor": source_cursor,
+            window = {"source_ids": list(source_ids), "source_cursor": source_cursor, "model_route": route,
                 "known_node_ids": list(known), "input_digest": batch.input_digest, "signature": signature,
                 "reference_protocol": REFERENCE_VERSION,
                 "correction_limit": self.config.extraction_max_regenerations}
@@ -699,7 +731,8 @@ class MaintenanceEngine(TopicMaintenanceMixin):
                     if self.config.extraction_output_format != "text":
                         options = {"output_format": self.config.extraction_output_format,
                                    "output_schema": output_schema}
-                    raw = await self.runtime.adapter.generate(messages, provider_id=self.config.llm_provider_id,
+                    raw = await self.runtime.adapter.generate(messages, provider_id=route["provider_id"],
+                        **({"model": route["model_override"]} if route.get("model_override") else {}),
                         timeout_seconds=max(0.001, deadline - time.monotonic()), diagnostics=diagnostics, **options)
                     break
                 except VisionUnsupportedError:
@@ -729,7 +762,7 @@ class MaintenanceEngine(TopicMaintenanceMixin):
         response_info = window.get("response_diagnostics", {})
         if response_info.get("response_status") == "incomplete" or response_info.get("finish_reason") == "length":
             raise ReviewRequired("output_incomplete")
-        _, current_signature = await self._execution(space)
+        _, current_signature = await self._execution(space, route)
         if signature != current_signature:
             raise ReviewRequired("configuration_changed")
         try:
@@ -768,7 +801,7 @@ class MaintenanceEngine(TopicMaintenanceMixin):
         await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
         try:
             options = {"image_evidence": evidence} if evidence else {}
-            receipt = await self.extraction.apply(batch, canonical, model_id=self.config.llm_provider_id, **options)
+            receipt = await self.extraction.apply(batch, canonical, model_id=route["provider_id"], **options)
             await self._discard_images(job, space, source_ids)
             return receipt
         except PermissionError:
@@ -829,7 +862,10 @@ class MaintenanceEngine(TopicMaintenanceMixin):
         if scoped and await self.pipeline.context_basis(job["kind"], parent["generation_id"]) != payload["context_basis"]:
             raise ReviewRequired("context_changed")
         generation = await self.pipeline.begin_rebuild(job, space["space_id"], payload["expected_generation_id"])
-        _, signature = await self._execution(space)
+        policy = payload.get("model_policy", {})
+        route = fixed_route(policy, policy.get("default_provider_id", self.config.llm_provider_id),
+                            payload.get("request", {}).get("model_selection", {}))
+        _, signature = await self._execution(space, route)
         if checkpoint.get("signature", signature) != signature:
             raise ReviewRequired("configuration_changed")
         checkpoint.update(signature=signature, total=payload["total"], generation_id=generation["generation_id"])
@@ -841,26 +877,38 @@ class MaintenanceEngine(TopicMaintenanceMixin):
                     window = checkpoint["window"]
                     source_ids, cursor = window["source_ids"], window["source_cursor"]
                 else:
-                    if payload.get("replay_deliveries"):
-                        page = await self.scanner.replay_page(space, payload["highwater"], checkpoint["done"])
+                    if len(payload["highwater"]) > 1:
+                        plan = await self.replay_plan(space, payload, checkpoint.get("stream_offsets", {}))
+                        if plan is None:
+                            checkpoint["pending"] = payload["total"] - checkpoint["done"]
+                            break
+                        stream, records, decision = plan
+                        checkpoint["replay_stream"] = stream
+                        cursor = 0
                     else:
-                        page = await self.scanner.page(space, highwater=payload["highwater"],
-                                                       after=checkpoint["after"], limit=200)
-                    decision = await self._decision(space, page.records, replay=True)
+                        if payload.get("replay_deliveries"):
+                            page = await self.scanner.replay_page(space, payload["highwater"], checkpoint["done"])
+                        else:
+                            page = await self.scanner.page(space, highwater=payload["highwater"], after=checkpoint["after"])
+                        records = page.records
+                        decision = await self._decision(space, records, replay=True)
+                        if decision.status == "waiting":
+                            checkpoint["pending"] = len(records)
+                            break
+                        chosen = set(decision.source_ids)
+                        cursor = max((r["scan_cursor"] for r in records if r["source_id"] in chosen), default=0)
                     if decision.status == "oversized":
                         raise ReviewRequired("oversized_source")
-                    if decision.status == "waiting":
-                        checkpoint["pending"] = len(page.records)
-                        break
                     source_ids = decision.source_ids
-                    by_id = {row["source_id"]: row for row in page.records}
-                    cursor = max(by_id[source_id]["scan_cursor"] for source_id in source_ids)
                 window_receipt = await self._window(job, checkpoint, space, generation["generation_id"], source_ids, cursor, building=True)
                 if not scoped:
                     await self._index_committed_window(job, checkpoint, window_receipt)
                 for kind, count in image_counts(checkpoint.get("window", {})).items():
                     counts = checkpoint.setdefault("image_inputs", {})
                     counts[kind] = counts.get(kind, 0) + count
+                if stream := checkpoint.pop("replay_stream", None):
+                    offsets = checkpoint.setdefault("stream_offsets", {})
+                    offsets[stream] = offsets.get(stream, 0) + len(source_ids)
                 checkpoint["after"] = cursor
                 checkpoint["done"] += len(source_ids)
                 checkpoint.pop("window", None)

@@ -173,3 +173,19 @@ async def test_private_vision_negotiation_respects_model_declaration_and_server(
         assert len(requests) == 1
     finally:
         await selected.terminate()
+
+
+@pytest.mark.asyncio
+async def test_per_request_model_override_reaches_host_without_changing_other_requests(responses):
+    provider, adapter, _, requests, _ = responses
+    try:
+        await adapter.generate(MESSAGES, provider_id="chat-test", model="explicit-override",
+                               output_format="json_schema", output_schema=SCHEMA)
+        assert requests[0]["model"] == "explicit-override"
+        assert provider.get_model() == "synthetic"
+    finally:
+        await provider.terminate()
+    context = FakeContext()
+    await ProviderAdapter(context).generate(MESSAGES, provider_id="chat-test", model="explicit-override",
+                                            output_format="json_schema", output_schema=SCHEMA)
+    assert context.calls[-1]["model"] == "explicit-override"

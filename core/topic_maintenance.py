@@ -18,6 +18,7 @@ except ImportError:
 from .extraction_apply import digest
 from .extraction_context import node_vectors, _rank_page_with_query_coverage
 from .jobs import RetryableJobError, ReviewRequired
+from .model_routing import fixed_route
 from .topic_prompt import (PROMPT_VERSION,
                            build_messages, schema_for_prompt_version)
 from .topic_schema import VERSION, output_schema, parse_output
@@ -121,7 +122,7 @@ class TopicMaintenanceMixin:
     async def _prepare_topic_window(self, store, space, generation_id, seeds, *, evidence_memory=None):
         """Shrink optional roots and then seed batches without truncating member closures."""
         deadline = time.monotonic() + self.config.extraction_timeout_seconds
-        persona, signature = await self._execution(space)
+        persona = await self._persona_text(space)
         reserve = min(8192, self.config.extraction_max_prompt_bytes // 10)
         usable = self.config.extraction_max_prompt_bytes - reserve
         original_seed_count = len(seeds)
@@ -168,7 +169,7 @@ class TopicMaintenanceMixin:
                             prepared, diagnostics = trial, trial_diagnostics
             if prepared is not None:
                 prepared["input_digest"] = digest({key: value for key, value in prepared.items() if key != "input_digest"})
-                return prepared, persona, signature, diagnostics
+                return prepared, persona, diagnostics
             if len(seed_batch) == 1:
                 failure = ReviewRequired("prompt_budget_exceeded")
                 failure.budget = diagnostics
@@ -180,7 +181,10 @@ class TopicMaintenanceMixin:
         receipt = await store.receipt(window["receipt_key"])
         if receipt is not None:
             return receipt
-        persona, signature = await self._execution(space)
+        route = window.get("model_route", {"provider_id": self.config.llm_provider_id})
+        if store.can_propose_changes(window["prepared"]) and not self.provider_available(route.get("provider_id")):
+            raise ReviewRequired("model_required")
+        persona, signature = await self._execution(space, route)
         if signature != window["signature"]:
             raise ReviewRequired("configuration_changed")
         if not store.can_propose_changes(window["prepared"]):
@@ -238,7 +242,8 @@ class TopicMaintenanceMixin:
                     diagnostics = {}
                     try:
                         window["raw"] = await self.runtime.adapter.generate(request,
-                            provider_id=self.config.llm_provider_id,
+                            provider_id=route["provider_id"],
+                            **({"model": route["model_override"]} if route.get("model_override") else {}),
                             timeout_seconds=max(.001, deadline - time.monotonic()),
                             diagnostics=diagnostics, **options)
                     except asyncio.CancelledError:
@@ -264,7 +269,7 @@ class TopicMaintenanceMixin:
                         window["errors"] = [{"path": "$", "type": "output_incomplete"}]
                         await self._save(job, checkpoint, "topic_validate", checkpoint["done"], checkpoint["total"])
                         raise ReviewRequired("invalid_topic_output")
-                    _, current_signature = await self._execution(space)
+                    _, current_signature = await self._execution(space, route)
                     if current_signature != signature:
                         raise ReviewRequired("configuration_changed")
                     prepared = window["prepared"]
@@ -318,7 +323,7 @@ class TopicMaintenanceMixin:
                 await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
                 try:
                     async with asyncio.timeout(self.config.extraction_timeout_seconds):
-                        prepared, persona, signature, budget = await self._prepare_topic_window(
+                        prepared, persona, budget = await self._prepare_topic_window(
                             store, space, generation["generation_id"], seeds, evidence_memory=stage_for)
                 except TimeoutError:
                     raise RetryableJobError("context_embedding_timeout") from None
@@ -330,7 +335,20 @@ class TopicMaintenanceMixin:
                 except Exception as exc:
                     raise self._embedding_failure(exc, context=True) from None
                 checkpoint["topic_budget"] = budget
-                checkpoint["topic_window"] = {"prepared": prepared, "signature": signature,
+                policy = payload.get("model_policy")
+                if policy is None:
+                    policy = await (stage_for or self.memory).get_space_policy(space["space_id"])
+                route = fixed_route(policy, policy.get("default_provider_id", self.config.llm_provider_id),
+                                    payload.get("request", {}).get("model_selection", {}), topic=True)
+                if not route and store.can_propose_changes(prepared):
+                    routes = await self.topic_routes(stage_for or self.memory, space, generation["generation_id"],
+                        [n["node_id"] for n in prepared["nodes"] if n["node_type"] != "topic"])
+                    if len(routes) == 1:
+                        route = routes[0]
+                if store.can_propose_changes(prepared) and not self.provider_available(route.get("provider_id")):
+                    raise ReviewRequired("model_required")
+                _, signature = await self._execution(space, route)
+                checkpoint["topic_window"] = {"prepared": prepared, "signature": signature, "model_route": route,
                     "budget": budget,
                     "request_digest": digest(build_messages(persona, prepared["nodes"], prepared["edges"],
                         evidence=prepared["evidence"], related_topics=prepared["related_topics"], allowed_user_ids=prepared["allowed_user_ids"], prompt_version=self.topic_prompt_version)),

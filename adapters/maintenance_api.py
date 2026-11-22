@@ -10,12 +10,14 @@ from typing import Any
 from astrbot.api.web import error_response, json_response, request
 
 try:
+    from ..core.model_routing import ModelSelectionRequired
     from ..storage.topic_store import TopicStore
     from ..storage.console_store import ConsoleStore
     from ..storage.version_retention import mark_missing_version_references
     from ..storage.governance_store import validate_operation
     from ..storage.job_store import JobConflict, inspection_checkpoint
 except ImportError:
+    from core.model_routing import ModelSelectionRequired
     from storage.topic_store import TopicStore
     from storage.console_store import ConsoleStore
     from storage.version_retention import mark_missing_version_references
@@ -75,6 +77,8 @@ def _guard(handler):
         except KeyError:
             return error_response("任务、空间或节点不存在。", status_code=404,
                                   data={"error_code": "maintenance_not_found"})
+        except ModelSelectionRequired:
+            return error_response("请选择本次任务使用的模型。", status_code=400, data={"error_code": "model_required"})
         except (ValueError, TypeError):
             return error_response("请求字段无效，请检查必填项、范围和治理载荷格式。", status_code=400,
                                   data={"error_code": "invalid_maintenance_request"})
@@ -101,6 +105,7 @@ class MaintenanceAPI:
             ("recall/history", "GET", self.recall_history),
             ("recall/recording", "POST", self.recall_recording),
             ("topics/rebuild-preview", "GET", self.topic_rebuild_preview),
+            ("tasks/model-preview", "POST", self.model_preview),
             ("availability", "GET", self.availability), ("tasks", "POST", self.submit),
             ("tasks/retry", "POST", self.retry), ("tasks/cancel", "POST", self.cancel),
             ("tasks/delete", "POST", self.delete),
@@ -197,9 +202,45 @@ class MaintenanceAPI:
         result["automatic"] = await self.plugin.maintenance.automatic_status(space["space_id"])
         return json_response(result)
 
+    @staticmethod
+    def _sections(kind, body, space):
+        if kind == "section_rebuild":
+            sections = body.get("sections")
+            if not isinstance(sections, list) or not sections or any(
+                    section not in ("topics", "profiles", "relationship") for section in sections):
+                raise ValueError("select at least one supported section")
+            selected = set(sections)
+            if "relationship" in selected and space["space_type"] != "private":
+                raise ValueError("relationships require a private space")
+            context = selected - {"topics"}
+            kind = {frozenset(): "topic_rebuild", frozenset({"profiles"}): "profile_rebuild",
+                    frozenset({"relationship"}): "relationship_rebuild",
+                    frozenset({"profiles", "relationship"}): "context_rebuild"}[frozenset(context)]
+            return kind, bool(context and "topics" in selected)
+        elif "sections" in body:
+            raise ValueError("sections require a section rebuild")
+        return kind, False
+
+    @_guard
+    async def model_preview(self):
+        body = await self._body({"kind", "space_id", "sections", "job_id"}, set())
+        if "job_id" in body:
+            job = await self.plugin.jobs.get(_text(body["job_id"]))
+            if not job:
+                raise KeyError("unknown job")
+            if job["kind"] == "short_term":
+                return json_response(await self.plugin.maintenance.short_term.model_preview(job))
+            space = await self._space(job["scope_key"])
+            kind = job["kind"]
+            include_topics = bool(job["payload"].get("include_topics"))
+        else:
+            space = await self._space(body.get("space_id"))
+            kind, include_topics = self._sections(_text(body.get("kind")), body, space)
+        return json_response(await self.plugin.maintenance.model_preview(kind, space, include_topics=include_topics))
+
     @_guard
     async def submit(self):
-        body = await self._body({"kind", "space_id", "idempotency_key", "operation", "reason", "failed_job_id", "sections"},
+        body = await self._body({"kind", "space_id", "idempotency_key", "operation", "reason", "failed_job_id", "sections", "model_selection"},
                                 {"kind", "space_id", "idempotency_key"})
         kind = _text(body["kind"])
         if kind not in KINDS:
@@ -222,35 +263,26 @@ class MaintenanceAPI:
         elif "failed_job_id" in body:
             raise ValueError("only rejection accepts failed_job_id")
         options = {}
-        if kind == "section_rebuild":
-            sections = body.get("sections")
-            if not isinstance(sections, list) or not sections or any(
-                    section not in ("topics", "profiles", "relationship") for section in sections):
-                raise ValueError("select at least one supported section")
-            selected = set(sections)
-            if "relationship" in selected and space["space_type"] != "private":
-                raise ValueError("relationships require a private space")
-            context = selected - {"topics"}
-            kind = {frozenset(): "topic_rebuild", frozenset({"profiles"}): "profile_rebuild",
-                    frozenset({"relationship"}): "relationship_rebuild",
-                    frozenset({"profiles", "relationship"}): "context_rebuild"}[frozenset(context)]
-            if context and "topics" in selected:
-                options["include_topics"] = True
-        elif "sections" in body:
-            raise ValueError("sections require a section rebuild")
+        kind, include_topics = self._sections(kind, body, space)
+        if include_topics:
+            options["include_topics"] = True
+        if "model_selection" in body:
+            options["model_selection"] = body["model_selection"]
         job = await self.plugin.maintenance.enqueue(kind, space["space_id"], key, **options,
                                                     operation=operation, reason=reason, failed_job_id=failed_job_id)
         return json_response(_summary(job))
 
     @_guard
     async def retry(self):
-        body = await self._body({"job_id", "fresh", "regenerate_window"}, {"job_id"})
+        body = await self._body({"job_id", "fresh", "regenerate_window", "model_selection"}, {"job_id"})
         job_id = _text(body["job_id"])
         fresh = body.get("fresh", False)
         regenerate = body.get("regenerate_window", False)
         if type(fresh) is not bool or type(regenerate) is not bool or (fresh and regenerate):
             raise ValueError("retry modes must be mutually exclusive booleans")
         kwargs = {"fresh": fresh}
+        if "model_selection" in body:
+            kwargs["model_selection"] = body["model_selection"]
         if regenerate:
             kwargs["regenerate_window"] = True
         return json_response(_summary(await self.plugin.maintenance.retry(job_id, **kwargs)))

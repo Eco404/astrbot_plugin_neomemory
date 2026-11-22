@@ -85,7 +85,7 @@ async def test_optional_large_topic_does_not_starve_a_smaller_neighbor(environme
 
     monkeypatch.setattr(env.engine, "_topic_context", ranked)
     env.engine.config = replace(env.config, extraction_max_prompt_bytes=24000)
-    prepared, _, _, diagnostics = await env.engine._prepare_topic_window(
+    prepared, _, diagnostics = await env.engine._prepare_topic_window(
         TopicStore(env.memory), env.space, seed["generation_id"], [seed])
     visible = {node["node_id"] for node in prepared["nodes"]}
     assert prepared["seed_ids"] == [seed_id]
@@ -112,7 +112,7 @@ async def test_split_ranks_neighbors_for_retained_seeds(environment, monkeypatch
 
     monkeypatch.setattr(env.engine, "_topic_context", ranked)
     env.engine.config = replace(env.config, extraction_max_prompt_bytes=24000)
-    prepared, _, _, _ = await env.engine._prepare_topic_window(
+    prepared, _, _ = await env.engine._prepare_topic_window(
         TopicStore(env.memory), env.space, first_seed["generation_id"], seeds)
     assert prepared["seed_ids"] == [first_seed["node_id"]]
     visible = {node["node_id"] for node in prepared["nodes"]}
@@ -126,7 +126,7 @@ async def test_prepare_reduces_optional_roots_before_seeds_and_keeps_complete_me
     rows, topics = await groups(env)
     env.engine.config = replace(env.config, extraction_max_prompt_bytes=60000)
     store = TopicStore(env.memory)
-    prepared, persona, _, diagnostics = await env.engine._prepare_topic_window(
+    prepared, persona, diagnostics = await env.engine._prepare_topic_window(
         store, env.space, topics[0]["generation_id"], rows[0][:1])
     assert diagnostics["seed_count"] == 1
     assert diagnostics["optional_roots_retained"] < 29
@@ -189,9 +189,11 @@ async def test_full_correction_request_is_rechecked_against_total_budget(environ
     env.engine.config = replace(env.config, extraction_max_prompt_bytes=30000)
     job = await enqueue_and_claim(env, "topic_consolidate")
     store = TopicStore(env.memory)
-    prepared, persona, signature, diagnostics = await env.engine._prepare_topic_window(
+    prepared, persona, diagnostics = await env.engine._prepare_topic_window(
         store, env.space, topics[0]["generation_id"], rows[0])
     from core.extraction_apply import digest
+    route = job["payload"]["model_policy"]["default_provider_id"]
+    _, signature = await env.engine._execution(env.space, {"provider_id": route})
     checkpoint = {"done": 0, "total": 2, "topic_window": {
         "receipt_key": "test-feedback", "prepared": prepared, "signature": signature,
         "prompt_version": env.engine.topic_prompt_version,
