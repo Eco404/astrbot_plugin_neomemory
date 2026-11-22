@@ -67,14 +67,14 @@
   },
   "llm_provider_id": {
     "description": "记忆 LLM 模型",
-    "hint": "选择 AstrBot 已配置的对话模型，用于后台记忆抽取。留空时自动抽取等待配置，不提交重复失败任务。",
+    "hint": "选择后台抽取的默认模型。留空时按来源窗口选择对话模型，各空间可在 WebUI 中单独配置。",
     "type": "string",
     "default": "",
     "_special": "select_provider"
   },
   "short_term_provider_id": {
     "description": "短期摘要 LLM 模型",
-    "hint": "留空时继承记忆 LLM 模型；可独立选择 AstrBot 已配置的对话模型。",
+    "hint": "选择专用短期摘要模型，留空时按当前空间及来源窗口的抽取设置选择。",
     "type": "string",
     "default": "",
     "_special": "select_provider"
@@ -554,7 +554,7 @@
   },
   "automatic_extraction_enabled": {
     "description": "启用自动记忆抽取",
-    "hint": "达到消息数量或空闲条件后在后台整理记忆。关闭只停止自动调度，仍可人工启动维护任务。LLM 未配置时等待配置。",
+    "hint": "达到消息数量或空闲条件后在后台整理记忆。关闭只停止自动调度，仍可人工启动维护任务。窗口缺少可用模型时可在维护页指定。",
     "type": "bool",
     "default": true
   },
