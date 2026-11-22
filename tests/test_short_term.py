@@ -26,6 +26,7 @@ from storage.source_store import SourceStore
 class Provider:
     def __init__(self):
         self.calls = []
+        self.requests = []
         self.revision = "1"
         self.output = None
         self.hook = None
@@ -35,6 +36,7 @@ class Provider:
 
     async def generate(self, messages, **kwargs):
         self.calls.append(messages)
+        self.requests.append(kwargs)
         if self.hook:
             await self.hook()
         if self.output is not None:
@@ -416,3 +418,55 @@ async def test_cancelled_window_waits_for_explicit_retry_even_when_more_sources_
     assert following
     assert following["payload"]["previous_version"] == 1
     assert not set(following["payload"]["source_ids"]) & set(queued["payload"]["source_ids"])
+
+
+@pytest.mark.asyncio
+async def test_chat_model_is_scoped_to_summary_prefix_and_frozen_across_retry(env):
+    space = env.space["space_id"]
+    await env.memory.set_space_policy(space, {"model_mode": "chat"})
+    # Old and newer assistant replies are inside the summary. The latest
+    # uncompressed messages belong to a future summary window.
+    for i, provider in ((1, "first"), (3, "summarize-here"), (7, "reserved-tail")):
+        route = {"provider_id": provider, "basis": "request_provider", "model_override": provider + "-model",
+                 "reported_model": "response-alias"}
+        await env.sources.database.execute(
+            "UPDATE source_records SET actor_kind='agent',metadata_json=json_set(metadata_json,'$.chat_model',json(?))"
+            " WHERE source_id=?", (json.dumps(route), env.records[i].source_id))
+    job = await claim(env)
+    assert job["payload"]["model_route"]["provider_id"] == "summarize-here"
+    await env.memory.set_space_policy(space, {"model_mode": "fixed", "provider_id": "next"})
+    env.adapter.output = "invalid"
+    env.config.extraction_auto_regeneration = False
+    assert (await execute(env, job))["state"] == "failed"
+    assert env.adapter.requests[-1]["provider_id"] == "summarize-here"
+    assert env.adapter.requests[-1]["model"] == "summarize-here-model"
+    await env.service.retry(job["job_id"])
+    assert (await execute(env, await env.jobs.claim("resume")))["state"] == "failed"
+    assert len(env.adapter.requests) == 1  # Ordinary retry reused the saved response.
+
+    preview = (await env.service.model_preview(job))["window"]
+    assert preview["provider_id"] == "next" and preview["basis"] == "space"
+    env.config.short_term_provider_id = "dedicated"
+    assert (await env.service.model_preview(job))["window"]["basis"] == "short_term"
+    fresh = await env.service.retry(job["job_id"], fresh=True, model_selection={"window_provider_id": "chosen"})
+    assert fresh["payload"]["source_ids"] == job["payload"]["source_ids"]
+    env.adapter.output = None
+    assert (await execute(env, await env.jobs.claim("fresh")))["state"] == "succeeded"
+    assert env.adapter.requests[-1]["provider_id"] == "chosen" and "model" not in env.adapter.requests[-1]
+
+
+@pytest.mark.asyncio
+async def test_missing_model_has_recoverable_short_term_window(env):
+    env.config.llm_provider_id = ""
+    job = await claim(env)
+    assert (await execute(env, job))["error_code"] == "model_required"
+    assert await env.service.maybe_enqueue(env.space["space_id"], "chat", stream_id=env.stream_id) is None
+    assert (await env.service.model_preview(job))["window"]["missing_windows"] == 1
+    with pytest.raises(ValueError, match="model_required"):
+        await env.service.retry(job["job_id"], fresh=True)
+    env.config.short_term_provider_id = "summary"
+    fresh = await env.service.retry(job["job_id"], fresh=True)
+    assert fresh["payload"]["model_route"] == {"provider_id": "summary", "basis": "short_term"}
+    env.config.short_term_provider_id = "changed-after-prepare"
+    assert (await execute(env, await env.jobs.claim("fresh")))["state"] == "succeeded"
+    assert env.adapter.requests[-1]["provider_id"] == "summary"

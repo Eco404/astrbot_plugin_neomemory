@@ -19,7 +19,7 @@ export function initMaintenance(ui) {
   let backlogEpoch = null;
   const recall = initRecallInspector(ui);
   const confirmModelTask = initTaskModels(ui);
-  const modelJobs = new Set(['extract', 'rebuild', 'section_rebuild', 'topic_consolidate', 'topic_rebuild', 'profile_rebuild', 'relationship_rebuild', 'context_rebuild']);
+  const modelJobs = new Set(['extract', 'rebuild', 'section_rebuild', 'topic_consolidate', 'topic_rebuild', 'profile_rebuild', 'relationship_rebuild', 'context_rebuild', 'short_term']);
   setupTabs('[data-maintenance-tab]', tab => {
     for (const section of document.querySelectorAll('[data-maintenance-content]')) {
       section.hidden = section.dataset.maintenanceContent !== tab.dataset.maintenanceTab;
@@ -468,7 +468,8 @@ export function initMaintenance(ui) {
         choice.checked = job.job_id === state.selectedJob;
         choice.setAttribute('aria-label', '选择任务 ' + job.job_id);
         const title = element('label', '', 'task-title');
-        title.append(choice, `${job.section_progress ? '主题 + ' : ''}${kinds[job.kind] || job.kind} · ${states[job.state] || job.state}`);
+        const statusLabel = job.state === 'failed' && job.error_code === 'model_required' ? '待指定模型' : states[job.state] || job.state;
+        title.append(choice, `${job.section_progress ? '主题 + ' : ''}${kinds[job.kind] || job.kind} · ${statusLabel}`);
         const heading = element('div', '', 'task-heading');
         const identity = element('div');
         identity.append(title, element('div', job.job_id, 'muted'));
@@ -495,7 +496,7 @@ export function initMaintenance(ui) {
         card.append(taskTiming(job), taskFeedback(job));
         const actions = element('div', '', 'row');
         if (['failed', 'cancelled'].includes(job.state)) {
-          taskAction(actions, '从断点重试', () => taskMutation('tasks/retry', job));
+          if (job.error_code !== 'model_required') taskAction(actions, '从断点重试', () => taskMutation('tasks/retry', job));
           if (job.regenerate_window_available) taskAction(actions, '重新生成当前窗口', () => taskMutation('tasks/retry', job, { regenerate_window: true }));
           if (!['note', 'identity'].includes(job.kind)) taskAction(actions, '重新准备后重试', () => taskMutation('tasks/retry', job, { fresh: true }));
         }

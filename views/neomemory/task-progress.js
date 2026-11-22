@@ -35,6 +35,9 @@ export function taskFeedback(job) {
     node.dataset.available = job.available_at ?? '';
     updateRecovery(node); return node;
   }
+  if (job.state === 'failed' && job.error_code === 'model_required') {
+    return element('p', '待指定模型。点击“重新准备后重试”选择本次任务的模型。', 'muted');
+  }
   if (job.state === 'failed' && (job.error_code || job.error_type)) {
     return element('p', [job.error_type, job.error_code].filter(Boolean).join(' / '), 'error');
   }

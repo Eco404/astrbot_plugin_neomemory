@@ -1,6 +1,7 @@
 import { $, element, enhanceSelect } from './ui.js';
 
-const bases = { space: '来自空间设置', plugin: '来自插件设置', chat: '来自对话窗口', topic: '来自主题模型设置' };
+const bases = { space: '来自空间设置', plugin: '来自插件设置', chat: '来自对话窗口', topic: '来自主题模型设置',
+  short_term: '来自短期模型设置', session_config: '按会话配置选择', request_provider: '来自对话请求' };
 
 function modelField(title, step, available, lane) {
   const block = element('div', '', 'task-model-field');
@@ -57,7 +58,7 @@ export function initTaskModels(ui) {
     ]);
     if (id !== request || !ui.current(epoch) || ui.page() !== 'maintenance') return null;
     const fields = [];
-    for (const [lane, caption] of [['window', '窗口抽取模型'], ['topic', '主题整理模型']]) {
+    for (const [lane, caption] of [['window', kind === 'short_term' ? '短期摘要模型' : '窗口抽取模型'], ['topic', '主题整理模型']]) {
       if (preview[lane]) fields.push(modelField(caption, preview[lane], models.llm, lane));
     }
     const selected = Array.from($('space').options).find(item => item.value === space_id);

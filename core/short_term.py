@@ -20,6 +20,7 @@ except ImportError:
     from storage.source_scan import SourceScanner
 
 from .jobs import RetryableJobError, ReviewRequired
+from .model_routing import validate_selection, window_route
 from .persona_policy import is_supported_persona
 from .memory_text import user_reference_ids
 from .forwarded_content import window_text
@@ -54,6 +55,32 @@ class ShortTermService:
 
     def _provider_id(self):
         return getattr(self.config, "short_term_provider_id", "") or self.config.llm_provider_id
+
+    async def _route(self, space_id, records, selection=None):
+        selection = selection or {}
+        dedicated = getattr(self.config, "short_term_provider_id", "")
+        if dedicated and not selection.get("window_provider_id"):
+            route = {"provider_id": dedicated, "basis": "short_term"}
+        else:
+            policy = await self.memory.get_space_policy(space_id)
+            route = window_route(policy, self.config.llm_provider_id, records, selection)
+        if route:
+            try:
+                self._fingerprint(route["provider_id"])
+            except (ValueError, LookupError, TypeError):
+                return {}
+        return route
+
+    def _fingerprint(self, provider_id):
+        return self.adapter.llm_fingerprint(provider_id, getattr(self.config, "extraction_model_revision", ""))
+
+    async def model_preview(self, job):
+        records = await self.sources.get_records(tuple(job["payload"]["source_ids"]))
+        route = await self._route(job["scope_key"], records)
+        return {"window": {"mode": "fixed" if route else "missing",
+                           "provider_id": route.get("provider_id", ""),
+                           "providers": [route["provider_id"]] if route else [],
+                           "missing_windows": 0 if route else 1, "basis": route.get("basis", "")}}
 
     def _policy(self):
         return {"keep_messages": getattr(self.config, "short_term_keep_messages", 10),
@@ -95,7 +122,7 @@ class ShortTermService:
 
     async def _maybe_enqueue(self, space_id, conversation_id, *, stream_id=None, host_contexts=None):
         if (not getattr(self.config, "short_term_enabled", True)
-                or not self._provider_id() or not conversation_id or host_has_summary(host_contexts)):
+                or not conversation_id or host_has_summary(host_contexts)):
             return None
         space = await self.memory.get_space(space_id)
         if not space or not is_supported_persona(space["persona_id"]):
@@ -124,11 +151,6 @@ class ShortTermService:
         )
         if stopped or not (await self.jobs.availability(space_id))["available"]:
             return None
-        try:
-            self.adapter.llm_fingerprint(self._provider_id(),
-                                         getattr(self.config, "extraction_model_revision", ""))
-        except Exception:
-            return None  # Missing provider is pending configuration, not a spending loop.
         policy = self._policy()
         query, args = self._query(space, stream_id=stream_id, conversation_id=conversation_id)
         # Reserve the newest N sources even when the oldest unfinished range is
@@ -141,7 +163,7 @@ class ShortTermService:
             return None
         lower = previous["coverage"].get("to_sequence", 0) if previous else 0
         candidates = await self.sources.database.fetchall(
-            query + "SELECT source_id,content_text,content_json,metadata_json FROM matching "
+            query + "SELECT source_id,content_text,content_json,metadata_json,actor_kind,observed_at,sequence_no FROM matching "
             "WHERE sequence_no>? AND sequence_no<=? ORDER BY sequence_no LIMIT ?",
             (*args, lower, boundary["sequence_no"], policy["max_messages"]),
         )
@@ -152,7 +174,7 @@ class ShortTermService:
             source_chars = len(window_text(dict(row)))
             if chosen and chars + source_chars > policy["max_chars"]:
                 break
-            chosen.append(row["source_id"])
+            chosen.append(dict(row))
             chars += source_chars
             if chars >= policy["max_chars"]:
                 break
@@ -161,7 +183,8 @@ class ShortTermService:
         payload = {"generation_id": generation["generation_id"], "conversation_key": key,
                    "stream_id": stream_id, "conversation_id": conversation_id,
                    "previous_version": previous["content_version"] if previous else 0,
-                   "source_ids": chosen, "keep_messages": policy["keep_messages"]}
+                   "source_ids": [row["source_id"] for row in chosen], "keep_messages": policy["keep_messages"],
+                   "model_route": await self._route(space_id, chosen)}
         request_key = "short_term:" + _digest([space_id, payload])
         try:
             return await self.jobs.submit("short_term", space_id, payload, request_key,
@@ -169,31 +192,47 @@ class ShortTermService:
         except JobConflict:
             return None
 
-    async def retry(self, job_id, *, fresh=False):
+    async def retry(self, job_id, *, fresh=False, model_selection=None):
         """Explicit resume or reprepare the same frozen source window."""
         job = await self.jobs.get(job_id)
         if not job or job["kind"] != "short_term":
             raise ValueError("unknown short-term task")
         if not fresh:
+            if model_selection:
+                raise ValueError("choose a model when preparing a fresh task")
             return await self.jobs.retry(job_id)
         if job["state"] not in {"failed", "cancelled"}:
             raise JobConflict("only failed or cancelled summaries can be reprepared")
         generation = await self.memory.get_active_generation(job["scope_key"])
         if not generation or generation["generation_id"] != job["payload"]["generation_id"]:
             raise ValueError("summary generation changed; use the current conversation")
-        result = await self.jobs.submit("short_term", job["scope_key"], job["payload"],
+        selection = model_selection or {}
+        validate_selection(selection)
+        if selection.keys() - {"window_provider_id"}:
+            raise ValueError("select a short-term summary provider")
+        payload = dict(job["payload"])
+        records = await self.sources.get_records(tuple(payload["source_ids"]))
+        payload["model_route"] = await self._route(job["scope_key"], records, selection)
+        if not payload["model_route"]:
+            raise ValueError("model_required: select a short-term summary model")
+        result = await self.jobs.submit("short_term", job["scope_key"], payload,
             "short_term_fresh:" + job_id, max_attempts=getattr(self.config, "job_max_attempts", 2))
         await self.jobs.cancel(job_id)
         return result
 
-    async def _execution(self, space, prompt_version=PROMPT_VERSION):
+    async def _execution(self, space, prompt_version=PROMPT_VERSION, route=None):
         persona = self.persona_loader(space["persona_id"])
         if inspect.isawaitable(persona):
             persona = await persona
         if not isinstance(persona, str) or not persona.strip():
             raise ReviewRequired("persona_unavailable")
-        model = self.adapter.llm_fingerprint(self._provider_id(),
-                                             getattr(self.config, "extraction_model_revision", ""))
+        provider = self._provider_id() if route is None else route.get("provider_id")
+        if not provider:
+            raise ReviewRequired("model_required")
+        try:
+            model = self._fingerprint(provider)
+        except (ValueError, LookupError, TypeError):
+            raise ReviewRequired("model_required") from None
         return persona, _digest([prompt_version, persona, model, self._policy()])
 
     async def _save(self, job, checkpoint, step):
@@ -244,7 +283,7 @@ class ShortTermService:
         source_texts = [window_text(row) for row in records]
         if sum(map(len, source_texts)) > policy["max_chars"]:
             raise ReviewRequired("source_budget_exceeded")
-        persona, signature = await self._execution(space, prompt_version)
+        persona, signature = await self._execution(space, prompt_version, job["payload"].get("model_route"))
         # A forward's quoted words can exist only in the component JSON.
         sources = [(row["source_id"], text)
                    for row, text in zip(records, source_texts)]
@@ -285,7 +324,7 @@ class ShortTermService:
                 request = recovery_messages(prompt, archived["window"]["raw"], checkpoint.get("errors", []), checkpoint["regeneration"]["version"])
             if "raw" not in checkpoint:
                 await self._generate(job, checkpoint, request, deadline)
-            if checkpoint["signature"] != (await self._execution(space, prompt_version))[1]:
+            if checkpoint["signature"] != (await self._execution(space, prompt_version, job["payload"].get("model_route")))[1]:
                 raise ReviewRequired("configuration_changed")
             diagnostics = checkpoint.get("response_diagnostics", {})
             if diagnostics.get("finish_reason") == "length" or diagnostics.get("response_status") == "incomplete":
@@ -321,7 +360,11 @@ class ShortTermService:
         await self._save(job, checkpoint, "short_term_model")
         diagnostics = {}
         try:
-            raw = await self.adapter.generate(prompt, provider_id=self._provider_id(),
+            route = job["payload"].get("model_route")
+            if route is None:
+                route = {"provider_id": self._provider_id()}
+            raw = await self.adapter.generate(prompt, provider_id=route["provider_id"],
+                **({"model": route["model_override"]} if route.get("model_override") else {}),
                 timeout_seconds=max(.001, deadline - time.monotonic()), diagnostics=diagnostics)
         except Exception as exc:
             status = getattr(exc, "status_code", None)
