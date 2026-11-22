@@ -1,6 +1,6 @@
 import { $, button, element, enhanceSelect, newKey, notify, on } from './ui.js';
 
-import { rootOrder, editedRootOrder, installCleaningDrag } from './cleaning-order.js';
+import { rootOrder, editedRootOrder, editedRules, installCleaningDrag } from './cleaning-order.js';
 
 const kindLabels = { literal: '固定文本', regex: '正则表达式' };
 
@@ -164,11 +164,6 @@ export function initTextCleaning(ui) {
     for (const entry of config.groups) groups.append(new Option(entry.name, entry.id));
     groups.value = item?.group_id || '';
     enhanceSelect(groups);
-    const position = $('cleaning-position');
-    position.disabled = group || removing;
-    position.required = !position.disabled;
-    position.max = config.rules.length + (item ? 0 : 1);
-    position.value = item && !group ? config.rules.indexOf(item) + 1 : position.max;
     $('cleaning-kind').value = item?.kind || 'literal';
     $('cleaning-pattern').value = item?.pattern || '';
     $('cleaning-replacement').value = item?.replacement || '';
@@ -205,8 +200,7 @@ export function initTextCleaning(ui) {
         entry.skip_markdown = $('cleaning-skip-markdown').checked;
         entry.pattern = $('cleaning-pattern').value;
         entry.replacement = $('cleaning-replacement').value;
-        next.rules = base.rules.filter(rule => rule.id !== entry.id);
-        next.rules.splice($('cleaning-position').valueAsNumber - 1, 0, entry);
+        next.rules = editedRules(base, item, entry);
       } else {
         next.groups = item
           ? base.groups.map(group => group.id === item.id ? entry : group)
@@ -214,7 +208,7 @@ export function initTextCleaning(ui) {
       }
     }
     try {
-      next.root_order = editedRootOrder(base, next, item, collection);
+      next.root_order = editedRootOrder(base, next);
       await save(next);
       dialog.close();
       notify(removing ? '已删除' : '已保存');

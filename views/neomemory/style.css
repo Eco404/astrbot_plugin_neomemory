@@ -567,6 +567,7 @@ button.primary, button.primary:hover:not(:disabled) { background: var(--accent-s
 .cleaning-row[data-effective="false"] .cleaning-label { color: var(--text-muted); }
 .cleaning-row input.toggle { flex-shrink: 0; }
 .cleaning-group .cleaning-members { border-inline-start: 2px solid var(--line-soft); padding-inline-start: 12px; }
+#cleaning-dialog:has(#cleaning-rule-fields:not([hidden])) { width: min(720px, calc(100vw - 32px)); }
 #cleaning-form .row { justify-content: flex-end; margin-top: 18px; }
 #cleaning-form textarea { min-height: 64px; }
 #cleaning-form select { width: 100%; }

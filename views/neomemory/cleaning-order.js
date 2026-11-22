@@ -6,7 +6,7 @@ export function rootOrder(config) {
 }
 
 // Keep unaffected rows in place when an editor creates, moves or deletes an item.
-export function editedRootOrder(base, next, item, collection) {
+export function editedRootOrder(base, next) {
   const order = rootOrder(base).flatMap(ref => {
     if (ref.kind === 'group' && !next.groups.some(group => group.id === ref.id)) {
       return base.rules.filter(rule => rule.group_id === ref.id &&
@@ -19,21 +19,32 @@ export function editedRootOrder(base, next, item, collection) {
   for (const group of next.groups) {
     if (!order.some(ref => ref.kind === 'group' && ref.id === group.id)) order.push({kind: 'group', id: group.id});
   }
-  const changedPosition = item && collection === 'rules' &&
-    next.rules.findIndex(rule => rule.id === item.id) !== base.rules.indexOf(item);
-  for (const [i, rule] of next.rules.entries()) {
-    if (rule.group_id !== null) continue;
-    const at = order.findIndex(ref => ref.kind === 'rule' && ref.id === rule.id);
-    if (at >= 0) {
-      if (!changedPosition || rule.id !== item.id) continue;
-      order.splice(at, 1);
+  for (const rule of next.rules) {
+    if (rule.group_id === null && !order.some(ref => ref.kind === 'rule' && ref.id === rule.id)) {
+      order.push({kind: 'rule', id: rule.id});
     }
-    const after = next.rules[i + 1];
-    const anchor = after ? order.findIndex(ref => after.group_id === null
-      ? ref.kind === 'rule' && ref.id === after.id : ref.kind === 'group' && ref.id === after.group_id) : -1;
-    order.splice(anchor < 0 ? order.length : anchor, 0, {kind: 'rule', id: rule.id});
   }
   return order;
+}
+
+export function editedRules(base, item, entry) {
+  if (item && item.group_id === entry.group_id) {
+    return base.rules.map(rule => rule.id === item.id ? entry : rule);
+  }
+  const rules = base.rules.filter(rule => rule.id !== entry.id);
+  if (entry.group_id === null) return [...rules, entry];
+  let at = rules.findLastIndex(rule => rule.group_id === entry.group_id) + 1;
+  if (at === 0) {
+    // An empty group takes its execution position from the next occupied root row.
+    const roots = rootOrder(base);
+    const groupIndex = roots.findIndex(ref => ref.kind === 'group' && ref.id === entry.group_id);
+    const following = roots.slice(groupIndex + 1);
+    at = rules.findIndex(rule => following.some(ref => ref.kind === 'group'
+      ? ref.id === rule.group_id : rule.group_id === null && ref.id === rule.id));
+    if (at < 0) at = rules.length;
+  }
+  rules.splice(at, 0, entry);
+  return rules;
 }
 
 export function installCleaningDrag(list, endZone, reordered) {
