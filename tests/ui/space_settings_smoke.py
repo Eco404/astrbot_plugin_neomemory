@@ -72,6 +72,12 @@ async def main():
                         assert abs(box[measurement] - ref_box[measurement]) <= 1
                         assert abs(reset_box[measurement] - ref_reset[measurement]) <= 1
                     assert abs(box['y'] + box['height']/2 - reset_box['y'] - reset_box['height']/2) <= 1
+                await page.set_viewport_size({'width': width, 'height': 450})
+                await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+                await expect(page.locator('#space-bar')).not_to_be_in_viewport()
+                await expect(page.locator('.page-header')).to_be_in_viewport()
+                await expect(page.locator('.page-header')).to_have_css('--bar-opacity', '1')
+                await page.evaluate("window.scrollTo(0, 0)")
             limit = page.locator('#policy-external_limit')
             reset = limit.locator('..').get_by_role('button')
             await expect(reset).to_be_disabled()
@@ -104,6 +110,7 @@ async def main():
             await page.get_by_role('button', name='放弃并离开').click()
             await expect(page.locator('#page-memory')).to_be_visible()
             await expect(page.locator('main > #space-bar #space')).to_have_value('space-2')
+            await expect(page.locator('#space-bar')).to_have_css('position', 'sticky')
             assert not errors, errors
             await browser.close()
         print('space settings browser passed')

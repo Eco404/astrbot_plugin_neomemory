@@ -25,8 +25,9 @@ function fadeCoveredBar(bar, anchor, active) {
 function updateStickyBars() {
   stickyFrame = 0;
   fadeCoveredBar(sidebar, $('header-anchor'), compact.matches);
-  fadeCoveredBar(header, spaceAnchor, !spaceBar.hidden);
-  document.documentElement.style.setProperty('--pinned-height', (spaceBar.hidden ? header : spaceBar).offsetHeight + 'px');
+  const spaceBarPins = spaceBar.parentElement === $('main') && !spaceBar.hidden;
+  fadeCoveredBar(header, spaceAnchor, spaceBarPins);
+  document.documentElement.style.setProperty('--pinned-height', (spaceBarPins ? spaceBar : header).offsetHeight + 'px');
 }
 function scheduleStickyBars() {
   if (!stickyFrame) stickyFrame = requestAnimationFrame(updateStickyBars);
@@ -64,9 +65,9 @@ async function navigate(page) {
   document.querySelectorAll('[data-page]').forEach((node) => node.setAttribute('aria-current', node.dataset.page === page ? 'page' : 'false'));
   document.querySelectorAll('.page').forEach((node) => { node.hidden = node.id !== 'page-' + page; });
   if (page === 'settings') {
-    if (spaceBar.parentElement !== $('space-settings')) $('space-settings').prepend(spaceAnchor, spaceBar);
+    if (spaceBar.parentElement !== $('space-settings')) $('space-settings').prepend(spaceBar);
   } else if (spaceBar.parentElement !== $('main')) {
-    $('page-memory').before(spaceAnchor, spaceBar);
+    spaceAnchor.after(spaceBar);
   }
   spaceBar.hidden = ['settings', 'models'].includes(page);
   $('page-title').textContent = { memory:'记忆', notes:'笔记', models:'模型', settings:'设置', maintenance:'维护' }[page];

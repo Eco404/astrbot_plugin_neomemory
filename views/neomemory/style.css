@@ -208,7 +208,8 @@ details[open] > summary { color: var(--accent-strong); }
 .toast-close { flex: 0 0 32px; min-height: 32px; padding: 0; font-size: 22px; border-color: transparent; background: transparent; line-height: 1; }
 .toast-close:hover { background: var(--surface-hover); }
 @media (max-width: 600px) { .notifications { right: 16px; } }
-.space-bar { position: sticky; top: var(--sticky-top); z-index: 6; background: var(--glass-strong); display: flex; align-items: center; gap: 22px; padding: 14px 18px; margin-bottom: 22px; }
+main > .space-bar { position: sticky; top: var(--sticky-top); z-index: 6; }
+.space-bar { background: var(--glass-strong); display: flex; align-items: center; gap: 22px; padding: 14px 18px; margin-bottom: 22px; }
 .space-label { display: flex; align-items: center; gap: 9px; color: var(--text-muted); flex-shrink: 0; }
 .space-label label { margin: 0; font-weight: 550; }
 .space-bar > .row { flex: 1; }
