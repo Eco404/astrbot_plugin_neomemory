@@ -126,6 +126,10 @@ class ConsoleStore:
             "SELECT space_id,scope_key,space_type,persona_id,logical_user_id,platform_instance_id,group_id "
             "FROM memory_spaces ORDER BY created_at,space_id LIMIT ? OFFSET ?", (limit + 1, offset))
         items = [dict(row) for row in rows[:limit]]
+        await self.label_spaces(items)
+        return {"items": items, "limit": limit, "offset": offset, "has_more": len(rows) > limit}
+
+    async def label_spaces(self, items):
         owners = {item["logical_user_id"] for item in items if item["space_type"] == "private"}
         groups = {(item["platform_instance_id"], item["group_id"]) for item in items if item["space_type"] == "group"}
         user_names = await self.sources.get_user_display_names(owners) if self.sources and owners else {}
@@ -144,7 +148,7 @@ class ConsoleStore:
                 platform, group_id = item["platform_instance_id"], item["group_id"]
                 name = "群 " + group_names.get((platform, group_id), group_id)
             item["display_label"] = f"{item['persona_id']} · {name}"
-        return {"items": items, "limit": limit, "offset": offset, "has_more": len(rows) > limit}
+        return items
 
     async def display_details(self, value):
         texts = []

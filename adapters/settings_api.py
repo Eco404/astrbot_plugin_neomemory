@@ -100,7 +100,16 @@ class SettingsAPI:
     async def get_space_policy(self):
         if not self.plugin.ready or self.plugin.terminating:
             raise SettingsUnavailable()
-        return json_response(await self.plugin.memory_store.get_space_policy(request.query.get("space_id")))
+        space_id = request.query.get("space_id")
+        policy = await self.plugin.memory_store.get_space_policy(space_id)
+        return json_response(await self._with_shared_spaces(policy))
+
+    async def _with_shared_spaces(self, policy):
+        sources = await self.plugin.memory_store.list_shared_spaces(policy["space_id"])
+        labeled = await self.plugin.console_store.label_spaces(sources)
+        return {**policy, "shared_spaces": [
+            {"space_id": s["space_id"], "display_label": s["display_label"]} for s in labeled
+        ]}
 
     @_guard
     async def save_space_policy(self):
@@ -108,7 +117,8 @@ class SettingsAPI:
             raise SettingsUnavailable()
         body = await self._body({"space_id"}, optional=PERSONA_DEFAULTS | SPACE_DEFAULTS)
         space_id = body.pop("space_id")
-        return json_response(await self.plugin.memory_store.set_space_policy(space_id, body))
+        policy = await self.plugin.memory_store.set_space_policy(space_id, body)
+        return json_response(await self._with_shared_spaces(policy))
 
     @_guard
     async def get_appearance(self):
