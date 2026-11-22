@@ -578,7 +578,7 @@
   },
   "extraction_output_format": {
     "description": "[高级] 抽取输出格式",
-    "hint": "长期抽取和主题整理默认使用 JSON Schema。Provider 或模型不支持时自动使用提示词约束的文本输出。JSON 对象模式需要兼容的 Responses Provider 和模型。",
+    "hint": "长期抽取、主题整理和短期摘要默认使用 JSON Schema。Provider 或模型不支持时自动使用提示词约束的文本输出。JSON 对象模式需要兼容的 Responses Provider 和模型。",
     "type": "string",
     "default": "json_schema",
     "options": [

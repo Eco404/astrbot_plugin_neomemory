@@ -68,6 +68,20 @@ def output_schema(*, source_ids: Sequence[str], summary_chars: int, previous_sum
     return schema
 
 
+def provider_schema(schema: dict) -> dict:
+    """Constrain the wire shape. The full window schema is enforced after generation."""
+    fields = schema["properties"]
+    return {
+        "type": "object", "additionalProperties": False, "required": schema["required"],
+        "properties": {
+            "schema_version": {"type": "string", "enum": [fields["schema_version"]["const"]]},
+            "summary_text": {"type": "string"},
+            "evidence_source_ids": {"type": "array", "items": {
+                "type": "string", "enum": fields["evidence_source_ids"]["items"]["enum"]}},
+        },
+    }
+
+
 def messages(*, persona: str, previous_summary: str, records: Sequence[Mapping[str, Any]],
              summary_chars: int, user_ids: Sequence[str] = (),
              prompt_version: str = PROMPT_VERSION) -> list[dict[str, str]]:

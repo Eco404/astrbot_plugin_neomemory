@@ -470,3 +470,30 @@ async def test_missing_model_has_recoverable_short_term_window(env):
     env.config.short_term_provider_id = "changed-after-prepare"
     assert (await execute(env, await env.jobs.claim("fresh")))["state"] == "succeeded"
     assert env.adapter.requests[-1]["provider_id"] == "summary"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured", ["text", "json_object", "json_schema"])
+async def test_output_mode_and_window_schema_apply_to_first_call_and_correction(env, configured):
+    env.config.extraction_output_format = configured
+    job = await claim(env)
+    sources = job["payload"]["source_ids"]
+    valid = json.dumps({"schema_version": PROMPT_VERSION, "summary_text": "周末约定尚待确认。",
+                        "evidence_source_ids": [sources[0]]})
+
+    async def answer():
+        env.adapter.output = valid + '"}' if len(env.adapter.requests) == 1 else valid
+        env.config.extraction_output_format = "text"
+
+    env.adapter.hook = answer
+    assert (await execute(env, job))["state"] == "succeeded"
+    assert len(env.adapter.requests) == 2
+    for request in env.adapter.requests:
+        assert request["output_format"] == configured
+        if configured == "json_schema":
+            schema = request["output_schema"]
+            assert set(schema["required"]) == set(json.loads(valid))
+            assert schema["properties"]["evidence_source_ids"]["items"]["enum"] == sources
+        else:
+            assert request["output_schema"] is None
+    assert (await current(env))["content_version"] == 1

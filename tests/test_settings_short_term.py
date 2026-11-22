@@ -26,7 +26,8 @@ async def test_dedicated_provider_handles_real_short_term_window_with_long_term_
     def fingerprint(provider_id, revision=""):
         fingerprints.append(provider_id)
         return provider_id
-    async def generate(messages, *, provider_id, timeout_seconds, diagnostics):
+    async def generate(messages, *, provider_id, timeout_seconds, diagnostics, output_format, output_schema):
+        assert output_format == "json_schema" and output_schema["type"] == "object"
         calls.append(provider_id)
         diagnostics.update(finish_reason="stop")
         prompt = json.loads(messages[-1]["content"])

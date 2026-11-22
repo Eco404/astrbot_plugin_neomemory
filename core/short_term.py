@@ -25,7 +25,8 @@ from .persona_policy import is_supported_persona
 from .memory_text import user_reference_ids
 from .forwarded_content import window_text
 from .group_addressing import address_snapshot_users
-from .short_term_prompts import MAX_OUTPUT_BYTES, PROMPT_VERSION, host_has_summary, messages, output_schema, parse_output
+from .short_term_prompts import (MAX_OUTPUT_BYTES, PROMPT_VERSION, host_has_summary, messages,
+                                 output_schema, parse_output, provider_schema)
 from .candidate_feedback import (
     SHORT_TERM_RECOVERY_VERSION as RECOVERY_VERSION, correction_allowed, recovery_messages, validation_errors,
 )
@@ -299,6 +300,7 @@ class ShortTermService:
             checkpoint = {"input_digest": input_digest, "signature": signature, "prompt_version": prompt_version,
                           "user_ids": sorted(user_ids),
                           "corrections": 0, "correction_limit": getattr(self.config, "extraction_max_regenerations", 3)}
+            checkpoint["output_format"] = getattr(self.config, "extraction_output_format", "json_schema")
             await self._save(job, checkpoint, "short_term_prepared")
         old_text = previous["summary_text"] if previous else ""
         prompt = messages(persona=persona, previous_summary=old_text, records=records,
@@ -323,7 +325,7 @@ class ShortTermService:
                     raise ReviewRequired("configuration_or_context_changed")
                 request = recovery_messages(prompt, archived["window"]["raw"], checkpoint.get("errors", []), checkpoint["regeneration"]["version"])
             if "raw" not in checkpoint:
-                await self._generate(job, checkpoint, request, deadline)
+                await self._generate(job, checkpoint, request, schema, deadline)
             if checkpoint["signature"] != (await self._execution(space, prompt_version, job["payload"].get("model_route")))[1]:
                 raise ReviewRequired("configuration_changed")
             diagnostics = checkpoint.get("response_diagnostics", {})
@@ -352,7 +354,7 @@ class ShortTermService:
                 checkpoint.pop("response_diagnostics", None)
                 await self._save(job, checkpoint, "short_term_correcting")
 
-    async def _generate(self, job, checkpoint, prompt, deadline):
+    async def _generate(self, job, checkpoint, prompt, schema, deadline):
         if sum(len(message["content"].encode()) for message in prompt) > getattr(
             self.config, "extraction_max_prompt_bytes", 256000
         ):
@@ -363,7 +365,10 @@ class ShortTermService:
             route = job["payload"].get("model_route")
             if route is None:
                 route = {"provider_id": self._provider_id()}
+            output_format = checkpoint.get("output_format", "text")
             raw = await self.adapter.generate(prompt, provider_id=route["provider_id"],
+                output_format=output_format,
+                output_schema=provider_schema(schema) if output_format == "json_schema" else None,
                 **({"model": route["model_override"]} if route.get("model_override") else {}),
                 timeout_seconds=max(.001, deadline - time.monotonic()), diagnostics=diagnostics)
         except Exception as exc:
