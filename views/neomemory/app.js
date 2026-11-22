@@ -10,6 +10,7 @@ mountIcons();
 const header = document.querySelector('.page-header');
 const sidebar = document.querySelector('.sidebar');
 const spaceBar = $('space-bar');
+const spaceAnchor = $('space-anchor');
 const compact = matchMedia('(max-width: 900px)');
 let stickyFrame = 0;
 
@@ -24,7 +25,7 @@ function fadeCoveredBar(bar, anchor, active) {
 function updateStickyBars() {
   stickyFrame = 0;
   fadeCoveredBar(sidebar, $('header-anchor'), compact.matches);
-  fadeCoveredBar(header, $('space-anchor'), !spaceBar.hidden);
+  fadeCoveredBar(header, spaceAnchor, !spaceBar.hidden);
   document.documentElement.style.setProperty('--pinned-height', (spaceBar.hidden ? header : spaceBar).offsetHeight + 'px');
 }
 function scheduleStickyBars() {
@@ -62,7 +63,12 @@ async function navigate(page) {
   state.page = page;
   document.querySelectorAll('[data-page]').forEach((node) => node.setAttribute('aria-current', node.dataset.page === page ? 'page' : 'false'));
   document.querySelectorAll('.page').forEach((node) => { node.hidden = node.id !== 'page-' + page; });
-  $('space-bar').hidden = ['settings', 'models'].includes(page);
+  if (page === 'settings') {
+    if (spaceBar.parentElement !== $('space-settings')) $('space-settings').prepend(spaceAnchor, spaceBar);
+  } else if (spaceBar.parentElement !== $('main')) {
+    $('page-memory').before(spaceAnchor, spaceBar);
+  }
+  spaceBar.hidden = ['settings', 'models'].includes(page);
   $('page-title').textContent = { memory:'记忆', notes:'笔记', models:'模型', settings:'设置', maintenance:'维护' }[page];
   $('page-description').textContent = {
     memory: '查阅经历、了解彼此，让每次对话有所承接。',

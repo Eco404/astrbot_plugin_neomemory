@@ -60,7 +60,11 @@ async def main():
                     ref = page.locator('#' + reference)
                     ref_box = await ref.bounding_box()
                     ref_reset = await ref.locator('..').get_by_role('button').bounding_box()
+                    tabs = page.get_by_role('tablist', name='设置层级')
+                    tab_y = (await tabs.bounding_box())['y']
                     await page.get_by_role('tab', name='记忆空间').click()
+                    await expect(page.locator('#space-settings #space-bar')).to_be_visible()
+                    assert abs((await tabs.bounding_box())['y'] - tab_y) <= 1
                     control = page.locator('#' + target)
                     box = await control.bounding_box()
                     reset_box = await control.locator('..').get_by_role('button').bounding_box()
@@ -99,6 +103,7 @@ async def main():
             await page.locator('[data-page="memory"]').click()
             await page.get_by_role('button', name='放弃并离开').click()
             await expect(page.locator('#page-memory')).to_be_visible()
+            await expect(page.locator('main > #space-bar #space')).to_have_value('space-2')
             assert not errors, errors
             await browser.close()
         print('space settings browser passed')
