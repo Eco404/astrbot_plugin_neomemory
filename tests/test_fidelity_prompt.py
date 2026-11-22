@@ -22,7 +22,7 @@ def test_default_narrative_removes_memory_bookkeeping_from_positive_examples():
     }
     candidate = build_extraction_prompt(**inputs)
     rules = candidate[0]["content"]
-    assert PROMPT_VERSION == "extraction-prompt.v1"
+    assert PROMPT_VERSION == "extraction-prompt.v2-dev.1"
     assert candidate == build_extraction_prompt(**inputs, prompt_version=PROMPT_VERSION)
     assert candidate == build_extraction_prompt(**inputs, schema_version="extraction.v1")
     assert "schema_version=extraction.v1" in rules
@@ -45,6 +45,9 @@ def test_current_default_preserves_persona_voice():
     baseline = build_extraction_prompt(**inputs)
     assert baseline == build_extraction_prompt(**inputs, prompt_version=PROMPT_VERSION)
     assert "【身份、来源与输入】" in baseline[0]["content"]
+    assert "其他空间的往事" in baseline[0]["content"]
+    released = build_extraction_prompt(**inputs, prompt_version="extraction-prompt.v1")
+    assert "其他空间的往事" not in released[0]["content"]
     rules = baseline[0]["content"]
     for required in (
         "agent 是当前人格", "不用人格名作第三人称主语", "不泛称“用户”",
@@ -107,7 +110,7 @@ def test_prepared_version_is_part_of_input_and_survives_snapshot_roundtrip():
     )
     candidate = current
     restored = PreparedExtraction(**asdict(candidate))
-    assert restored.prompt_version == "extraction-prompt.v1"
+    assert restored.prompt_version == "extraction-prompt.v2-dev.1"
     assert restored.input_digest == candidate.input_digest
     assert restored.messages() == candidate.messages()
     with pytest.raises(ValueError, match="unsupported"):

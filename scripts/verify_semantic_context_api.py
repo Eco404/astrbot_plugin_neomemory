@@ -152,7 +152,8 @@ async def run(directory, secrets, prompt_version):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--prompt-version", default="extraction-prompt.v1")
+    from core.prompts import PROMPT_VERSION
+    parser.add_argument("--prompt-version", default=PROMPT_VERSION)
     parser.add_argument("--credentials", type=Path, default=Path(__file__).resolve().parents[1] / "docs/api_key.md")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)

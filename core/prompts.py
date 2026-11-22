@@ -12,7 +12,7 @@ from .relationship_state import relationship_slots
 from .extraction_observations import TEMPORAL_SEMANTICS, source_observation_fields
 from .extraction_schema import MAX_OUTPUT_CHARS, SCHEMA_VERSION, extraction_json_schema
 
-PROMPT_VERSION = "extraction-prompt.v1"
+PROMPT_VERSION = "extraction-prompt.v2-dev.1"
 
 FORWARDED_SOURCE_RULE = (
     "【转发消息】有 forwarded_messages 的来源中，外层 actor 只负责转发及 content_text 里的附言。"
@@ -91,7 +91,7 @@ base_node_ids只用于来源追溯，不会自动把依据节点的正文展开�
 
 
 def schema_for_prompt_version(prompt_version: str) -> str:
-    if prompt_version != PROMPT_VERSION:
+    if prompt_version not in {"extraction-prompt.v1", PROMPT_VERSION}:
         raise ValueError(f"unsupported prompt version {prompt_version!r}")
     return SCHEMA_VERSION
 
@@ -101,6 +101,7 @@ def resolve_extraction_prompt_version(*, schema_version=None, prompt_version=Non
         raise ValueError(f"unsupported extraction schema version: {schema_version}")
     if prompt_version is not None:
         schema_for_prompt_version(prompt_version)
+        return prompt_version
     return PROMPT_VERSION
 
 
@@ -140,6 +141,10 @@ def build_extraction_prompt(
         payload["known_edges"] = [dict(edge) for edge in known_edges]
     schema_text = json.dumps(extraction_json_schema(effective_schema), ensure_ascii=False, separators=(",", ":"))
     rules = EXTRACTION_RULES
+    if selected_version == PROMPT_VERSION:
+        rules += ("\n【其他空间的往事】同一人格在别处的记忆仅供背景。当前 sources 有人转述这些经历时，"
+                  "保留原来的参与者和发生场景。按本轮发言记录当下新的回应、决定或约定，"
+                  "不要把别人的经历写到当前对话者的名下。")
     if payload["known_relationship"] is not None:
         previous = payload["known_relationship"]
         previous["state"] = relationship_slots(state=previous["state"])
