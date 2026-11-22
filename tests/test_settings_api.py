@@ -166,3 +166,30 @@ async def test_text_cleaning_revision_validation_and_restart(api, tmp_path):
         assert payload(await api.get_cleaning()) == saved
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_space_policy_returns_only_visible_sources_with_console_labels(api, tmp_path):
+    from core.memory_spaces import group_space, private_space
+    from storage.console_store import ConsoleStore
+    from storage.memory_store import MemoryStore
+
+    memory = MemoryStore(tmp_path / "memory.db")
+    await memory.open()
+    try:
+        api.plugin.ready = True
+        api.plugin.memory_store = memory
+        api.plugin.console_store = ConsoleStore(memory)
+        private = await memory.get_or_create_space(private_space("p", "u"))
+        group = await memory.get_or_create_space(group_space("p", "adapter", "77"))
+        await memory.get_or_create_space(group_space("another", "adapter", "77"))
+        module.request.query = {"space_id": private["space_id"]}
+        assert payload(await api.get_space_policy())["shared_spaces"] == []
+        api.test_body = {"space_id": private["space_id"], "shared_recall_enabled": True}
+        sources = payload(await api.save_space_policy())["shared_spaces"]
+        assert sources == [{"space_id": group["space_id"], "display_label": "p · 群 77"}]
+        assert payload(await api.get_space_policy())["shared_spaces"] == sources
+        module.request.query = {"space_id": group["space_id"]}
+        assert payload(await api.get_space_policy())["shared_spaces"] == []
+    finally:
+        await memory.close()
