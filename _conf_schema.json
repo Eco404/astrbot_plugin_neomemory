@@ -278,7 +278,7 @@
   },
   "recall_selection_mode": {
     "description": "[高级] 被动召回策略",
-    "hint": "相关性筛选会减少弱匹配，部分宽泛问题和承接上文的追问可能漏召回。保存后可在维护页的召回测试中比较。",
+    "hint": "相关性筛选以当前消息检索。识别到追问时会参考最近一条有效上文，简短应答跳过长期检索。维护页可预览单条查询的效果。",
     "type": "string",
     "default": "baseline",
     "options": ["baseline", "gated"],

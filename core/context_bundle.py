@@ -49,9 +49,10 @@ def assemble_context(snapshot: dict[str, Any], hits: list[dict[str, Any]], confi
         return (len(items) <= max_nodes
                 and context_bytes + size + bool(context_bytes and size) <= total)
 
+    distinct = getattr(config, "recall_selection_mode", "baseline") == "gated"
     selected = []
     if priority == "recall_first":
-        selected = select_context(hits, coverage, fits=fits)[:1]
+        selected = select_context(hits, coverage, fits=fits, distinct_evidence=distinct)[:1]
         memory_bytes = memory_size(selected)
 
     def add(name, label, payload, max_chars):
@@ -115,7 +116,7 @@ def assemble_context(snapshot: dict[str, Any], hits: list[dict[str, Any]], confi
                 add(*entry)
         elif name in local_entries:
             add(name, *local_entries[name])
-    selected = select_context(hits, coverage, fits=fits, initial=selected)
+    selected = select_context(hits, coverage, fits=fits, initial=selected, distinct_evidence=distinct)
     memory_bytes = memory_size(selected)
     if (getattr(config, "notes_hint_enabled", True) and config.tools_enabled
             and snapshot.get("active_notes", 0)):

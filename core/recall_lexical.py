@@ -18,8 +18,27 @@ _FOLLOWUP = re.compile(
 )
 
 
+# Subjectless questions can ask for a place, time or outcome supplied by the previous turn.
+_REFERENTIAL = re.compile(
+    r"(?:那|那么)?(?:它们?|他|她|那件事|这件事|那个|这个|后来|最后|最终|之后|当时)"
+    r"(?:后来|最后|当时|是|又|到底|现在|被|要|会|都|还)*"
+    r"(?:怎么|怎样|为什么|什么时候|在哪|去哪|到哪|.{0,2}哪[里儿]?).{0,8}"
+    r"|(?:what|where|when|how|why) (?:was|were|is|are|did|does|do) (?:it|that|they)(?: .{1,24})?"
+)
+_ACKNOWLEDGEMENT = re.compile(r"嗯+|哦+|好(?:的|呀|啊|哒)?|收到|明白了|谢谢(?:你)?|多谢|好的谢谢|ok(?:ay)?|thanks|thank you|got it")
+
+
+def _standalone(text: str) -> str:
+    return text.casefold().strip(" \t\n,.!?，。！？…")
+
+
 def is_followup(text: str) -> bool:
-    return bool(_FOLLOWUP.fullmatch(text.casefold().strip(" \t\n,.!?，。！？…")))
+    text = _standalone(text)
+    return bool(_FOLLOWUP.fullmatch(text) or _REFERENTIAL.fullmatch(text))
+
+
+def is_acknowledgement(text: str) -> bool:
+    return not text.rstrip().endswith(("?", "？")) and bool(_ACKNOWLEDGEMENT.fullmatch(_standalone(text)))
 
 
 def _terms(text: str) -> set[str]:

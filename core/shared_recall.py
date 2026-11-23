@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, replace
 
 from .memory_text import memory_texts, render_display_text, render_memory_text, user_reference_ids
+from .recall_lexical import is_acknowledgement
 from .retrieval import rank_candidates, render_node, select_context
 
 
@@ -35,7 +36,7 @@ async def _scene(space, sources, names):
 async def search_shared(memory, sources, service, local, current, query, deadline, *,
                         preview=False, filters=None, current_names=None):
     """Search indexed nodes only; query computation belongs to the originating space."""
-    if not query.strip() or (filters and filters.kind == "note"):
+    if not query.strip() or (filters and filters.kind == "note") or (filters is None and is_acknowledgement(query)):
         return []
     spaces = await memory.list_shared_spaces(local.space_id)
     if not spaces:
@@ -74,7 +75,8 @@ async def search_shared(memory, sources, service, local, current, query, deadlin
         ranked = await asyncio.to_thread(rank_candidates, snapshot, vectors, [(vector, 1., True)],
             policy, time.time(), active=False, query_texts=[query])
         direct = [n for n in ranked if n["direct"]]
-        for node in select_context(direct, snapshot["coverage"], fits=lambda items: len(items) <= candidate_limit):
+        for node in select_context(direct, snapshot["coverage"], fits=lambda items: len(items) <= candidate_limit,
+                                   distinct_evidence=filters is None):
             candidates.append((node, space))
         candidates.sort(key=lambda entry: (-entry[0]["score"], entry[0]["node_id"]))
         # Keep alternatives for budget and final visibility checks.

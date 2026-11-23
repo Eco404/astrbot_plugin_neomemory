@@ -655,3 +655,38 @@ def test_relevant_graph_neighbor_remains_eligible_and_an_unsupported_neighbor_is
                              query_texts=["有没有珍藏？"])
     assert [(row["node_id"], row["connection"]) for row in ranked] == [
         ("0", "直接匹配"), ("3", "相关经历")]
+
+
+@pytest.mark.asyncio
+async def test_gated_query_uses_history_for_a_referent_but_not_a_new_subject_or_acknowledgement():
+    node = memory_node("kite", text="气象风筝放在工具室。")
+    current = "灯塔多久闪一次？"
+    followup = "它后来放在哪儿？"
+    previous = "气象风筝收回来了。"
+    vectors = {node["content_text"]: [1., 0.], previous: [1., 0.], followup: [0., 1.],
+               current: [.65, math.sqrt(1 - .65**2)], "没问题": [1., 0.], "收到": [1., 0.]}
+    embeddings = FakeEmbeddings(vectors)
+    service = RecallService(FakeMemory(snapshot(node)), embeddings, policy=RecallPolicy(ranking_strategy="gated"))
+    history = [{"content_text": text, "actor_kind": "user", "observed_at": NOW - i}
+               for i, text in enumerate(("收到", previous, "没问题"))]
+    changed = await service.recall("space", current, history=history, now=NOW)
+    assert changed.diagnostics["query_count"] == 1 and not changed.hits
+    continued = await service.recall("space", followup, history=history, now=NOW)
+    assert continued.diagnostics["query_count"] == 2
+    assert [hit["node_id"] for hit in continued.hits] == ["kite"]
+    ack = await service.recall("space", "收到", history=history, now=NOW)
+    assert not ack.hits and "query_embedding" not in ack.diagnostics
+    explicit = await service.recall("space", "收到", active=True, now=NOW)
+    assert [hit["node_id"] for hit in explicit.hits] == ["kite"]
+
+
+@pytest.mark.asyncio
+async def test_identical_passive_evidence_leaves_room_for_another_date():
+    nodes = [memory_node(key, kind="event", text="来过植物园。", event_time_text=date)
+             for key, date in (("a", "星期一"), ("b", "星期一"), ("c", "星期二"))]
+    service = RecallService(FakeMemory(snapshot(*nodes)), FakeEmbeddings({"来过植物园。": [1., 0.], "植物园": [1., 0.]}),
+                            policy=RecallPolicy(ranking_strategy="gated", max_nodes=2))
+    result = await service.recall("space", "植物园", now=NOW, preview=True)
+    assert [row["node_id"] for row in result.hits] == ["a", "c"]
+    assert [(row["node_id"], row["reason"]) for row in result.diagnostics["preview_candidates"]] == [
+        ("b", "相同内容已入选")]

@@ -18,7 +18,7 @@ from .memory_text import (
     render_memory_text,
     user_reference_ids,
 )
-from .recall_lexical import is_followup, lexical_scores
+from .recall_lexical import is_acknowledgement, is_followup, lexical_scores
 from .strength import StrengthPolicy, calculate_strength
 
 
@@ -131,12 +131,25 @@ def rank_candidates(snapshot: dict[str, Any], vectors: list[list[float] | None],
     use_lexical = strategy in {"lexical", "gated"} and query_texts is not None
     gated = use_lexical and strategy == "gated"
     current_index = next((i for i, (_, _, current) in enumerate(queries) if current), None)
-    # A missing current embedding can still fall back to usable history.
+    antecedent = None
     coherent = set()
     overlaps = {}
     if use_lexical:
         if current_index is None:
-            coherent.update(range(len(queries)))
+            if gated:
+                # Only a recognized follow-up carries an antecedent into the service.
+                antecedent = 0
+                coherent.add(antecedent)
+            else:
+                coherent.update(range(len(queries)))
+        elif gated:
+            text = query_texts[current_index]
+            coherent.add(current_index)
+            if is_followup(text):
+                antecedent = next((i for i, (_, weight, current) in enumerate(queries)
+                                   if not current and weight > 0 and not is_acknowledgement(query_texts[i])), None)
+                if antecedent is not None:
+                    coherent.add(antecedent)
         else:
             coherent.add(current_index)
             history_indices = [i for i, (_, _, current) in enumerate(queries) if not current]
@@ -171,7 +184,7 @@ def rank_candidates(snapshot: dict[str, Any], vectors: list[list[float] | None],
     rejected_ids = set()
     current_order = ()
     for query_index, (_, weight, current) in enumerate(queries):
-        if weight <= 0:
+        if weight <= 0 or (gated and query_index not in coherent):
             continue
         selected = np.argsort(-similarities[:, query_index], kind="stable")
         if preview_exclusions is not None and current:
@@ -214,14 +227,9 @@ def rank_candidates(snapshot: dict[str, Any], vectors: list[list[float] | None],
                 if gated and not sufficient(similarity, coverage, query_index):
                     rejected_ids.add(node["node_id"])
                     continue
-            elif gated:
-                # History can corroborate an explicit request only when the
-                # current query independently admitted this node.
-                if node["node_id"] not in candidates:
-                    continue
             accepted.append((node, score))
         best = max((score for _, score in accepted), default=0.)
-        if gated and overlap is not None and accepted:
+        if gated and current and accepted:
             # Check one-hop neighbors outside the retrieval pool against the
             # same query and score band before graph or time adjacency can add them.
             for row in selected:
@@ -236,7 +244,7 @@ def rank_candidates(snapshot: dict[str, Any], vectors: list[list[float] | None],
                         neighborhood_matches.add(node["node_id"])
         if gated:
             accepted.sort(key=lambda item: -item[1])
-            accepted = accepted[:policy.candidate_per_query]
+            accepted = accepted[:1] if query_index == antecedent else accepted[:policy.candidate_per_query]
         for node, score in accepted:
             if gated and score < best - .095 * weight:
                 rejected_ids.add(node["node_id"])
@@ -253,9 +261,11 @@ def rank_candidates(snapshot: dict[str, Any], vectors: list[list[float] | None],
     vector_indices = {node["node_id"]: index for index, (node, _) in enumerate(valid)}
     weighted = similarities * np.asarray([weight for _, weight, _ in queries])
 
+    columns = coherent_indices if gated else slice(None)
+
     def member_score(node):
         index = vector_indices.get(node["node_id"])
-        similarity = float(np.max(weighted[index])) if index is not None else -1.0
+        similarity = float(np.max(weighted[index, columns])) if index is not None else -1.0
         return .85 * similarity + .15 * current_strength(node)
 
     organized, included, expanded = [], set(), set()
@@ -348,10 +358,16 @@ def rank_candidates(snapshot: dict[str, Any], vectors: list[list[float] | None],
     return organized + neighbors
 
 
+def _same_evidence(node, other):
+    fields = ("node_type", "status", "content_text", "event_time_start", "event_time_end",
+              "event_time_text", "emotion", "topic_id", "connection")
+    return all(node.get(field) == other.get(field) for field in fields)
+
+
 def select_context(ranked: list[dict[str, Any]], coverage: list[dict[str, Any]],
                    policy: RecallPolicy = RecallPolicy(), *, user_names=None,
                    fits: Callable[[list[dict[str, Any]]], bool] | None = None,
-                   initial=(), considered=None) -> list[dict[str, Any]]:
+                   initial=(), considered=None, distinct_evidence=False) -> list[dict[str, Any]]:
     """Only a selected, current full-coverage event can suppress an atomic."""
     by_id = {item["node_id"]: item for item in ranked}
     covers: dict[str, set[str]] = {}
@@ -379,6 +395,8 @@ def select_context(ranked: list[dict[str, Any]], coverage: list[dict[str, Any]],
             if fits(selected + [parent]):
                 item = parent
                 break
+        if distinct_evidence and any(_same_evidence(item, other) for other in selected):
+            continue
         proposal = [previous for previous in selected if previous["node_id"] not in covers.get(item["node_id"], set())] + [item]
         if fits(proposal):
             selected = proposal
@@ -480,14 +498,24 @@ class RecallService:
                     result.diagnostics["cache_degraded"] = cache_error
                 if all(vector is None for vector in vectors):
                     return result
+                gated = not active and self.policy.ranking_strategy == "gated"
+                if gated and is_acknowledgement(current_text):
+                    result.diagnostics["acknowledgement"] = True
+                    return result
                 recent = sorted((item for item in (history or [])
                     if item.get("actor_kind") in {"user", "agent"}
                     and now - self.policy.history_seconds <= item.get("observed_at", 0) <= now),
                     key=lambda item: item["observed_at"], reverse=True)[:self.policy.history_limit]
                 queries = [(current_text[:self.policy.max_query_chars], 1., True)]
-                queries.extend((item["content_text"][:self.policy.max_query_chars],
-                    self.policy.user_weight if item["actor_kind"] == "user" else self.policy.agent_weight, False)
-                    for item in recent if item["content_text"].strip())
+                if not gated or is_followup(current_text):
+                    for item in recent:
+                        text = item["content_text"][:self.policy.max_query_chars]
+                        weight = self.policy.user_weight if item["actor_kind"] == "user" else self.policy.agent_weight
+                        if not text.strip() or (gated and (not weight or is_acknowledgement(text))):
+                            continue
+                        queries.append((text, weight, False))
+                        if gated:
+                            break
                 texts = [text for text, _, _ in queries]
                 result.diagnostics["query_count"] = len(texts)
                 cache_started = time.monotonic()
@@ -540,7 +568,7 @@ class RecallService:
                 names = {uid: resolved[uid] for uid in ids if uid in resolved} if preview else resolved
                 names.update(user_names or {})
                 result.user_names = names
-                selected = select_context(ranked, snapshot["coverage"], self.policy, user_names=names)
+                selected = select_context(ranked, snapshot["coverage"], self.policy, user_names=names, distinct_evidence=gated)
                 invalidated = ()
                 if selected:
                     valid = await self.memory.revalidate_recall(space_id, snapshot["generation_id"],
@@ -553,7 +581,7 @@ class RecallService:
                     if node_filter is not None:
                         selected = [node for node in selected if node_filter(node)]
                     # A state/time-only update can change serialized size too.
-                    selected = select_context(selected, snapshot["coverage"], self.policy, user_names=names)
+                    selected = select_context(selected, snapshot["coverage"], self.policy, user_names=names, distinct_evidence=gated)
                 result.hits, result.text = selected, render_nodes(selected, names)
                 if preview:
                     selection_ids = {item["node_id"] for item in selected}
@@ -568,8 +596,12 @@ class RecallService:
                             continue
                         if item["node_id"] in invalidated:
                             continue
-                        reason = ("由入选事件完整覆盖" if item["node_id"] in covered else
-                                  "未进入条目数或字节预算")
+                        if item["node_id"] in covered:
+                            reason = "由入选事件完整覆盖"
+                        elif gated and any(_same_evidence(item, hit) for hit in selected):
+                            reason = "相同内容已入选"
+                        else:
+                            reason = "未进入条目数或字节预算"
                         skipped.append(_preview_item(item, reason, similarity=item["similarity"]))
                     rejected = (skipped + exclusions)[:PREVIEW_LIMIT]
                     display_names = {**resolved, **names}

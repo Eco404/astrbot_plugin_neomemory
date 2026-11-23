@@ -128,7 +128,7 @@ def evaluate(split, vector_cache, strategy):
             query_texts=texts,
             strategy=strategy,
         )
-        hits = select_context(ranked, [], policy)
+        hits = select_context(ranked, [], policy, distinct_evidence=strategy == "gated")
         elapsed = (time.perf_counter() - started) * 1000
         rows.append(
             {

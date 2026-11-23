@@ -21,7 +21,8 @@ async def test_recall_renders_current_names_without_changing_vector_input_or_evi
     item = memory_node("n", text='我记得 {{user:alice}} 与 {{user:bob}} 讨论过合唱。')
     original = copy.deepcopy(item)
     memory = FakeMemory(snapshot(item))
-    embeddings = FakeEmbeddings({item["content_text"]: [1, 0], "合唱": [1, 0]})
+    embeddings = FakeEmbeddings({item["content_text"]: [1, 0], "合唱": [1, 0]},
+                                cached={item["content_text"]: [1, 0]})
     lookups = []
 
     async def names(ids):

@@ -87,6 +87,8 @@ def recall_snapshot(mode, query, started, result, *, text=None, hits=None, reaso
             reason = "向量模型设置已切换，请重新查询"
         elif diagnostics.get("cache_degraded"):
             reason = "向量缓存读取异常"
+        elif diagnostics.get("acknowledgement"):
+            reason = "本轮为简短应答，跳过被动长期记忆检索"
         elif diagnostics.get("missing_node_vectors"):
             reason = f"有 {diagnostics['missing_node_vectors']} 条记忆缺少向量"
         elif not items and not rendered:
