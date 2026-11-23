@@ -320,6 +320,8 @@ class ExternalMemoryAdapter:
             scope.platform_instance_id, scope.account_id, platform_name(self.plugin.context, scope.platform_instance_id))
         if current_user != space["logical_user_id"]:
             return {"items": []}
+        if result.diagnostics.get("missing_node_vectors") and runtime.recall is service:
+            runtime.schedule_index(space["space_id"])
         if ticket is not None:
             text = "\n".join(item["content"] for item in items)
             await history.append(ticket, space["space_id"], recall_snapshot(

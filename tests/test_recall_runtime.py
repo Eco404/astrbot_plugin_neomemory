@@ -633,6 +633,7 @@ async def test_recall_history_tracks_final_injection_and_active_result_while_pre
 
     cold = await plugin.runtime.test_recall(space_id, event.get_message_str())
     assert not cold["items"] and cold["reason"]
+    assert cold["index_coverage"] == {"total": 1, "usable": 0, "truncated": False}
     assert await plugin.jobs.list() == []
     await warm(plugin, space)
     before = await plugin.memory_store.get_node(node["node_id"])

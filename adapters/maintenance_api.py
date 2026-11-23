@@ -143,7 +143,10 @@ class MaintenanceAPI:
         body = await self._body({"space_id", "query"}, {"space_id", "query"})
         space = await self._space(body["space_id"])
         query = _text(body["query"], maximum=4000).strip()
-        return json_response(await self.plugin.runtime.test_recall(space["space_id"], query))
+        snapshot = await self.plugin.runtime.test_recall(space["space_id"], query)
+        if last_index := await self.plugin.jobs.latest_index(space["space_id"]):
+            snapshot["last_index"] = last_index
+        return json_response(snapshot)
 
     @_guard
     async def recall_history(self):

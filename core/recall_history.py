@@ -94,6 +94,13 @@ def recall_snapshot(mode, query, started, result, *, text=None, hits=None, reaso
     snapshot = {"mode": mode, "query": query[:4000], "created_at": time.time(),
                 "elapsed_ms": round((time.monotonic() - started) * 1000),
                 "text": rendered, "items": items, "reason": reason}
+    if "missing_node_vectors" in diagnostics:
+        total = diagnostics["snapshot_nodes"]
+        snapshot["index_coverage"] = {"total": total, "usable": total - diagnostics["missing_node_vectors"],
+                                      "truncated": diagnostics["truncated"]}
+    if "cache_hit_count" in (embedding := diagnostics.get("query_embedding", {})):
+        snapshot["query_vectors"] = {"total": diagnostics["query_count"], "reused": embedding["cache_hit_count"],
+                                     "provider_calls": embedding["provider_call_count"]}
     if mode == "test":
         snapshot["preview_candidates"] = [
             {**row, "title": render_display_text(row.get("title") or "", result.user_names)}

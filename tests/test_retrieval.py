@@ -161,7 +161,7 @@ async def test_default_history_is_last_ten_user_agent_messages_in_7200_seconds()
         {"content_text": "system", "observed_at": NOW, "actor_kind": "system"},
     ]
     vectors = {text: [1, 0] for text in [item["content_text"], "current", *(entry["content_text"] for entry in history)]}
-    embeddings = FakeEmbeddings(vectors)
+    embeddings = FakeEmbeddings(vectors, cached={item["content_text"]: [1, 0]})
     result = await RecallService(memory, embeddings).recall("space", "current", history=history, now=NOW)
     query_calls = [call for call in embeddings.calls if call[0] == "embed"]
     assert query_calls[0][1] == ["current", *(f"recent-{i}" for i in range(10))]
@@ -175,7 +175,8 @@ async def test_history_window_is_configurable_and_includes_cutoff():
         {"content_text": "boundary", "observed_at": NOW - 7200, "actor_kind": "user"},
         {"content_text": "older", "observed_at": NOW - 7200.1, "actor_kind": "user"},
     ]
-    embeddings = FakeEmbeddings({text: [1, 0] for text in (item["content_text"], "current", "boundary", "older")})
+    embeddings = FakeEmbeddings({text: [1, 0] for text in (item["content_text"], "current", "boundary", "older")},
+                                cached={item["content_text"]: [1, 0]})
     await RecallService(FakeMemory(snapshot(item)), embeddings).recall("space", "current", history=history, now=NOW)
     assert [call[1] for call in embeddings.calls if call[0] == "embed"] == [["current", "boundary"]]
     embeddings.calls.clear()
@@ -357,7 +358,7 @@ async def test_real_store_revalidates_changes_before_context_injection(real_memo
             replacement = await memory.create_generation(space_id)
             await memory.activate_generation(space_id, replacement["generation_id"])
 
-    embeddings = FakeEmbeddings({"旧事实": [1, 0], "query": [1, 0]}, on_embed=mutate)
+    embeddings = FakeEmbeddings({"旧事实": [1, 0], "query": [1, 0]}, cached={"旧事实": [1, 0]}, on_embed=mutate)
     result = await RecallService(memory, embeddings).recall(space_id, "query")
     assert result.hits == []
     assert result.text == ""
@@ -371,7 +372,7 @@ async def test_active_recall_renders_current_historical_status_after_revalidatio
     async def make_historical():
         await memory.update_node_status(item["node_id"], "historical")
 
-    embeddings = FakeEmbeddings({"过去的偏好": [1, 0], "query": [1, 0]}, on_embed=make_historical)
+    embeddings = FakeEmbeddings({"过去的偏好": [1, 0], "query": [1, 0]}, cached={"过去的偏好": [1, 0]}, on_embed=make_historical)
     result = await RecallService(memory, embeddings).recall(space_id, "query", active=True)
     assert len(result.hits) == 1
     assert result.hits[0]["status"] == "historical"
@@ -559,6 +560,7 @@ async def test_cache_cancellation_is_not_swallowed_as_degradation():
 async def test_model_change_between_node_and_query_vectors_cannot_mix_coordinates():
     item = memory_node("one")
     embeddings = FakeEmbeddings({item["content_text"]: [1, 0], "query": [1, 0]})
+    del embeddings.cache["query"]
     embeddings.fingerprint = "model-before"
 
     async def switch_model():

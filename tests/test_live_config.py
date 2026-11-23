@@ -229,3 +229,45 @@ async def test_external_read_keeps_admitted_embedding_during_scope_resolution(pl
     else:
         assert following["items"] == [] and not context.next_embedding.calls
     assert len(context.embedding.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_external_cold_read_repairs_after_busy_scope_and_passive_reuses_query(plugin_factory, monkeypatch):
+    from storage.job_store import JobConflict
+
+    plugin = await plugin_factory({"automatic_extraction_enabled": False})
+    event = RuntimeEvent(text="这次参观温室的记录")
+    space, node = await seed(plugin, event, content="一起参观过温室。")
+    sid = space["space_id"]
+    request = external_request(query=event.get_message_str())
+    request["context"] = companion_context(account="u-1", role="persona-test")
+    request["context"]["scope"].update(platform="test-platform", native_scope_id="u-1")
+
+    async def busy(*args, **kwargs):
+        raise JobConflict("another task owns this memory scope")
+
+    runtime = plugin.runtime
+    await runtime.recall_history.set_enabled(True)
+    with monkeypatch.context() as patch:
+        patch.setattr(plugin.maintenance, "enqueue", busy)
+        assert await plugin.external_memory.read(request) == {"items": []}
+        await asyncio.gather(*list(runtime.index_tasks.values()))
+    assert runtime.pending_indexes == {sid: "space_busy"}
+    assert not plugin.context.embedding.calls
+    runtime.index_after[sid] = 0
+    runtime.retry_pending_indexes()
+    await asyncio.gather(*list(runtime.index_tasks.values()))
+    assert not runtime.pending_indexes
+    assert (await plugin.jobs.latest_index(sid))["state"] == "succeeded"
+    assert await plugin.jobs.latest_index("another-space") is None
+
+    assert (await plugin.external_memory.read(request))["items"][0]["id"] == node["node_id"]
+    injection = ProviderRequest()
+    await plugin.inject_memory(event, injection)
+    assert node["content_text"] in injection.extra_user_content_parts[0].text
+    passive, external, cold = await runtime.recall_history.list(sid)
+    assert cold["index_coverage"]["usable"] == 0
+    assert [external["mode"], passive["mode"]] == ["external", "passive"]
+    assert external["query_vectors"] == {"total": 1, "reused": 0, "provider_calls": 1}
+    assert passive["query_vectors"] == {"total": 1, "reused": 1, "provider_calls": 0}
+    assert plugin.context.embedding.calls.count([event.get_message_str()]) == 1

@@ -462,9 +462,11 @@ class RecallService:
                 result.diagnostics["truncated"] = snapshot["truncated"]
                 if node_filter is not None:
                     snapshot["nodes"] = [node for node in snapshot["nodes"] if node_filter(node)]
-                if preview:
-                    result.diagnostics["snapshot_nodes"] = len(snapshot["nodes"])
-                if not snapshot["nodes"] or not current_text.strip():
+                result.diagnostics["snapshot_nodes"] = len(snapshot["nodes"])
+                if not snapshot["nodes"]:
+                    result.diagnostics["missing_node_vectors"] = 0
+                    return result
+                if not current_text.strip():
                     return result
                 try:
                     fingerprint = getattr(self.embeddings, "fingerprint", None)
@@ -500,9 +502,12 @@ class RecallService:
                 embedding_diagnostics: dict[str, Any] = {}
                 result.diagnostics["query_embedding"] = embedding_diagnostics
                 try:
-                    query_vectors = await self.embeddings.embed(texts, namespace=space_id,
-                        timeout_seconds=max(.001, deadline - time.monotonic() - .05),
-                        diagnostics=embedding_diagnostics, **cache_options)
+                    if result.diagnostics["cached_query_count"] == len(texts):
+                        embedding_diagnostics.update(cache_hit_count=len(texts), provider_call_count=0)
+                    else:
+                        query_vectors = await self.embeddings.embed(texts, namespace=space_id,
+                            timeout_seconds=max(.001, deadline - time.monotonic() - .05),
+                            diagnostics=embedding_diagnostics, **cache_options)
                 except Exception as exc:
                     result.diagnostics["embedding_degraded"] = type(exc).__name__
                 finally:

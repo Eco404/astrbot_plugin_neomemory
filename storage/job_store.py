@@ -543,6 +543,12 @@ class JobStore:
         )
         return [_job(row) for row in rows]
 
+    async def latest_index(self, scope_key: str) -> dict[str, Any] | None:
+        row = await self.database.fetchone(
+            "SELECT state, updated_at, error_code, progress_done, progress_total FROM memory_jobs "
+            "WHERE scope_key=? AND kind='reindex' ORDER BY created_at DESC, job_id DESC LIMIT 1", (scope_key,))
+        return dict(row) if row else None
+
     async def availability(self, scope_key: str) -> dict[str, Any]:
         _text(scope_key, "scope_key")
         async with self.database.transaction() as connection:

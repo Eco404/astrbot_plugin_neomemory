@@ -165,6 +165,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
     async def _scan_loop(self):
         while not self.closing:
             try:
+                if retry_indexes := getattr(self.runtime, "retry_pending_indexes", None):
+                    retry_indexes()
                 await self.scan_once()
             except Exception as exc:
                 self.last_error_type = type(exc).__name__

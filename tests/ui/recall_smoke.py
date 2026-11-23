@@ -31,7 +31,9 @@ window.AstrBotPluginView.apiPost = async (endpoint,body) => {
   if (endpoint === 'recall/recording') { recording=body.enabled; return {enabled:recording}; }
   if (endpoint !== 'recall/test') return post(endpoint,body);
   if (window.holdTest) await new Promise(resolve => window.resumeTest=resolve);
-  return {...snapshot('test',body.query),similarity_threshold:0.45,min_strength:0.1,
+  return {...snapshot('test',body.query),index_coverage:{usable:3,total:5,truncated:true},
+    index_deferred:'space_busy',last_index:{state:'succeeded',progress_done:3,progress_total:3,updated_at:1700000000},
+    query_vectors:{total:2,reused:1,provider_calls:1},similarity_threshold:0.45,min_strength:0.1,
     preview_candidates:[{title:'其他安排',node_type:'atomic',similarity:0.1,reason:'低于相似度阈值'}]};
 };
 """
@@ -64,6 +66,10 @@ async def main():
                 await run.click()
                 await expect(result).to_contain_text('长期记忆预览')
                 await expect(result).to_contain_text('综合分 0.720')
+                await expect(result).to_contain_text('本空间可检索向量 3 / 5（已达候选上限）')
+                await expect(result).to_contain_text('空间正在执行其他任务')
+                await expect(result).to_contain_text('已完成 · 3 / 3 条')
+                await expect(result).to_contain_text('查询向量复用 1 / 2')
                 await result.get_by_text('未入选的候选', exact=False).click()
                 await expect(result.get_by_text('低于相似度阈值', exact=False)).to_be_visible()
                 await expect(history).to_contain_text('已关闭')

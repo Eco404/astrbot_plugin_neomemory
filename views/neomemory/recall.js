@@ -23,6 +23,27 @@ function renderSnapshot(snapshot) {
   if (snapshot.similarity_threshold != null) summary.push('相似度阈值 ' + snapshot.similarity_threshold);
   if (snapshot.min_strength != null) summary.push('最低强度 ' + snapshot.min_strength);
   content.append(element('p', summary.join(' · '), 'muted'));
+  if (snapshot.index_coverage) {
+    const {usable, total, truncated} = snapshot.index_coverage;
+    const cap = truncated ? '（已达候选上限）' : '';
+    content.append(element('p', `本空间可检索向量 ${usable} / ${total}${cap}`, 'muted'));
+  }
+  if (snapshot.index_deferred) {
+    const reason = {capacity: '索引并发已满', cooldown: '等待下次检查', space_busy: '空间正在执行其他任务'};
+    content.append(element('p', '等待后台补建 · ' + reason[snapshot.index_deferred], 'muted'));
+  }
+  if (snapshot.last_index) {
+    const {state, progress_done, progress_total, updated_at, error_code} = snapshot.last_index;
+    const states = {queued: '排队中', running: '运行中', retry_wait: '等待重试', succeeded: '已完成', failed: '失败', cancelled: '已取消'};
+    const details = [date(updated_at), states[state] || state];
+    if (progress_total) details.push(`${progress_done} / ${progress_total} 条`);
+    if (state === 'failed' && error_code) details.push(error_code);
+    content.append(element('p', '本空间最近的索引任务 · ' + details.join(' · '), 'muted'));
+  }
+  if (snapshot.query_vectors) {
+    const {reused, total, provider_calls} = snapshot.query_vectors;
+    content.append(element('p', `查询向量复用 ${reused} / ${total} · 向量模型调用 ${provider_calls} 次`, 'muted'));
+  }
   if (snapshot.reason) content.append(element('p', snapshot.reason));
   if (items.length) content.append(nodeList(items));
   if (snapshot.preview_candidates?.length) {

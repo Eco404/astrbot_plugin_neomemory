@@ -371,7 +371,7 @@ async def _async_generation(space_id):
 
 async def _recall(space_id, query):
     return SimpleNamespace(hits=[{"node_id": "node-1", "content_text": "每天只喝咖啡"}],
-                           space_id=space_id, query=query)
+                           space_id=space_id, query=query, diagnostics={})
 
 
 async def _missing_records(ids):

@@ -30,6 +30,7 @@ try:
     from ..core.short_term_prompts import host_has_summary
     from ..storage.cache_store import CacheStore
     from ..storage.context_store import ContextStore
+    from ..storage.job_store import JobConflict
 except ImportError:
     from core.shared_recall import deliver_shared, search_shared
     from core.active_recall import ActiveFilters, merge_active_result
@@ -46,6 +47,7 @@ except ImportError:
     from core.short_term_prompts import host_has_summary
     from storage.cache_store import CacheStore
     from storage.context_store import ContextStore
+    from storage.job_store import JobConflict
 
 from .providers import ProviderAdapter
 from .proactive_context import missing_deliveries
@@ -67,6 +69,7 @@ class MemoryRuntime:
         self.tasks: set[asyncio.Task] = set()
         self.foreground_tasks: set[asyncio.Task] = set()
         self.index_tasks: dict[str, asyncio.Task] = {}
+        self.pending_indexes: dict[str, str] = {}
         self.index_after: dict[str, float] = {}
         self.diagnostics: dict[str, Any] = {}
         self.closing = False
@@ -142,6 +145,7 @@ class MemoryRuntime:
         self.tasks.clear()
         self.foreground_tasks.clear()
         self.index_tasks.clear()
+        self.pending_indexes.clear()
         self.recall = None
         cache, self.cache = self.cache, None
         if cache:
@@ -170,11 +174,28 @@ class MemoryRuntime:
         finally:
             self.foreground_tasks.discard(task)
 
+    def _defer_index(self, space_id: str, reason: str) -> None:
+        self.pending_indexes[space_id] = reason
+        if len(self.pending_indexes) > 256:
+            self.pending_indexes.pop(next(iter(self.pending_indexes)))
+
+    def retry_pending_indexes(self) -> None:
+        for space_id in tuple(self.pending_indexes):
+            if len(self.index_tasks) >= 4:
+                break
+            self.schedule_index(space_id)
+
     def schedule_index(self, space_id: str) -> bool:
-        if (self.closing or self.recall is None or space_id in self.index_tasks
-                or len(self.index_tasks) >= 4
-                or time.monotonic() < self.index_after.get(space_id, 0)):
+        if self.closing or self.recall is None or space_id in self.index_tasks:
             return False
+        if len(self.index_tasks) >= 4:
+            self._defer_index(space_id, "capacity")
+            return False
+        if time.monotonic() < self.index_after.get(space_id, 0):
+            if space_id not in self.pending_indexes:
+                self._defer_index(space_id, "cooldown")
+            return False
+        self.pending_indexes.pop(space_id, None)
 
         async def run():
             delay = 5
@@ -185,13 +206,17 @@ class MemoryRuntime:
                 job = await maintenance.enqueue("reindex", space_id, "cold-index:" + uuid.uuid4().hex, automatic=True)
                 # This wrapper only observes the durable task; shutdown does not
                 # discard its checkpoint or transfer ownership to the browser.
-                while job["state"] in {"queued", "running", "retry_wait"}:
+                while job and job["state"] in {"queued", "running", "retry_wait"}:
                     await asyncio.sleep(0.1)
                     job = await maintenance.jobs.get(job["job_id"])
-                self.diagnostics["last_index"] = {"job_id": job["job_id"], "state": job["state"],
+                if job is None:
+                    return
+                self.diagnostics["last_index"] = {"space_id": space_id, "job_id": job["job_id"], "state": job["state"],
                                                    "result": job["result"]}
                 if job["state"] != "succeeded":
                     delay = 30
+            except JobConflict:
+                self._defer_index(space_id, "space_busy")
             except Exception as exc:
                 delay = 30
                 self.error("index", exc)
@@ -318,7 +343,10 @@ class MemoryRuntime:
                 result.hits = [{**n, **current[n["node_id"]]} for n in result.hits if n["node_id"] in current]
                 result.text = render_nodes(result.hits, result.user_names)
             text, external = await self._shared_text(space_id, result.text, candidates, deadline)
-            return recall_snapshot("test", query, started, result, text=text, hits=result.hits + external)
+            snapshot = recall_snapshot("test", query, started, result, text=text, hits=result.hits + external)
+            if space_id in self.pending_indexes:
+                snapshot["index_deferred"] = self.pending_indexes[space_id]
+            return snapshot
 
         snapshot = await self._invoke(preview, None)
         return snapshot if snapshot is not None else recall_snapshot("test", query, started, empty, reason="插件正在停止")
