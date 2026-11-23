@@ -7,7 +7,7 @@ import pytest
 
 from core.config import NeoMemoryConfig
 from core.maintenance import MaintenanceEngine
-from core.short_term_prompts import PROMPT_VERSION
+from core.short_term_prompts import PROMPT_VERSION, SCHEMA_VERSION
 from tests.test_maintenance_engine import enqueue_and_claim, execute
 from tests.test_maintenance_engine import environment as _environment
 from tests.test_short_term import claim
@@ -49,7 +49,7 @@ async def test_failed_short_term_does_not_pause_automatic_long_term(environment)
 async def test_short_term_detail_exposes_candidate_and_same_window_regeneration(short_env, invalid):
     env = short_env
     job = await claim(env)
-    candidate = {"schema_version": PROMPT_VERSION, "summary_text": "用户正在准备面试。",
+    candidate = {"schema_version": SCHEMA_VERSION, "summary_text": "用户正在准备面试。",
                  "evidence_source_ids": job["payload"]["source_ids"][:1]}
     raw = "invalid-json" if invalid else json.dumps(candidate)
     await env.jobs.save_checkpoint(job["job_id"], job["lease_token"],

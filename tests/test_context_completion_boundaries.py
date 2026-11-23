@@ -11,7 +11,7 @@ pytest.importorskip("astrbot.api")
 
 from astrbot.api.provider import ProviderRequest  # noqa: E402
 
-from core.short_term_prompts import PROMPT_VERSION  # noqa: E402
+from core.short_term_prompts import SCHEMA_VERSION  # noqa: E402
 from tests.test_recall_runtime import RuntimeEvent, seed  # noqa: E402
 from tests.test_recall_runtime import plugin_factory as _plugin_factory  # noqa: E402
 from tests.test_short_term import claim, current, execute  # noqa: E402
@@ -26,7 +26,7 @@ async def test_first_nonempty_summary_cannot_claim_no_source_evidence(short_env)
     env = short_env
     env.adapter.output = json.dumps(
         {
-            "schema_version": PROMPT_VERSION,
+            "schema_version": SCHEMA_VERSION,
             "summary_text": "用户已经确定明天完成付款。",
             "evidence_source_ids": [],
         }

@@ -15,7 +15,7 @@ from tests.test_topic_maintenance import candidate, seed
 
 def test_initial_capacity_units_and_identity_scope_are_explicit():
     extraction = prompts.build_extraction_prompt(persona="", sources=[])[0]["content"]
-    assert "prompt_version=extraction-prompt.v2" in extraction
+    assert "prompt_version=extraction-prompt.v3-dev.1" in extraction
     assert f"{MAX_OUTPUT_CHARS}个编码字符" in extraction
     assert "不是UTF-8字节数" in extraction and "稳定引用展开" in extraction
     messages = topic_prompt.build_messages("", [], [], allowed_user_ids=["known_member", "space_user"])

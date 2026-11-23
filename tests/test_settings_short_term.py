@@ -9,7 +9,7 @@ from core.config import NeoMemoryConfig
 from core.identity import EventIdentity
 from core.memory_spaces import private_space
 from core.short_term import ShortTermService
-from core.short_term_prompts import PROMPT_VERSION
+from core.short_term_prompts import SCHEMA_VERSION
 from core.source_ingest import CapturedSource
 from storage.job_store import JobStore
 from storage.memory_store import MemoryStore
@@ -31,7 +31,7 @@ async def test_dedicated_provider_handles_real_short_term_window_with_long_term_
         calls.append(provider_id)
         diagnostics.update(finish_reason="stop")
         prompt = json.loads(messages[-1]["content"])
-        return json.dumps({"schema_version": PROMPT_VERSION, "summary_text": "用户正在准备下周的面试。",
+        return json.dumps({"schema_version": SCHEMA_VERSION, "summary_text": "用户正在准备下周的面试。",
                            "evidence_source_ids": [row["source_id"] for row in prompt["new_sources"]]})
     config = NeoMemoryConfig.from_mapping({"short_term_provider_id": "summary-only", "short_term_keep_messages": 2,
                                            "short_term_min_messages": 3, "short_term_max_messages": 4})

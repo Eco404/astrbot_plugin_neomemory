@@ -8,7 +8,7 @@ from core.context_bundle import assemble_context
 from core.memory_text import render_memory_item
 from core.forwarded_content import window_text
 from core.short_term import _digest
-from core.short_term_prompts import PROMPT_VERSION, messages, parse_output
+from core.short_term_prompts import PROMPT_VERSION, SCHEMA_VERSION, messages, parse_output
 from storage.console_store import ConsoleStore
 from tests.test_context_bundle import config, context
 from tests.test_short_term import claim, current, env, execute  # noqa: F401
@@ -23,7 +23,7 @@ def test_group_prompt_and_parser_keep_distinct_users_and_inherited_identity():
     prompt = messages(persona="同行伙伴", previous_summary=prior, records=records, summary_chars=400)
     assert json.loads(prompt[1]["content"])["known_user_ids"] == ["u1", "u2", "u3"]
     text = "{{user:u1}}带地图，{{user:u2}}带水；{{user:u3}}还没确定是否参加。"
-    raw = json.dumps({"schema_version": PROMPT_VERSION, "summary_text": text, "evidence_source_ids": ["s1", "s2"]})
+    raw = json.dumps({"schema_version": SCHEMA_VERSION, "summary_text": text, "evidence_source_ids": ["s1", "s2"]})
     parsed = parse_output(raw, source_ids=["s1", "s2"], summary_chars=400,
                           previous_summary=prior, allowed_user_ids=["u1", "u2", "u3"])
     assert parsed["summary_text"] == text
@@ -33,7 +33,7 @@ def test_group_prompt_and_parser_keep_distinct_users_and_inherited_identity():
 
 @pytest.mark.parametrize("text", ["{{user:outside}}带水。", "{{user:u1}带水。"])
 def test_unknown_or_broken_identity_is_rejected(text):
-    raw = json.dumps({"schema_version": PROMPT_VERSION, "summary_text": text, "evidence_source_ids": ["s1"]})
+    raw = json.dumps({"schema_version": SCHEMA_VERSION, "summary_text": text, "evidence_source_ids": ["s1"]})
     with pytest.raises(ValueError, match="user reference"):
         parse_output(raw, source_ids=["s1"], summary_chars=400, allowed_user_ids=["u1"])
 
@@ -43,7 +43,7 @@ async def test_summary_commit_console_search_and_injection_render_latest_nicknam
     user_id = env.space["logical_user_id"]
     text = "{{user:" + user_id + "}}需要准备地图；我负责查路线，小纸船是约定称呼。"
     task = await claim(env)
-    env.adapter.output = json.dumps({"schema_version": PROMPT_VERSION, "summary_text": text.replace(user_id, "u1"),
+    env.adapter.output = json.dumps({"schema_version": SCHEMA_VERSION, "summary_text": text.replace(user_id, "u1"),
         "evidence_source_ids": [task["payload"]["source_ids"][0]]})
     assert (await execute(env, task))["state"] == "succeeded"
     stored = await current(env)
@@ -63,7 +63,7 @@ async def test_summary_commit_console_search_and_injection_render_latest_nicknam
 @pytest.mark.asyncio
 async def test_unknown_model_identity_does_not_commit_summary(env):
     task = await claim(env)
-    env.adapter.output = json.dumps({"schema_version": PROMPT_VERSION,
+    env.adapter.output = json.dumps({"schema_version": SCHEMA_VERSION,
         "summary_text": "{{user:someone_else}}已经确认。", "evidence_source_ids": [task["payload"]["source_ids"][0]]})
     result = await execute(env, task)
     assert result["error_code"] == "invalid_short_term_output"
@@ -71,15 +71,16 @@ async def test_unknown_model_identity_does_not_commit_summary(env):
 
 
 @pytest.mark.asyncio
-async def test_prepared_summary_resumes_with_original_user_aliases(env):
+@pytest.mark.parametrize("version", ["short-term.v1", PROMPT_VERSION])
+async def test_prepared_summary_resumes_with_original_user_aliases(env, version):
     job = await claim(env)
     user = env.space["logical_user_id"]
     payload = job["payload"]
     records = await env.sources.get_records(tuple(payload["source_ids"]))
-    _, signature = await env.service._execution(env.space, PROMPT_VERSION)
-    raw = json.dumps({"schema_version": PROMPT_VERSION, "summary_text": "{{user:u1}}待确认。",
+    _, signature = await env.service._execution(env.space, version)
+    raw = json.dumps({"schema_version": SCHEMA_VERSION, "summary_text": "{{user:u1}}待确认。",
                       "evidence_source_ids": [payload["source_ids"][0]]})
-    checkpoint = {"signature": signature, "prompt_version": PROMPT_VERSION, "user_ids": [user], "raw": raw,
+    checkpoint = {"signature": signature, "prompt_version": version, "user_ids": [user], "raw": raw,
                   "input_digest": _digest([payload, "", [(row["source_id"], window_text(row)) for row in records],
                                            signature])}
     await env.service._save(job, checkpoint, "short_term_validate")
@@ -104,7 +105,7 @@ async def test_summary_correction_counts_window_aliases_and_commits_stable_ids(e
             error = json.loads(env.adapter.calls[-1][-1]["content"])["errors"][0]
             assert error["actual_encoded_chars"] == 61 and error["constraints"]["maxLength"] == 60
             text = accepted
-        env.adapter.output = json.dumps({"schema_version": PROMPT_VERSION, "summary_text": text,
+        env.adapter.output = json.dumps({"schema_version": SCHEMA_VERSION, "summary_text": text,
                                          "evidence_source_ids": [job["payload"]["source_ids"][0]]})
 
     env.adapter.hook = respond
@@ -122,7 +123,7 @@ async def test_reprepare_old_length_failure_keeps_window_and_applies_current_bud
     previous = job["payload"]
     records = await env.sources.get_records(tuple(previous["source_ids"]))
     _, signature = await env.service._execution(env.space, PROMPT_VERSION)
-    draft = {"schema_version": PROMPT_VERSION,
+    draft = {"schema_version": SCHEMA_VERSION,
              "summary_text": "{{user:u1}}准备路线。".ljust(61, "字"),
              "evidence_source_ids": [previous["source_ids"][0]]}
     checkpoint = {"signature": signature, "prompt_version": PROMPT_VERSION, "user_ids": [user],
@@ -222,7 +223,7 @@ async def test_prepared_summary_rechecks_forwarded_content_budget(env):
     records = await env.sources.get_records(tuple(payload["source_ids"]))
     _, signature = await env.service._execution(env.space, version)
     checkpoint = {"prompt_version": version, "signature": signature, "user_ids": [env.space["logical_user_id"]],
-                  "raw": json.dumps({"schema_version": version, "summary_text": "{{user:u1}}正在准备面试。",
+                  "raw": json.dumps({"schema_version": SCHEMA_VERSION, "summary_text": "{{user:u1}}正在准备面试。",
                                      "evidence_source_ids": [source_id]}),
                   "input_digest": _digest([payload, "", [(r["source_id"], window_text(r)) for r in records],
                                            signature])}

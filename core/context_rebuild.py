@@ -9,8 +9,8 @@ from .extraction_schema import (
     ProfileChange, RelationshipChange, StrictModel, _reject_constant, _unique_object,
 )
 from .profile_memory_prompt import PROFILE_DUTIES_RULES
-from .prompts import FORWARDED_SOURCE_RULE
-from .relationship_slots_prompt import COMPACT_RELATIONSHIP_RULES, SLOT_BODY_RULE
+from .prompts import FORWARDED_SOURCE_RULE, PROMPT_VERSION
+from .relationship_slots_prompt import COMPACT_RELATIONSHIP_RULES, RELATIONSHIP_RULES, SLOT_BODY_RULE
 
 
 class ProfileRebuildOutput(StrictModel):
@@ -38,7 +38,8 @@ def scoped_messages(messages, kind, schema, *, prompt_version):
         duties.append(PROFILE_DUTIES_RULES)
     if kind != "profile_rebuild":
         fields.append("known_relationship")
-        duties.extend([COMPACT_RELATIONSHIP_RULES, SLOT_BODY_RULE])
+        relationship = RELATIONSHIP_RULES if prompt_version == PROMPT_VERSION else COMPACT_RELATIONSHIP_RULES
+        duties.extend([relationship, SLOT_BODY_RULE])
     if any("forwarded_messages" in source for source in payload["sources"]):
         duties.append(FORWARDED_SOURCE_RULE)
     data = {key: payload[key] for key in fields if key in payload}

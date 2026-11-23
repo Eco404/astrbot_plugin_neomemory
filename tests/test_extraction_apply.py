@@ -887,7 +887,7 @@ async def test_coverage_only_does_not_rewrite_or_restrengthen_nodes(stores):
 @pytest.mark.asyncio
 async def test_silent_group_recipient_survives_transfer_replay_but_cannot_supply_profile(stores):
     from core.extraction_references import ExtractionReferences
-    from core.short_term_prompts import messages, parse_output, PROMPT_VERSION as SHORT_VERSION
+    from core.short_term_prompts import messages, parse_output, SCHEMA_VERSION as SHORT_SCHEMA
     from core.window_users import WindowUsers
 
     sources, memory, _ = stores
@@ -915,7 +915,7 @@ async def test_silent_group_recipient_survives_transfer_replay_but_cannot_supply
     assert short_user != short_payload["new_sources"][0]["logical_user_id"]
     users = WindowUsers([sent.logical_user_id, old.logical_user_id])
     assert users.encode(old.logical_user_id) == short_user
-    summary = parse_output(json.dumps({"schema_version": SHORT_VERSION, "summary_text": "{{user:"+short_user+"}}明天领奖。",
+    summary = parse_output(json.dumps({"schema_version": SHORT_SCHEMA, "summary_text": "{{user:"+short_user+"}}明天领奖。",
         "evidence_source_ids": [sent.source_id]}), source_ids=[sent.source_id, delayed.source_id],
         summary_chars=400, allowed_user_ids=[sent.logical_user_id, old.logical_user_id])
     assert "{{user:"+old.logical_user_id+"}}" in summary["summary_text"]

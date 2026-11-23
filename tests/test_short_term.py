@@ -13,7 +13,7 @@ from core.memory_spaces import private_space
 from core.short_term import ShortTermService, conversation_key
 from core.short_term_prompts import (
     HOST_SUMMARY_PREFIX,
-    PROMPT_VERSION,
+    SCHEMA_VERSION,
     host_has_summary,
     parse_output,
 )
@@ -42,7 +42,7 @@ class Provider:
         if self.output is not None:
             return self.output
         prompt = json.loads(messages[-1]["content"])
-        return json.dumps({"schema_version": PROMPT_VERSION,
+        return json.dumps({"schema_version": SCHEMA_VERSION,
             "summary_text": "用户正在准备面试，尚未确定模拟面试时间。",
             "evidence_source_ids": [row["source_id"] for row in prompt["new_sources"]]})
 
@@ -118,8 +118,10 @@ async def test_rolling_summary_reserves_latest_raw_and_only_adds_new_sources(env
     assert state["coverage"]["source_count"] == 4
     assert state["coverage"]["from_observed_at"] == 100
     assert state["coverage"]["to_observed_at"] == 400
-    assert "以“我”指当前Agent" in env.adapter.calls[0][0]["content"]
-    assert "用户的行为、意见或承诺不能写成我的" in env.adapter.calls[0][0]["content"]
+    rules = env.adapter.calls[0][0]["content"]
+    assert "用“我”写自己的回应和行动" in rules
+    assert "分清谁有这个想法、谁明确答应" in rules
+    assert "保留当次分工的范围" in rules
     assert await env.service.maybe_enqueue(env.space["space_id"], "chat", stream_id=env.stream_id) is None
     await add(env, start=9, count=2)
     next_job = await claim(env)
@@ -325,7 +327,7 @@ async def test_default_personas_skip_without_model_calls(env, persona):
 
 @pytest.mark.asyncio
 async def test_empty_summary_still_advances_and_does_not_retry_noise(env):
-    env.adapter.output = json.dumps({"schema_version": PROMPT_VERSION, "summary_text": "", "evidence_source_ids": []})
+    env.adapter.output = json.dumps({"schema_version": SCHEMA_VERSION, "summary_text": "", "evidence_source_ids": []})
     job = await claim(env)
     assert (await execute(env, job))["state"] == "succeeded"
     assert (await current(env))["summary_text"] == ""
@@ -354,7 +356,7 @@ async def test_timeout_uses_job_retry_without_inline_provider_retry(env):
     {"evidence_source_ids": [1]}, {"extra": True},
 ])
 def test_prompt_schema_rejects_unreliable_output(change):
-    output = {"schema_version": PROMPT_VERSION, "summary_text": "pending interview", "evidence_source_ids": ["s1"]}
+    output = {"schema_version": SCHEMA_VERSION, "summary_text": "pending interview", "evidence_source_ids": ["s1"]}
     output.update(change)
     with pytest.raises(ValueError):
         parse_output(json.dumps(output), source_ids=["s1"], summary_chars=400)
@@ -373,7 +375,7 @@ def test_schema_rejects_duplicate_json_keys_and_marker_detection_is_explicit():
 @pytest.mark.asyncio
 async def test_first_nonempty_summary_requires_evidence_but_inherited_summary_can_reuse_it(env):
     first = await claim(env)
-    env.adapter.output = json.dumps({"schema_version": PROMPT_VERSION,
+    env.adapter.output = json.dumps({"schema_version": SCHEMA_VERSION,
         "summary_text": "我记得用户正在准备面试。", "evidence_source_ids": []})
     assert (await execute(env, first))["error_code"] == "invalid_short_term_output"
     assert await current(env) is None
@@ -382,7 +384,7 @@ async def test_first_nonempty_summary_requires_evidence_but_inherited_summary_ca
     assert (await execute(env, await env.jobs.claim("fresh")))["state"] == "succeeded"
     previous = await current(env)
     await add(env, start=9, count=2)
-    env.adapter.output = json.dumps({"schema_version": PROMPT_VERSION,
+    env.adapter.output = json.dumps({"schema_version": SCHEMA_VERSION,
         "summary_text": previous["summary_text"], "evidence_source_ids": []})
     assert (await execute(env, await claim(env)))["state"] == "succeeded"
     assert (await current(env))["summary_text"] == previous["summary_text"]
@@ -478,7 +480,7 @@ async def test_output_mode_and_window_schema_apply_to_first_call_and_correction(
     env.config.extraction_output_format = configured
     job = await claim(env)
     sources = job["payload"]["source_ids"]
-    valid = json.dumps({"schema_version": PROMPT_VERSION, "summary_text": "周末约定尚待确认。",
+    valid = json.dumps({"schema_version": SCHEMA_VERSION, "summary_text": "周末约定尚待确认。",
                         "evidence_source_ids": [sources[0]]})
 
     async def answer():

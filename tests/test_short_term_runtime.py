@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip('astrbot.api')
 
 from astrbot.api.provider import ProviderRequest
-from core.short_term_prompts import PROMPT_VERSION
+from core.short_term_prompts import SCHEMA_VERSION
 from core.source_ingest import normalize_event
 from tests.test_recall_runtime import RuntimeEvent, plugin_factory as _plugin_factory
 
@@ -30,7 +30,7 @@ async def test_request_hook_enqueues_default_threshold_then_exposes_summary(plug
     plugin.context.chat_gate = asyncio.Event()
     user_id = sources[0].logical_user_id
     summary = '{{user:' + user_id + '}}周六出游尚未订票，开放时间待确认。'
-    plugin.context.chat_response = json.dumps({'schema_version': PROMPT_VERSION,
+    plugin.context.chat_response = json.dumps({'schema_version': SCHEMA_VERSION,
         'summary_text': summary.replace(user_id, 'u1'), 'evidence_source_ids': [sources[0].source_id]}, ensure_ascii=False)
     event = RuntimeEvent()
     request = ProviderRequest(prompt='继续说刚才的安排')

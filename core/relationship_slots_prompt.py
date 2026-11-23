@@ -8,4 +8,8 @@ source_ids只填写一次，引用本批触发这些变化的互动，至少一�
 long_term.body最多500可读字符，aftereffect.body最多150；两段上限独立，不设最低字数，不要求填满。完整合法{{user:ID}}计一个可读字符。关系不输出情绪分数、额外画像或事件字段。
 """
 
+RELATIONSHIP_RULES = COMPACT_RELATIONSHIP_RULES + (
+    "如果某句话、某个动作至今仍影响我怎么看待对方，可以把那个细节留在心里话里。\n"
+)
+
 SLOT_BODY_RULE = """keep、replace、clear是op的操作值。op=replace时，body直接写这一段完整的内心想法，不能只填操作词；没有新的心境可写时用keep和空正文。"""

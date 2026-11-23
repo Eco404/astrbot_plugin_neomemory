@@ -311,7 +311,7 @@ def test_rejects_duplicate_coverage_and_accepts_local_node_references():
 
 def test_prompt_includes_current_node_and_coverage_contract():
     rules = build_extraction_prompt(persona="p", sources=[])[0]["content"]
-    for text in ("prompt_version=extraction-prompt.v2", "schema_version=extraction.v1",
+    for text in ("prompt_version=extraction-prompt.v3-dev.1", "schema_version=extraction.v1",
                  "base_node_ids", "coverage_changes", "expected_event_version", "expected_atomic_version",
                  "仅标题、重要性、时间、来源改变不增加内容版本", "不从contains推断",
                  "画像仍只用tags与description，二者保持一致", "不能为去掉旧词删掉有效否定"):

@@ -8,7 +8,7 @@ import pytest
 from core.jobs import ReviewRequired
 from core.maintenance import MaintenanceEngine
 from core.topic_maintenance import TopicStore
-from core.short_term_prompts import PROMPT_VERSION
+from core.short_term_prompts import SCHEMA_VERSION
 from tests.test_maintenance_engine import environment, enqueue_and_claim, execute
 from tests.test_topic_maintenance import seed, candidate
 from tests.test_short_term import env, claim, execute as execute_summary, restart
@@ -99,7 +99,7 @@ async def test_topic_permission_error_is_not_a_temporary_network_failure(environ
 
 
 def summary(job):
-    return {'schema_version': PROMPT_VERSION, 'summary_text': '只有工具到货才开始，尚未开工。',
+    return {'schema_version': SCHEMA_VERSION, 'summary_text': '只有工具到货才开始，尚未开工。',
             'evidence_source_ids': [job['payload']['source_ids'][0]]}
 
 

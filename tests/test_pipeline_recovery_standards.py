@@ -20,7 +20,7 @@ TOPIC = {'schema_version': topic_schema.VERSION, 'changes': [{
     'importance': .4, 'emotion': {'tags': [{'tag': 'trust', 'intensity': .4}], 'description': '我愿意协助准备。'},
     'member_ids': ['n1', 'n2'],
 }]}
-SUMMARY = {'schema_version': short_term_prompts.PROMPT_VERSION,
+SUMMARY = {'schema_version': short_term_prompts.SCHEMA_VERSION,
            'summary_text': '只有晴天才出发，现在尚未出发。', 'evidence_source_ids': ['s1']}
 SCHEMAS = {
     'topic': topic_schema.output_schema(),
@@ -151,7 +151,7 @@ def test_summary_schema_and_parser_agree_on_empty_text_evidence(text):
     schema = short_term_prompts.output_schema(source_ids=['s1'], summary_chars=400)
     condition = schema['allOf'][0]['if']['properties']['summary_text']
     schema_requires_evidence = re.search(condition['pattern'], text) is not None
-    raw = json.dumps({'schema_version': short_term_prompts.PROMPT_VERSION,
+    raw = json.dumps({'schema_version': short_term_prompts.SCHEMA_VERSION,
                      'summary_text': text, 'evidence_source_ids': []})
     if schema_requires_evidence:
         with pytest.raises(candidate_feedback.CandidateValidationError) as error:
