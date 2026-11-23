@@ -22,6 +22,14 @@ function renderSnapshot(snapshot) {
   const summary = [`选中 ${items.length} 条`, `耗时 ${Math.round(snapshot.elapsed_ms)} 毫秒`];
   if (snapshot.similarity_threshold != null) summary.push('相似度阈值 ' + snapshot.similarity_threshold);
   if (snapshot.min_strength != null) summary.push('最低强度 ' + snapshot.min_strength);
+  if (snapshot.selection) {
+    const selection = snapshot.selection;
+    const method = {selector: '模型选取证据', rerank: '模型重排', local: '本地筛选'}[selection.evidence_selection];
+    summary.push(selection.recall_route === 'overview' ? '多事件回顾' : '具体查询',
+      '混合候选 ' + selection.hybrid_candidates + ' 条', method);
+    if (selection.contextual_query) summary.push('已结合上文');
+    if (selection.selection_fallback) summary.push('已使用回退策略');
+  }
   content.append(element('p', summary.join(' · '), 'muted'));
   if (snapshot.index_coverage) {
     const {usable, total, truncated} = snapshot.index_coverage;

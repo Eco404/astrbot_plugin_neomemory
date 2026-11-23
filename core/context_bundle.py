@@ -49,7 +49,7 @@ def assemble_context(snapshot: dict[str, Any], hits: list[dict[str, Any]], confi
         return (len(items) <= max_nodes
                 and context_bytes + size + bool(context_bytes and size) <= total)
 
-    distinct = getattr(config, "recall_selection_mode", "baseline") == "gated"
+    distinct = getattr(config, "recall_selection_mode", "adaptive") in {"adaptive", "gated"}
     selected = []
     if priority == "recall_first":
         selected = select_context(hits, coverage, fits=fits, distinct_evidence=distinct)[:1]

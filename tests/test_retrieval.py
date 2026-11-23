@@ -148,7 +148,7 @@ def test_weak_top_match_does_not_consume_the_only_eligible_candidate_slot():
 
 
 @pytest.mark.asyncio
-async def test_default_history_is_last_ten_user_agent_messages_in_7200_seconds():
+async def test_vector_history_defaults_to_last_ten_user_agent_messages_in_7200_seconds():
     item = memory_node("one")
     memory = FakeMemory(snapshot(item))
     history = [
@@ -162,7 +162,7 @@ async def test_default_history_is_last_ten_user_agent_messages_in_7200_seconds()
     ]
     vectors = {text: [1, 0] for text in [item["content_text"], "current", *(entry["content_text"] for entry in history)]}
     embeddings = FakeEmbeddings(vectors, cached={item["content_text"]: [1, 0]})
-    result = await RecallService(memory, embeddings).recall("space", "current", history=history, now=NOW)
+    result = await RecallService(memory, embeddings, policy=RecallPolicy(ranking_strategy="baseline")).recall("space", "current", history=history, now=NOW)
     query_calls = [call for call in embeddings.calls if call[0] == "embed"]
     assert query_calls[0][1] == ["current", *(f"recent-{i}" for i in range(10))]
     assert len(result.hits) == 1
@@ -177,10 +177,10 @@ async def test_history_window_is_configurable_and_includes_cutoff():
     ]
     embeddings = FakeEmbeddings({text: [1, 0] for text in (item["content_text"], "current", "boundary", "older")},
                                 cached={item["content_text"]: [1, 0]})
-    await RecallService(FakeMemory(snapshot(item)), embeddings).recall("space", "current", history=history, now=NOW)
+    await RecallService(FakeMemory(snapshot(item)), embeddings, policy=RecallPolicy(ranking_strategy="baseline")).recall("space", "current", history=history, now=NOW)
     assert [call[1] for call in embeddings.calls if call[0] == "embed"] == [["current", "boundary"]]
     embeddings.calls.clear()
-    await RecallService(FakeMemory(snapshot(item)), embeddings, policy=RecallPolicy(history_limit=0)).recall(
+    await RecallService(FakeMemory(snapshot(item)), embeddings, policy=RecallPolicy(ranking_strategy="baseline", history_limit=0)).recall(
         "space", "current", history=history, now=NOW,
     )
     assert [call[1] for call in embeddings.calls if call[0] == "embed"] == [["current"]]
@@ -246,7 +246,7 @@ async def test_query_embedding_timeout_reuses_available_current_or_history_vecto
                "current": [1, 0], "history": [0, 1]}
     cached = {text: value for text, value in vectors.items() if text in cached_queries or text.startswith("记忆")}
     embeddings = FakeEmbeddings(vectors, cached=cached, error=TimeoutError("network timeout"))
-    result = await RecallService(FakeMemory(snapshot(current, historical)), embeddings).recall(
+    result = await RecallService(FakeMemory(snapshot(current, historical)), embeddings, policy=RecallPolicy(ranking_strategy="baseline")).recall(
         "space", "current", history=[{"content_text": "history", "actor_kind": "user", "observed_at": NOW}], now=NOW,
     )
     assert [item["node_id"] for item in result.hits] == expected
@@ -310,7 +310,7 @@ async def test_real_embedding_service_timeout_retains_history_and_reports_provid
         before = len(context.embedding.calls)
         context.embedding.gate = asyncio.Event()
         result = await RecallService(FakeMemory(snapshot(item)), embedding,
-            policy=RecallPolicy(deadline_seconds=.25)).recall("space", "尚未缓存的当前查询",
+            policy=RecallPolicy(ranking_strategy="baseline", deadline_seconds=.25)).recall("space", "尚未缓存的当前查询",
                 history=[{"content_text": "独立的历史查询", "actor_kind": "user", "observed_at": NOW}], now=NOW)
         assert result.hits
         assert result.diagnostics["embedding_degraded"] == "TimeoutError"
@@ -580,7 +580,7 @@ async def test_preview_uses_passive_ranking_and_explains_an_unselected_sample():
     memory = FakeMemory(snapshot(*nodes))
     vectors = dict(zip([node["content_text"] for node in nodes], [[1, 0], [.8, .6], [0, 1], [.96, .28]], strict=True))
     service = RecallService(memory, FakeEmbeddings({**vectors, "query": [1, 0]}),
-                            policy=RecallPolicy(max_nodes=1, candidate_per_query=1, max_neighbors=0))
+                            policy=RecallPolicy(ranking_strategy="baseline", max_nodes=1, candidate_per_query=1, max_neighbors=0))
     expected = await service.recall("space", "query")
     result = await service.preview("space", "query")
     assert result.text == expected.text

@@ -261,10 +261,11 @@ class ProviderAdapter:
         return provider
 
     def list_models(self) -> dict[str, list[dict[str, Any]]]:
-        result: dict[str, list[dict[str, Any]]] = {"llm": [], "embedding": []}
+        result: dict[str, list[dict[str, Any]]] = {"llm": [], "embedding": [], "rerank": []}
         for kind, providers in (
             ("llm", self.context.get_all_providers()),
             ("embedding", self.context.get_all_embedding_providers()),
+            ("rerank", getattr(getattr(self.context, "provider_manager", None), "rerank_provider_insts", ())),
         ):
             for provider in providers:
                 item: dict[str, Any] = {
@@ -276,6 +277,16 @@ class ProviderAdapter:
                     item["dimension"] = _dimension(provider)
                 result[kind].append(item)
         return result
+
+    async def rerank(self, query, documents, *, provider_id):
+        provider = self.context.get_provider_by_id(provider_id)
+        if provider is None or not callable(getattr(provider, "rerank", None)):
+            raise ProviderUnavailableError("configured rerank provider unavailable")
+        rows = await provider.rerank(query, documents, top_n=len(documents))
+        # A raw logit of zero corresponds to a sigmoid score of 0.50.
+        threshold = 0. if getattr(provider, "raw_scores", False) else .5
+        return [row.index for row in sorted(rows, key=lambda row: -row.relevance_score)
+                if row.relevance_score >= threshold]
 
     def embedding_dimension(self, provider_id: str) -> int:
         return _dimension(self._resolve(provider_id, embedding=True))

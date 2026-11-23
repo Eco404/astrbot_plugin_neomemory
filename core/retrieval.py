@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 
+from .adaptive_recall import contextual_query, hybrid_pool, query_body, refers_to_current_media, select_evidence
 from .memory_text import (
     memory_texts,
     render_display_text,
@@ -41,7 +42,7 @@ class RecallPolicy:
     max_query_chars: int = 4000
     strength_policy: StrengthPolicy = StrengthPolicy()
 
-    ranking_strategy: str = "baseline"
+    ranking_strategy: str = "adaptive"
 
     def __post_init__(self):
         for name in ("history_seconds", "deadline_seconds", "active_deadline_seconds", "time_neighbor_seconds"):
@@ -128,6 +129,8 @@ def rank_candidates(snapshot: dict[str, Any], vectors: list[list[float] | None],
         return strengths[node_id]
 
     strategy = "baseline" if active else (strategy or policy.ranking_strategy)
+    if strategy == "adaptive":
+        strategy = "baseline"  # Direct vector-only callers have no conversational selection stage.
     use_lexical = strategy in {"lexical", "gated"} and query_texts is not None
     gated = use_lexical and strategy == "gated"
     current_index = next((i for i, (_, _, current) in enumerate(queries) if current), None)
@@ -413,7 +416,10 @@ def _preview_item(node, reason, *, similarity):
 
 
 class RecallService:
-    def __init__(self, memory: Any, embeddings: Any, *, policy: RecallPolicy = RecallPolicy(), name_resolver=None):
+    def __init__(self, memory: Any, embeddings: Any, *, policy: RecallPolicy = RecallPolicy(), name_resolver=None,
+                 rerank=None, evidence_selector=None):
+        self.rerank = rerank
+        self.evidence_selector = evidence_selector
         self.memory, self.embeddings, self.policy = memory, embeddings, policy
         self.name_resolver = name_resolver
 
@@ -462,7 +468,8 @@ class RecallService:
 
     async def recall(self, space_id: str, current_text: str, *, history: list[dict[str, Any]] | None = None,
                      active: bool = False, now: float | None = None, user_names=None,
-                     retain_candidates: bool = False, node_filter=None, preview: bool = False) -> RecallResult:
+                     retain_candidates: bool = False, node_filter=None, preview: bool = False,
+                     group_sender="", addresses=(), chat_origin="") -> RecallResult:
         result = RecallResult(space_id)
         exclusions = [] if preview else None
         cache_options = {"read_only": True} if preview else {}
@@ -484,6 +491,12 @@ class RecallService:
                 if not snapshot["nodes"]:
                     result.diagnostics["missing_node_vectors"] = 0
                     return result
+                adaptive = self.policy.ranking_strategy == "adaptive"
+                if adaptive:
+                    current_text = query_body(current_text)
+                    if not active and refers_to_current_media(current_text):
+                        result.diagnostics["current_attachment"] = True
+                        return result
                 if not current_text.strip():
                     return result
                 try:
@@ -499,7 +512,7 @@ class RecallService:
                 if all(vector is None for vector in vectors):
                     return result
                 gated = not active and self.policy.ranking_strategy == "gated"
-                if gated and is_acknowledgement(current_text):
+                if not active and (adaptive or gated) and is_acknowledgement(current_text):
                     result.diagnostics["acknowledgement"] = True
                     return result
                 recent = sorted((item for item in (history or [])
@@ -507,7 +520,19 @@ class RecallService:
                     and now - self.policy.history_seconds <= item.get("observed_at", 0) <= now),
                     key=lambda item: item["observed_at"], reverse=True)[:self.policy.history_limit]
                 queries = [(current_text[:self.policy.max_query_chars], 1., True)]
-                if not gated or is_followup(current_text):
+                if adaptive:
+                    contextual = contextual_query(queries[0][0], recent, self.policy, group_sender, addresses)
+                    if contextual:
+                        queries.append(contextual)
+                    if current_text and group_sender:
+                        target_names = list(dict.fromkeys(a["display_name"] for a in addresses
+                            if not a.get("is_self") and a.get("display_name")))
+                        if target_names:
+                            text, weight, current = queries[-1]
+                            queries[-1] = (("提及：" + "、".join(target_names) + "\n" + text)[:self.policy.max_query_chars],
+                                           weight, current)
+                    result.diagnostics["contextual_query"] = bool(contextual)
+                elif not gated or is_followup(current_text):
                     for item in recent:
                         text = item["content_text"][:self.policy.max_query_chars]
                         weight = self.policy.user_weight if item["actor_kind"] == "user" else self.policy.agent_weight
@@ -554,10 +579,15 @@ class RecallService:
                 result.diagnostics["usable_query_count"] = len(matches)
                 result.diagnostics["current_query_available"] = query_vectors[0] is not None
                 result.query_vector, result.query_fingerprint = query_vectors[0], fingerprint
-                ranked = await asyncio.to_thread(rank_candidates, snapshot, vectors, matches, self.policy, now,
-                                                 active=active, preview_exclusions=exclusions,
-                                                 query_texts=[text for text, vec in zip(texts, query_vectors, strict=True)
-                                                              if vec is not None])
+                if adaptive:
+                    weights = [1. if current else 4. * weight for _, weight, current in queries]
+                    ranked = await asyncio.to_thread(hybrid_pool, snapshot, vectors, texts, query_vectors,
+                                                     weights, self.policy, now, active, exclusions)
+                else:
+                    ranked = await asyncio.to_thread(rank_candidates, snapshot, vectors, matches, self.policy, now,
+                                                     active=active, preview_exclusions=exclusions,
+                                                     query_texts=[text for text, vec in zip(texts, query_vectors, strict=True)
+                                                                  if vec is not None])
                 ids = user_reference_ids(text for item in ranked for text in memory_texts(item))
                 if preview:
                     title_ids = user_reference_ids(item["title"] for item in exclusions)
@@ -568,7 +598,12 @@ class RecallService:
                 names = {uid: resolved[uid] for uid in ids if uid in resolved} if preview else resolved
                 names.update(user_names or {})
                 result.user_names = names
-                selected = select_context(ranked, snapshot["coverage"], self.policy, user_names=names, distinct_evidence=gated)
+                if adaptive:
+                    ranked = await select_evidence(ranked, current=texts[0], query=texts[-1], names=names,
+                        limit=self.policy.max_nodes, deadline=deadline, diagnostics=result.diagnostics,
+                        rerank=self.rerank, selector=self.evidence_selector, space_id=space_id,
+                        exclusions=exclusions, history=recent, chat_origin=chat_origin)
+                selected = select_context(ranked, snapshot["coverage"], self.policy, user_names=names, distinct_evidence=(gated or adaptive))
                 invalidated = ()
                 if selected:
                     valid = await self.memory.revalidate_recall(space_id, snapshot["generation_id"],
@@ -581,7 +616,7 @@ class RecallService:
                     if node_filter is not None:
                         selected = [node for node in selected if node_filter(node)]
                     # A state/time-only update can change serialized size too.
-                    selected = select_context(selected, snapshot["coverage"], self.policy, user_names=names, distinct_evidence=gated)
+                    selected = select_context(selected, snapshot["coverage"], self.policy, user_names=names, distinct_evidence=(gated or adaptive))
                 result.hits, result.text = selected, render_nodes(selected, names)
                 if preview:
                     selection_ids = {item["node_id"] for item in selected}
@@ -598,7 +633,7 @@ class RecallService:
                             continue
                         if item["node_id"] in covered:
                             reason = "由入选事件完整覆盖"
-                        elif gated and any(same_recall_evidence(item, hit) for hit in selected):
+                        elif (gated or adaptive) and any(same_recall_evidence(item, hit) for hit in selected):
                             reason = "相同内容已入选"
                         else:
                             reason = "未进入条目数或字节预算"

@@ -14,7 +14,7 @@ from typing import Any
 from .config import NeoMemoryConfig
 
 _SCHEMA = json.loads((Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text())
-_MODEL_FIELDS = {"llm_provider_id", "short_term_provider_id", "embedding_provider_id"}
+_MODEL_FIELDS = {"llm_provider_id", "short_term_provider_id", "embedding_provider_id", "rerank_provider_id"}
 
 
 class SettingsConflict(RuntimeError):

@@ -79,6 +79,12 @@
     "default": "",
     "_special": "select_provider"
   },
+  "rerank_provider_id": {
+    "description": "[模型] 召回重排模型",
+    "hint": "自适应召回可以使用 AstrBot 的 Rerank 提供商判断候选与查询的相关性。留空时使用本地匹配证据。",
+    "type": "string",
+    "default": ""
+  },
   "embedding_provider_id": {
     "description": "记忆 Embedding 模型 ID",
     "hint": "填写 AstrBot 已启用的 Embedding Provider ID。留空时不调用向量模型，不会自动选择其他模型。",
@@ -277,14 +283,15 @@
     "invisible": true
   },
   "recall_selection_mode": {
-    "description": "[高级] 被动召回策略",
-    "hint": "相关性筛选以当前消息检索。识别到追问时会参考最近一条有效上文，简短应答跳过长期检索。维护页可预览单条查询的效果。",
+    "description": "[高级] 召回策略",
+    "hint": "自适应召回结合上文、向量与词面匹配。普通发言按证据筛选，多事件回顾可使用记忆模型挑选互补条目。",
     "type": "string",
-    "default": "baseline",
-    "options": ["baseline", "gated"],
+    "default": "adaptive",
+    "options": ["adaptive", "baseline", "gated"],
     "option_labels": {
+      "adaptive": "自适应召回",
       "baseline": "向量排序",
-      "gated": "相关性筛选（实验）"
+      "gated": "相关性筛选"
     },
     "invisible": true
   },

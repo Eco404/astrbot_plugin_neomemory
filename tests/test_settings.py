@@ -340,7 +340,7 @@ async def test_basic_host_schema_preserves_hidden_settings_across_loads(tmp_path
     schema = json.loads((Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text())
     assert {key for key, meta in schema.items() if not meta.get("invisible")} == {
         key for key, meta in schema.items() if meta["type"] == "bool"
-    } | {"llm_provider_id", "short_term_provider_id", "embedding_provider_id",
+    } | {"llm_provider_id", "short_term_provider_id", "embedding_provider_id", "rerank_provider_id",
          "llm_concurrency", "embedding_concurrency", "embedding_batch_size", "embedding_revision"}
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"llm_provider_id": "saved-llm", "embedding_provider_id": "saved-embedding",

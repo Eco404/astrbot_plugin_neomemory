@@ -685,7 +685,7 @@ class SourceStore:
     async def recent_conversation(self, stream_id: str, persona_id: str, *, since: float,
                                   until: float, limit: int = 10, exclude_message_id: str = "",
                                   host_conversation_id: str | None = None,
-                                  logical_user_id: str | None = None) -> list[dict[str, Any]]:
+                                  logical_user_id: str | None = None, recall_context: bool = False) -> list[dict[str, Any]]:
         """Read bounded history, respecting a known host conversation boundary.
 
         Older sources without the host conversation ID remain available when
@@ -694,8 +694,11 @@ class SourceStore:
         if limit <= 0:
             return []
         conversation_id = host_conversation_id or None
+        recall_fields = """actor_account_id,message_id,
+            json_extract(metadata_json,'$.trigger_message_id') AS trigger_message_id,
+            json_extract(metadata_json,'$.chat_model') AS chat_model_json,""" if recall_context else ""
         rows = await self.database.fetchall(
-            """SELECT source_id,actor_kind,content_text,observed_at,
+            f"""SELECT source_id,actor_kind,content_text,observed_at,{recall_fields}
                 json_extract(metadata_json,'$.delivered_proactive') AS delivered_proactive,
                 json_extract(metadata_json,'$.proactive_contact_id') AS proactive_contact_id FROM source_records r
             WHERE stream_id=? AND persona_id=? AND identity_pending=0 AND source_type='conversation'

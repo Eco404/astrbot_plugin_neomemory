@@ -64,6 +64,7 @@ class NeoMemoryConfig:
     tools_enabled: bool = True
     llm_provider_id: str = ""
     short_term_provider_id: str = ""
+    rerank_provider_id: str = ""
     embedding_provider_id: str = ""
     llm_concurrency: int = 2
     embedding_concurrency: int = 2
@@ -84,7 +85,7 @@ class NeoMemoryConfig:
     recall_max_nodes: int = 6
     recall_max_neighbors: int = 2
     recall_candidate_per_query: int = 8
-    recall_selection_mode: str = "baseline"
+    recall_selection_mode: str = "adaptive"
     recall_similarity_threshold: float = 0.3
     recall_min_strength: float = 0.1
     strength_time_scale_seconds: float = 604800.0
@@ -273,6 +274,7 @@ class NeoMemoryConfig:
             tools_enabled=_as_bool(data.get("tools_enabled"), True),
             llm_provider_id=_as_string(data.get("llm_provider_id")),
             short_term_provider_id=_as_string(data.get("short_term_provider_id")),
+            rerank_provider_id=_as_string(data.get("rerank_provider_id")),
             embedding_provider_id=_as_string(data.get("embedding_provider_id")),
             llm_concurrency=_as_int(data.get("llm_concurrency"), 2, 1, 32),
             embedding_concurrency=_as_int(data.get("embedding_concurrency"), 2, 1, 32),
@@ -303,7 +305,8 @@ class NeoMemoryConfig:
             recall_candidate_per_query=_as_int(
                 data.get("recall_candidate_per_query"), 8, 1, 50
             ),
-            recall_selection_mode=("gated" if data.get("recall_selection_mode") == "gated" else "baseline"),
+            recall_selection_mode=(data["recall_selection_mode"] if data.get("recall_selection_mode")
+                                   in ("baseline", "gated") else "adaptive"),
             recall_similarity_threshold=_as_float(
                 data.get("recall_similarity_threshold"), 0.3, 0, 1
             ),

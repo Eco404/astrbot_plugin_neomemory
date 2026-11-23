@@ -250,7 +250,8 @@ async def test_evidence_filter_hot_apply_affects_preview_and_injection(plugin_fa
         text = "".join(part.text for part in request.extra_user_content_parts)
         return [item["node_id"] for item in preview["items"]], node["content_text"] in text
 
-    assert await returned() == ([node["node_id"]], True)
+    assert plugin.config.recall_selection_mode == "adaptive"
+    assert await returned() == ([], False)
     settings = await plugin.settings.get()
     saved = await plugin.settings.save(settings["revision"], {"recall_selection_mode": "gated"})
     assert saved["applied"] and not saved["reload_required"]

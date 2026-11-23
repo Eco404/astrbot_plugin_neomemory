@@ -5,7 +5,7 @@ import { $, element, button, notify, on, setupTabs, enhanceSelect } from './ui.j
 
 export function initSettings(ui) {
   const state = { data: null, models: { llm: [], embedding: [] }, draft: {}, group: '功能', loading: null, posting: false, probing: false };
-  const providerFields = new Set(['llm_provider_id', 'short_term_provider_id', 'embedding_provider_id']);
+  const providerFields = new Set(['llm_provider_id', 'short_term_provider_id', 'embedding_provider_id', 'rerank_provider_id']);
   const modelFields = new Set(['llm_provider_id','short_term_provider_id','embedding_provider_id','embedding_revision','llm_concurrency','embedding_concurrency','embedding_batch_size']);
   const appearance = initAppearance(ui, () => { if (state.data) renderDraftStatus(); });
   const cleaning = initTextCleaning(ui);
@@ -31,7 +31,7 @@ export function initSettings(ui) {
     description.append(label, help);
     if (state.data.runtime_values && state.data.runtime_values[key] !== state.data.values[key]) help.append(element('small', '运行值：' + JSON.stringify(state.data.runtime_values[key]) + '（保存值尚未应用）'));
     let input;
-    if (providerFields.has(key)) { input = element('select'); input.append(...choices(key === 'embedding_provider_id' ? 'embedding' : 'llm', state.draft[key])); input.value = state.draft[key] ?? ''; }
+    if (providerFields.has(key)) { input = element('select'); input.append(...choices(key === 'embedding_provider_id' ? 'embedding' : key === 'rerank_provider_id' ? 'rerank' : 'llm', state.draft[key])); input.value = state.draft[key] ?? ''; }
     else if (meta.options) {
       input = element('select');
       for (const value of meta.options) { const option = element('option', meta.option_labels?.[value] || String(value)); option.value = value; input.append(option); }

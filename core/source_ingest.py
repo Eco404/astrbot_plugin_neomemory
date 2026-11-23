@@ -11,12 +11,14 @@ from typing import Any
 
 from .text_cleaning import DEFAULT_CLEANER
 from .image_capture import kind, project_images, without_image_data
+from .group_addressing import address_entries
 from .identity import (
     EventIdentity,
     extract_event_identity,
     extract_event_persona_id,
     stable_source_id,
 )
+
 
 
 def _component_dump(component: Any) -> Any:
@@ -137,6 +139,13 @@ def _group_addressing(event: Any, identity: EventIdentity, components: list[dict
             target["is_self"] = True
         targets.append(target)
     return targets
+
+
+def recall_addresses(event, identity):
+    items = getattr(getattr(event, "message_obj", None), "message", None) or ()
+    components = [_component_dump(item) for item in items
+                  if isinstance(item, dict) or type(item).__name__ in {"Reply", "At"}]
+    return address_entries(_event_text(event), _group_addressing(event, identity, components))
 
 
 def _event_text(event: Any) -> str:

@@ -9,12 +9,16 @@ import json
 import time
 import uuid
 from dataclasses import replace
+from functools import partial
 from typing import Any
 
 from astrbot.api import logger
 from astrbot.core.agent.message import TextPart
 
 try:
+    from ..core.adaptive_recall import selection_request
+    from ..core.model_routing import window_route
+    from ..core.source_ingest import recall_addresses
     from ..core.shared_recall import deliver_shared, search_shared
     from ..core.active_recall import ActiveFilters, merge_active_result
     from ..core.context_bundle import assemble_context
@@ -32,6 +36,9 @@ try:
     from ..storage.context_store import ContextStore
     from ..storage.job_store import JobConflict
 except ImportError:
+    from core.adaptive_recall import selection_request
+    from core.model_routing import window_route
+    from core.source_ingest import recall_addresses
     from core.shared_recall import deliver_shared, search_shared
     from core.active_recall import ActiveFilters, merge_active_result
     from core.context_bundle import assemble_context
@@ -107,6 +114,8 @@ class MemoryRuntime:
                 provider_id=cfg.embedding_provider_id, batch_size=cfg.embedding_batch_size,
                 revision=cfg.embedding_revision)
             self.recall = RecallService(self.plugin.memory_store, embeddings,
+                rerank=partial(self.adapter.rerank, provider_id=cfg.rerank_provider_id) if cfg.rerank_provider_id else None,
+                evidence_selector=partial(self._select_evidence, default_provider=cfg.llm_provider_id),
                 name_resolver=self.plugin.source_store.get_user_display_names, policy=RecallPolicy(
                 history_seconds=cfg.history_seconds, history_limit=cfg.history_limit,
                 user_weight=cfg.user_weight, agent_weight=cfg.agent_weight,
@@ -135,6 +144,24 @@ class MemoryRuntime:
                     max_turn_reinforcement=cfg.reinforcement_max_per_turn,
                     max_reinforcement=cfg.reinforcement_max_total,
                 )))
+
+    async def _select_evidence(self, space_id, history, chat_origin, query, documents, limit, timeout, *, default_provider):
+        policy = await self.plugin.memory_store.get_space_policy(space_id)
+        records = [{**item, "metadata": {"chat_model": json.loads(item["chat_model_json"])}}
+                   for item in history if item.get("chat_model_json")]
+        route = window_route(policy, default_provider, records, {})
+        if not route and chat_origin:
+            provider_id = await self.plugin.context.get_current_chat_provider_id(chat_origin)
+            route = {"provider_id": provider_id} if provider_id else {}
+        if not route:
+            raise ValueError("no recall selection model")
+        messages, schema = selection_request(query, documents, limit)
+        response = await self.adapter.generate(messages, provider_id=route["provider_id"], model=route.get("model_override", ""),
+            timeout_seconds=timeout, output_format="json_schema", output_schema=schema)
+        ids = json.loads(response)["ids"]
+        if not isinstance(ids, list) or len(ids) > limit or any(type(i) is not int for i in ids):
+            raise ValueError("invalid evidence IDs")
+        return [i - 1 for i in ids]
 
     async def close(self) -> None:
         self.closing = True
@@ -403,7 +430,8 @@ class MemoryRuntime:
                     return await self.plugin.source_store.recent_conversation(
                         identity.stream_id, space["persona_id"], since=now - self.config.history_seconds,
                         until=now, limit=self.config.history_limit, exclude_message_id=identity.message_id,
-                        host_conversation_id=conversation_id, logical_user_id=space.get("logical_user_id"))
+                        host_conversation_id=conversation_id, logical_user_id=space.get("logical_user_id"),
+                        recall_context=self.config.recall_selection_mode == "adaptive")
                 return []
 
             history_task = asyncio.create_task(recent_history())
@@ -416,7 +444,11 @@ class MemoryRuntime:
                     return RecallResult(space["space_id"])
                 history = await history_task
                 return await self.recall.recall(space["space_id"], query,
-                    history=history, now=now, user_names=current_names, retain_candidates=True)
+                    history=history, now=now, user_names=current_names, retain_candidates=True,
+                    **({"chat_origin": identity.unified_msg_origin,
+                        "group_sender": identity.account_id if identity.is_group else "",
+                        "addresses": recall_addresses(event, identity) if identity.is_group else ()}
+                       if self.config.recall_selection_mode == "adaptive" else {}))
 
             context_task, recall_task = asyncio.create_task(local_context()), asyncio.create_task(long_term())
             tasks = [history_task, context_task, recall_task]
@@ -544,6 +576,7 @@ class MemoryRuntime:
                         try:
                             async with asyncio.timeout(remaining):
                                 result = await recall.recall(space["space_id"], query, active=True, user_names=names,
+                                    **({"chat_origin": identity.unified_msg_origin} if self.config.recall_selection_mode == "adaptive" else {}),
                                     retain_candidates=True,
                                     **({"node_filter": filters.matches} if kind != "all" or event_after or event_before else {}))
                         except Exception as exc:

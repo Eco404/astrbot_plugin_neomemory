@@ -5,6 +5,7 @@ import json
 import time
 from dataclasses import dataclass, replace
 
+from .adaptive_recall import query_body, refers_to_current_media
 from .memory_text import memory_texts, render_display_text, render_memory_text, user_reference_ids
 from .recall_lexical import is_acknowledgement
 from .retrieval import rank_candidates, render_node, select_context
@@ -36,6 +37,10 @@ async def _scene(space, sources, names):
 async def search_shared(memory, sources, service, local, current, query, deadline, *,
                         preview=False, filters=None, current_names=None):
     """Search indexed nodes only; query computation belongs to the originating space."""
+    if service.policy.ranking_strategy == "adaptive":
+        query = query_body(query)
+        if filters is None and refers_to_current_media(query):
+            return []
     if not query.strip() or (filters and filters.kind == "note") or (filters is None and is_acknowledgement(query)):
         return []
     spaces = await memory.list_shared_spaces(local.space_id)
