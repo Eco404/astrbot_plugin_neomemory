@@ -8,10 +8,10 @@ const personaFields = [
 ];
 const spaceFields = [
   ['exclude_from_shared_recall', '禁止其他空间检索本空间', '开启后，本空间仍可按人格设置检索其他空间。'],
-  ['model_mode', '长期记忆模型', '继承插件设置时，全局记忆 LLM 留空将跟随来源窗口。'],
+  ['model_mode', '记忆 LLM 模型', '用于本空间的长期记忆抽取和主题整理。继承插件设置且全局模型留空时，跟随来源窗口。'],
   ['provider_id', '指定模型', '用于本空间的长期记忆抽取。'],
-  ['topic_provider_id', '主题整理模型', '留空时沿用本空间的模型选择。'],
 ];
+const topicField = ['topic_provider_id', '单独指定主题整理模型（可选）', '仅在希望主题使用其他模型，或需要统一多个来源窗口的模型时选择。'];
 
 export function initSpaceSettings(ui, modelChoices) {
   let saved, draft = {}, saving = false, request = 0;
@@ -23,6 +23,7 @@ export function initSpaceSettings(ui, modelChoices) {
     $('policy-discard').disabled = saving;
     $('policy-save').disabled = saving || !changed;
     $('policy-draft-state').textContent = saving ? '正在保存…' : changed ? '有未保存的修改' : '没有未保存的改动';
+    $('policy-topic-summary').textContent = '主题整理模型 · ' + (draft.topic_provider_id || '沿用本空间的记忆 LLM 模型');
   }
   function field([key, name, hint, max]) {
     const row = element('div', '', 'field'), label = element('label', name);
@@ -38,7 +39,7 @@ export function initSpaceSettings(ui, modelChoices) {
         }
       } else {
         input.append(...modelChoices('llm', draft[key]));
-        input.firstChild.textContent = key === 'provider_id' ? '请选择模型' : '沿用空间模型';
+        input.firstChild.textContent = key === 'provider_id' ? '请选择模型' : '沿用本空间的记忆 LLM 模型';
         input.required = key === 'provider_id' && draft.model_mode === 'fixed';
       }
       input.value = draft[key]; enhanceSelect(input);
@@ -88,9 +89,10 @@ export function initSpaceSettings(ui, modelChoices) {
     if (!sources.length) $('policy-source-list').append(element('li', '暂无已开放的来源空间。'));
     $('policy-persona-fields').replaceChildren(...personaFields.map(field));
     $('policy-space-fields').replaceChildren(...spaceFields.map(field));
+    $('policy-topic-field').replaceChildren(field(topicField));
     controls();
   }
-  function discard() { if (saved) { draft = Object.fromEntries([...personaFields, ...spaceFields].map(([key]) => [key, saved[key]])); render(); } }
+  function discard() { if (saved) { draft = Object.fromEntries([...personaFields, ...spaceFields, topicField].map(([key]) => [key, saved[key]])); render(); } }
   async function refresh() {
     const id = ui.space(), sequence = ++request;
     if (saved?.space_id === id && (dirty() || saving)) return;

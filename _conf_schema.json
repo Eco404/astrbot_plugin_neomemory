@@ -67,7 +67,7 @@
   },
   "llm_provider_id": {
     "description": "记忆 LLM 模型",
-    "hint": "选择后台抽取的默认模型。留空时按来源窗口选择对话模型，各空间可在 WebUI 中单独配置。",
+    "hint": "用于长期记忆抽取和主题整理。留空时按来源窗口的对话模型选择。各记忆空间可以单独指定模型。",
     "type": "string",
     "default": "",
     "_special": "select_provider"

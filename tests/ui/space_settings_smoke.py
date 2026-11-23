@@ -50,6 +50,16 @@ async def main():
             await page.get_by_role('tab', name='记忆空间').click()
             await expect(page.locator('#space-bar')).to_be_visible()
             await expect(page.locator('#policy-save')).to_be_disabled()
+            topic = page.locator('#policy-topic_provider_id')
+            summary = page.locator('#policy-topic-summary')
+            await expect(topic).to_be_hidden()
+            await expect(summary).to_contain_text('沿用本空间的记忆 LLM 模型')
+            await summary.click()
+            await topic.select_option('llm-1')
+            await expect(summary).to_contain_text('llm-1')
+            await page.locator('#policy-discard').click()
+            await expect(topic).to_have_value('')
+            await summary.click()
             for width in (1280, 390):
                 await page.set_viewport_size({'width': width, 'height': 844})
                 for group, reference, target in [
