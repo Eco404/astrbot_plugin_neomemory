@@ -9,7 +9,7 @@ from typing import Any
 
 from .memory_text import render_memory_text
 from .relationship_state import visible_relationship_slots
-from .retrieval import MEMORY_PREFIX, render_node, select_context
+from .retrieval import MEMORY_PREFIX, render_node, same_recall_evidence, select_context
 
 
 @dataclass
@@ -129,10 +129,17 @@ def assemble_context(snapshot: dict[str, Any], hits: list[dict[str, Any]], confi
                and row["coverage_kind"] == "full"
                and row["event_content_version"] == by_id[row["event_node_id"]]["content_version"]
                and row["atomic_content_version"] == by_id[row["atomic_node_id"]]["content_version"]}
-    long_term_omitted = [{"node_id": hit["node_id"], "reason":
-                         "coverage" if hit["node_id"] in covered else
-                         "node_limit" if len(selected) >= max_nodes else "budget"}
-                        for hit in hits if hit["node_id"] not in selected_ids]
+    long_term_omitted = []
+    for hit in hits:
+        if hit["node_id"] in selected_ids:
+            continue
+        if hit["node_id"] in covered:
+            reason = "coverage"
+        elif distinct and any(same_recall_evidence(hit, other) for other in selected):
+            reason = "duplicate"
+        else:
+            reason = "node_limit" if len(selected) >= max_nodes else "budget"
+        long_term_omitted.append({"node_id": hit["node_id"], "reason": reason})
     reasons = {row["node_id"]: row["reason"] for row in long_term_omitted}
     entries.extend({"section": "long_term", "node_id": hit["node_id"],
                     "rendered_bytes": node_bytes[hit["node_id"]],

@@ -545,7 +545,8 @@ class JobStore:
 
     async def latest_index(self, scope_key: str) -> dict[str, Any] | None:
         row = await self.database.fetchone(
-            "SELECT state, updated_at, error_code, progress_done, progress_total FROM memory_jobs "
+            "SELECT state, updated_at, error_code, progress_done, progress_total, "
+            "json_extract(result_json,'$.repaired') AS repaired FROM memory_jobs "
             "WHERE scope_key=? AND kind='reindex' ORDER BY created_at DESC, job_id DESC LIMIT 1", (scope_key,))
         return dict(row) if row else None
 

@@ -989,11 +989,13 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         async with asyncio.timeout(self.config.index_timeout_seconds):
             snapshot = await self.memory.index_nodes(space_id, generation_id=generation_id,
                                                      limit=self.config.recall_index_limit)
-            nodes, indexed = snapshot["nodes"], 0
+            nodes = snapshot["nodes"]
+            indexed = repaired = 0
             for start in range(0, len(nodes), service.batch_size):
                 batch = nodes[start:start + service.batch_size]
                 try:
-                    await node_vectors(service, batch, space_id, deadline=deadline, require_persisted=True)
+                    _, missing = await node_vectors(service, batch, space_id, deadline=deadline, require_persisted=True)
+                    repaired += missing
                 except IndexCacheUnavailable as exc:
                     raise self._embedding_failure(exc) from None
                 if service.fingerprint != fingerprint:
@@ -1005,7 +1007,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                     saved = await self.jobs.get(job["job_id"])
                     await self._save(job, saved["checkpoint"], f"index:{indexed}/{len(nodes)}",
                                      saved["progress_done"], saved["progress_total"])
-            return {"indexed": indexed, "configured": True, "truncated": snapshot["truncated"]}
+            return {"indexed": indexed, "repaired": repaired, "configured": True, "truncated": snapshot["truncated"]}
 
     async def _reindex(self, job):
         payload = job["payload"]

@@ -37,6 +37,7 @@ function renderSnapshot(snapshot) {
     const states = {queued: '排队中', running: '运行中', retry_wait: '等待重试', succeeded: '已完成', failed: '失败', cancelled: '已取消'};
     const details = [date(updated_at), states[state] || state];
     if (progress_total) details.push(`${progress_done} / ${progress_total} 条`);
+    if (snapshot.last_index.repaired != null) details.push(`补齐 ${snapshot.last_index.repaired} 条版本向量`);
     if (state === 'failed' && error_code) details.push(error_code);
     content.append(element('p', '本空间最近的索引任务 · ' + details.join(' · '), 'muted'));
   }

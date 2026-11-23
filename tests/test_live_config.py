@@ -235,7 +235,7 @@ async def test_external_read_keeps_admitted_embedding_during_scope_resolution(pl
 async def test_external_cold_read_repairs_after_busy_scope_and_passive_reuses_query(plugin_factory, monkeypatch):
     from storage.job_store import JobConflict
 
-    plugin = await plugin_factory({"automatic_extraction_enabled": False})
+    plugin = await plugin_factory({"automatic_extraction_enabled": False, "extraction_scan_seconds": 1})
     event = RuntimeEvent(text="这次参观温室的记录")
     space, node = await seed(plugin, event, content="一起参观过温室。")
     sid = space["space_id"]
@@ -254,11 +254,14 @@ async def test_external_cold_read_repairs_after_busy_scope_and_passive_reuses_qu
         await asyncio.gather(*list(runtime.index_tasks.values()))
     assert runtime.pending_indexes == {sid: "space_busy"}
     assert not plugin.context.embedding.calls
-    runtime.index_after[sid] = 0
-    runtime.retry_pending_indexes()
-    await asyncio.gather(*list(runtime.index_tasks.values()))
+    async with asyncio.timeout(12):
+        while True:
+            latest = await plugin.jobs.latest_index(sid)
+            if latest and latest["state"] == "succeeded":
+                break
+            await asyncio.sleep(.1)
     assert not runtime.pending_indexes
-    assert (await plugin.jobs.latest_index(sid))["state"] == "succeeded"
+    assert latest["repaired"] == 1
     assert await plugin.jobs.latest_index("another-space") is None
 
     assert (await plugin.external_memory.read(request))["items"][0]["id"] == node["node_id"]

@@ -358,7 +358,7 @@ def rank_candidates(snapshot: dict[str, Any], vectors: list[list[float] | None],
     return organized + neighbors
 
 
-def _same_evidence(node, other):
+def same_recall_evidence(node, other):
     fields = ("node_type", "status", "content_text", "event_time_start", "event_time_end",
               "event_time_text", "emotion", "topic_id", "connection")
     return all(node.get(field) == other.get(field) for field in fields)
@@ -395,7 +395,7 @@ def select_context(ranked: list[dict[str, Any]], coverage: list[dict[str, Any]],
             if fits(selected + [parent]):
                 item = parent
                 break
-        if distinct_evidence and any(_same_evidence(item, other) for other in selected):
+        if distinct_evidence and any(same_recall_evidence(item, other) for other in selected):
             continue
         proposal = [previous for previous in selected if previous["node_id"] not in covers.get(item["node_id"], set())] + [item]
         if fits(proposal):
@@ -598,7 +598,7 @@ class RecallService:
                             continue
                         if item["node_id"] in covered:
                             reason = "由入选事件完整覆盖"
-                        elif gated and any(_same_evidence(item, hit) for hit in selected):
+                        elif gated and any(same_recall_evidence(item, hit) for hit in selected):
                             reason = "相同内容已入选"
                         else:
                             reason = "未进入条目数或字节预算"
