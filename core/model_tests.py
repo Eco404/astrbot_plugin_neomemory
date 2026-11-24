@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import time
-import uuid
 from typing import Any
 
 from .attempts import observed_call
@@ -73,7 +72,7 @@ class ModelTestService:
         if job["state"] not in {"failed", "cancelled"}:
             raise ValueError("model test must be stopped before reprepare")
         return await self.enqueue(kind=job["payload"]["kind"], provider_id=job["payload"]["provider_id"],
-                                  idempotency_key="fresh:" + uuid.uuid4().hex, replaces=job)
+                                  idempotency_key=job["idempotency_key"].removeprefix("model_test:"), replaces=job)
 
     async def _save(self, job, checkpoint, *, step, done):
         await self.jobs.save_checkpoint(job["job_id"], job["lease_token"], checkpoint=checkpoint,

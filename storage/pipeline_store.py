@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import uuid
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -130,7 +131,7 @@ class PipelineStore:
             if parent is None or parent["generation_id"] != expected_generation_id:
                 raise ValueError("active generation changed before rebuild creation")
             now = time.time()
-            generation_id = "gen_rebuild_" + hashlib.sha256(job["job_id"].encode()).hexdigest()[:32]
+            generation_id = "gen_rebuild_" + uuid.uuid4().hex
             await connection.execute(
                 "INSERT INTO memory_generations(generation_id,space_id,parent_generation_id,status,"
                 "reason,created_at,updated_at) VALUES (?,?,?,'building',?,?,?)",

@@ -80,7 +80,8 @@ async def test_health_tracks_each_retained_automatic_recovery_chain_once(stores)
         await jobs.fail(resume["job_id"], resume["lease_token"], error_type="ReviewRequired", error_code="invalid_output")
         fresh = await jobs.claim("worker")
         replacement = await submit(jobs, scope="auto-fresh", key="replace-"+fresh["job_id"], replaces=fresh)
-        await jobs.delete(fresh["job_id"])
+        assert fresh["job_id"] == replacement["job_id"]
+        assert len(await jobs.list(scope_key="auto-fresh")) == 1
         claim = await jobs.claim("worker")
         assert claim["job_id"] == replacement["job_id"]
         if cycle == 0:

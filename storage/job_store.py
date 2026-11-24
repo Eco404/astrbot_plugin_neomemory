@@ -162,6 +162,7 @@ def _job(row) -> dict[str, Any] | None:
     for field in ("payload", "checkpoint", "result"):
         value = result.pop(f"{field}_json")
         result[field] = json.loads(value) if value is not None else None
+    result["admission"] = result["payload"].pop("_original_admission", {})
     result["attempts"] = json.loads(result.pop("attempts_json"))
     return result
 
@@ -253,7 +254,7 @@ class JobStore:
 
     async def submit(
         self, kind: str, scope_key: str, payload: Mapping[str, Any], idempotency_key: str,
-        *, max_attempts: int = 2, hide_on_success: bool = False, replaces=None,
+        *, max_attempts: int = 2, hide_on_success: bool = False, replaces=None, invalidate_nodes=None,
     ) -> dict[str, Any]:
         _text(kind, "kind", limit=80)
         _text(scope_key, "scope_key")
@@ -262,16 +263,19 @@ class JobStore:
             raise ValueError("max_attempts must be between 1 and 20")
         payload_json = _json(payload)
         async with self.database.transaction() as connection:
+            if replaces is not None:
+                return await self._reprepare(connection, replaces, kind, scope_key, payload, max_attempts, invalidate_nodes)
             cursor = await connection.execute(
                 "SELECT * FROM memory_jobs WHERE idempotency_key=?", (idempotency_key,),
             )
             existing = await cursor.fetchone()
             if existing is not None:
-                if (existing["kind"] != kind or existing["scope_key"] != scope_key
-                        or existing["payload_json"] != payload_json):
+                job = _job(existing)
+                if (job["kind"] != kind or job["scope_key"] != scope_key
+                        or (existing["payload_json"] != payload_json and job["admission"].get("digest") != digest(payload))):
                     raise JobConflict("idempotency key already describes another task")
-                return _job(existing)
-            if kind == "reindex" and hide_on_success and not replaces:
+                return job
+            if kind == "reindex" and hide_on_success:
                 cursor = await connection.execute(
                     "SELECT * FROM memory_jobs WHERE kind='reindex' AND state='failed' AND automatic_origin=1 "
                     "AND scope_key=? AND json_extract(payload_json,'$.expected_generation_id')=? "
@@ -279,41 +283,54 @@ class JobStore:
                 if pending := await cursor.fetchone():
                     return _job(pending)
             job_id = f"job_{uuid.uuid4().hex}"
-            automatic_origin = hide_on_success
-            history = "[]"
             now = self.clock()
-            if replaces:
-                if replaces.get("lease_token"):
-                    previous = await self._lease(connection, replaces["job_id"], replaces["lease_token"])
-                    if previous["recovery_mode"] != "fresh":
-                        raise JobConflict("task has not entered fresh recovery")
-                    hide_on_success = previous["hide_on_success"]
-                else:
-                    previous = await _get(connection, replaces["job_id"])
-                    if not previous or previous["state"] not in ("failed", "cancelled"):
-                        raise JobConflict("only stopped tasks can be replaced manually")
-                    if (previous["result"] or {}).get("replacement_job_id"):
-                        raise JobConflict("task has already been replaced")
-                    hide_on_success = False
-                if (previous["kind"], previous["scope_key"]) != (kind, scope_key):
-                    raise JobConflict("replacement does not match the recovering task")
-                automatic_origin = previous["automatic_origin"]
-                history = _attempt_history(previous, "cancelled", now, action="fresh", replacement_job_id=job_id)
-                await connection.execute(
-                    "UPDATE memory_jobs SET state='cancelled',recovery_mode=NULL,updated_at=?,result_json=?,"
-                    "lease_token=NULL,lease_until=NULL,owner=NULL,attempts_json=? WHERE job_id=?",
-                    (now, _json({"replacement_job_id": job_id}), history, previous["job_id"]))
             await assert_scope_available(connection, scope_key)
             await connection.execute(
                 "INSERT INTO memory_jobs (job_id,kind,scope_key,idempotency_key,state,"
-                "payload_json,max_attempts,available_at,created_at,updated_at,hide_on_success,automatic_origin,attempts_json) "
-                "VALUES (?,?,?,?,'queued',?,?,?,?,?,?,?,?)",
+                "payload_json,max_attempts,available_at,created_at,updated_at,hide_on_success,automatic_origin) "
+                "VALUES (?,?,?,?,'queued',?,?,?,?,?,?,?)",
                 (job_id, kind, scope_key, idempotency_key, payload_json,
-                 max_attempts, now, now, now, hide_on_success, automatic_origin, history),
+                 max_attempts, now, now, now, hide_on_success, hide_on_success),
             )
             return await _get(connection, job_id)
 
-    async def claim(self, owner: str, *, lease_seconds: float = 30) -> dict[str, Any] | None:
+    async def _reprepare(self, connection, original, kind, scope_key, payload, max_attempts, invalidate_nodes):
+        job_id = original["job_id"]
+        if original.get("lease_token"):
+            previous = await self._lease(connection, job_id, original["lease_token"])
+            if previous["recovery_mode"] != "fresh":
+                raise JobConflict("task has not entered fresh recovery")
+            hide = previous["hide_on_success"]
+        else:
+            previous = await _get(connection, job_id)
+            if (previous and previous["state"] == "queued" and previous["admission"]
+                    and previous["payload"] == payload and (previous["kind"], previous["scope_key"]) == (kind, scope_key)):
+                return previous
+            if not previous or previous["state"] not in ("failed", "cancelled"):
+                raise JobConflict("only stopped tasks can be reprepared manually")
+            if (previous["result"] or {}).get("replacement_job_id"):
+                raise JobConflict("task has already been replaced")
+            hide = False
+        if (previous["kind"], previous["scope_key"]) != (kind, scope_key):
+            raise JobConflict("new preparation does not match the task")
+        await assert_scope_available(connection, scope_key, exclude_job_id=job_id)
+        await self._discard_work(connection, previous, invalidate_nodes=invalidate_nodes, reprepare=True)
+        # Keep the original submission key valid even when a new window or provider is selected.
+        admission = previous["admission"] or {"digest": digest(previous["payload"]),
+                                               "request": previous["payload"].get("request")}
+        now = self.clock()
+        history = _attempt_history(previous, "queued", now, action="fresh")
+        total = len(payload["source_ids"]) if kind in {"extract", "short_term"} else payload.get("total")
+        await connection.execute(
+            """UPDATE memory_jobs SET payload_json=?,checkpoint_json='{}',step='queued',state='queued',
+               progress_done=0,progress_total=?,attempt=0,max_attempts=?,available_at=?,updated_at=?,
+               result_json=NULL,recovery_mode=NULL,lease_token=NULL,lease_until=NULL,owner=NULL,
+               error_type=NULL,error_code=NULL,hide_on_success=?,attempts_json=? WHERE job_id=?""",
+            (_json({**payload, "_original_admission": admission}), total, max_attempts, now, now, hide, history, job_id))
+        return await _get(connection, job_id)
+
+    async def claim(self, owner: str, *, lease_seconds: float = 30,
+                    exclude_job_ids: tuple[str, ...] = ()) -> dict[str, Any] | None:
         _text(owner, "owner")
         _positive_seconds(lease_seconds, "lease_seconds")
         async with self.database.transaction() as connection:
@@ -326,11 +343,12 @@ class JobStore:
                 "WHERE state='running' AND lease_until<=?", (now, now, now),
             )
             cursor = await connection.execute(
-                "SELECT j.job_id,j.state FROM memory_jobs j WHERE available_at<=? AND ("
+                "SELECT j.job_id,j.state FROM memory_jobs j WHERE available_at<=? "
+                "AND job_id NOT IN (SELECT value FROM json_each(?)) AND ("
                 "state IN ('queued','retry_wait') OR (state='failed' AND automatic_origin=1 AND NOT EXISTS ("
                 "SELECT 1 FROM memory_jobs active WHERE active.state IN ('running','queued','retry_wait') "
                 "AND (active.scope_key=j.scope_key OR active.scope_key='*' OR j.scope_key='*')))) "
-                "ORDER BY available_at,created_at,job_id LIMIT 1", (now,),
+                "ORDER BY available_at,created_at,job_id LIMIT 1", (now, json.dumps(exclude_job_ids)),
             )
             row = await cursor.fetchone()
             if row is None:
@@ -537,6 +555,14 @@ class JobStore:
 
     async def _delete_stopped(self, connection, job, *, invalidate_nodes=None):
         """Shared cleanup for a task selected under the enclosing transaction."""
+        result = await self._discard_work(connection, job, invalidate_nodes=invalidate_nodes, reprepare=False)
+        for table in ("rebuild_receipts", "rebuild_runs", "short_term_receipts", "note_receipts"):
+            await connection.execute(f"DELETE FROM {table} WHERE job_id=?", (job["job_id"],))
+        await connection.execute("DELETE FROM memory_jobs WHERE job_id=?", (job["job_id"],))
+        return {**result, "job_id": job["job_id"], "deleted": True}
+
+    async def _discard_work(self, connection, job, *, invalidate_nodes, reprepare):
+        """Release unpublished data before a fresh preparation or final deletion."""
         job_id = job["job_id"]
         cursor = await connection.execute(
             "SELECT g.generation_id,g.status FROM rebuild_runs r "
@@ -547,7 +573,7 @@ class JobStore:
         removed_generation = None
         node_ids = []
         if generation is not None and (generation["status"] in {"building", "failed"} or (
-            generation["status"] == "retired" and job["kind"] in {"profile_rebuild", "relationship_rebuild", "context_rebuild"}
+            not reprepare and generation["status"] == "retired" and job["kind"] in {"profile_rebuild", "relationship_rebuild", "context_rebuild"}
         )):
             removed_generation = generation["generation_id"]
             cursor = await connection.execute(
@@ -561,16 +587,16 @@ class JobStore:
         node_ids.extend(row["node_id"] for row in await cursor.fetchall())
         if invalidate_nodes is not None and node_ids:
             await invalidate_nodes(job["scope_key"], node_ids)
-        for table in ("memory_job_candidates", "rebuild_receipts", "rebuild_runs",
-                      "short_term_receipts", "note_receipts"):
-            await connection.execute(f"DELETE FROM {table} WHERE job_id=?", (job_id,))
+        await connection.execute("DELETE FROM memory_job_candidates WHERE job_id=?", (job_id,))
+        await connection.execute(
+            "DELETE FROM topic_receipts WHERE receipt_key IN (SELECT receipt_key FROM topic_rebuild_stage WHERE job_id=?)",
+            (job_id,))
         if removed_generation is not None:
-            await connection.execute(
-                "DELETE FROM memory_generations WHERE generation_id=?", (removed_generation,),
-            )
-        await connection.execute("DELETE FROM memory_jobs WHERE job_id=?", (job_id,))
-        return {"job_id": job_id, "deleted": True, "removed_generation_id": removed_generation,
-                "removed_node_count": len(node_ids)}
+            # Publishing a context rebuild can leave a retired target with a receipt.
+            await connection.execute("DELETE FROM rebuild_receipts WHERE job_id=?", (job_id,))
+            await connection.execute("DELETE FROM rebuild_runs WHERE job_id=?", (job_id,))
+            await connection.execute("DELETE FROM memory_generations WHERE generation_id=?", (removed_generation,))
+        return {"removed_generation_id": removed_generation, "removed_node_count": len(node_ids)}
 
     async def recovery_actions(self, job):
         if job["state"] not in {"failed", "cancelled"}:
@@ -620,6 +646,8 @@ class JobStore:
             job = await _get(connection, job_id)
             if job is None:
                 raise KeyError(job_id)
+            if (job["result"] or {}).get("replacement_job_id"):
+                raise JobConflict("task has already been replaced")
             if job["state"] in ("queued", "retry_wait"):
                 return job
             if job["state"] not in ("failed", "cancelled"):
@@ -695,7 +723,8 @@ class JobStore:
             raise ValueError("offset must be a nonnegative integer")
         conditions, parameters = [], []
         if visible_only:
-            conditions.append("(state != 'succeeded' OR hide_on_success=0)")
+            conditions.extend(("(state != 'succeeded' OR hide_on_success=0)",
+                               "json_extract(result_json,'$.replacement_job_id') IS NULL"))
         if scope_key is not None:
             _text(scope_key, "scope_key")
             conditions.append("scope_key=?")

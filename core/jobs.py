@@ -171,7 +171,8 @@ class JobRunner:
                             self._diagnostic(task.exception())
                 while not self._stopping and not self.paused and len(self._workers) < self.concurrency:
                     lease_seconds = self.lease_seconds
-                    job = await self.store.claim(self.owner, lease_seconds=lease_seconds)
+                    job = await self.store.claim(self.owner, lease_seconds=lease_seconds,
+                                                 exclude_job_ids=tuple(self._workers))
                     if job is None:
                         break
                     if self.paused:

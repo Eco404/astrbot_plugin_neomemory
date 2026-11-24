@@ -322,6 +322,21 @@ async def test_list_and_health_filters(stores):
     assert await first.get("missing") is None
 
 
+@pytest.mark.asyncio
+async def test_list_hides_superseded_task_from_existing_database(stores):
+    store, _, _ = stores
+    original = await submit(store)
+    await store.cancel(original["job_id"])
+    current = await submit(store, key="replacement")
+    async with store.database.transaction() as connection:
+        await connection.execute(
+            "UPDATE memory_jobs SET result_json=json_object('replacement_job_id', ?) WHERE job_id=?",
+            (current["job_id"], original["job_id"]))
+    assert [job["job_id"] for job in await store.list(visible_only=True)] == [current["job_id"]]
+    with pytest.raises(JobConflict):
+        await store.retry(original["job_id"])
+
+
 async def wait_state(store, job_id, state, timeout=2):
     async with asyncio.timeout(timeout):
         while True:
@@ -441,6 +456,39 @@ async def test_runner_graceful_shutdown_resumes_checkpoint(stores):
         assert result["result"] == {"resumed": True}
     finally:
         await two.stop()
+
+
+@pytest.mark.asyncio
+async def test_reprepared_job_waits_for_previous_local_worker_to_exit(stores):
+    first, second, clock = stores
+    original = await submit(first)
+    entered, release = asyncio.Event(), asyncio.Event()
+    attempts = []
+
+    async def handle(job):
+        if job["job_id"] == original["job_id"]:
+            attempts.append(job["lease_token"])
+            if len(attempts) == 1:
+                entered.set()
+                await release.wait()
+        return {}
+
+    runner = JobRunner(first, {"extract": handle}, concurrency=2, poll_seconds=0.005)
+    try:
+        await runner.start()
+        await asyncio.wait_for(entered.wait(), 2)
+        cancelled = await second.cancel(original["job_id"])
+        await submit(second, replaces=cancelled)
+        clock[0] += 1
+        other = await submit(second, "another-space", key="other")
+        await wait_state(first, other["job_id"], "succeeded")
+        assert (await first.get(original["job_id"]))["state"] == "queued"
+        release.set()
+        await wait_state(first, original["job_id"], "succeeded")
+        assert len(set(attempts)) == 2
+    finally:
+        release.set()
+        await runner.stop()
 
 
 @pytest.mark.asyncio

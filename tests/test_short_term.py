@@ -584,7 +584,8 @@ async def test_automatic_reprepare_replans_the_eligible_short_term_prefix(env):
     env.runner.reprepare = env.service.auto_reprepare
     old = await execute(env, await env.jobs.claim("reprepare"))
     current = await env.jobs.claim("fresh")
-    assert old["result"]["replacement_job_id"] == current["job_id"]
+    assert old["job_id"] == current["job_id"] == job["job_id"]
+    assert len(await env.jobs.list()) == 1
     assert current["payload"]["source_ids"] == job["payload"]["source_ids"][:3]
     assert current["automatic_origin"]
     assert (await execute(env, current))["state"] == "succeeded"

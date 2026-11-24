@@ -112,6 +112,34 @@ async def test_delete_unpublished_rebuild_cleans_generation_and_vectors(environm
 
 
 @pytest.mark.asyncio
+async def test_reprepare_rebuild_releases_unpublished_generation_under_same_job(environment, monkeypatch):
+    env = environment
+    with monkeypatch.context() as patch:
+        task = await unfinished_rebuild(env, patch)
+    old_generation = task["checkpoint"]["generation_id"]
+    active = await env.memory.get_active_generation(task["scope_key"])
+
+    class UnavailableCache:
+        async def invalidate_nodes(self, space_id, ids):
+            raise OSError("cache unavailable")
+
+    env.runtime.cache = UnavailableCache()
+    with pytest.raises(OSError, match="cache unavailable"):
+        await env.engine.retry(task["job_id"], fresh=True)
+    assert await env.engine.jobs.get(task["job_id"]) == task
+    assert await env.memory.database.fetchone("SELECT 1 FROM memory_generations WHERE generation_id=?", (old_generation,))
+    env.runtime.cache = None
+    queued = await env.engine.retry(task["job_id"], fresh=True)
+    assert queued["job_id"] == task["job_id"] and queued["checkpoint"] == {}
+    assert not await env.memory.database.fetchone("SELECT 1 FROM memory_generations WHERE generation_id=?", (old_generation,))
+    assert await env.memory.get_active_generation(task["scope_key"]) == active
+    env.adapter.output = json.dumps(output())
+    completed = await execute(env, await env.engine.jobs.claim("worker"))
+    assert completed["state"] == "succeeded" and completed["result"]["generation_id"] != old_generation
+    assert await env.memory.database.fetchall("PRAGMA foreign_key_check") == []
+
+
+@pytest.mark.asyncio
 async def test_cache_cleanup_failure_keeps_task_and_draft_retryable(environment, monkeypatch):
     env = environment
     task = await unfinished_rebuild(env, monkeypatch)

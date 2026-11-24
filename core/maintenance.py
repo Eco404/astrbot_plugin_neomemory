@@ -6,7 +6,6 @@ import asyncio
 import copy
 import json
 import time
-import uuid
 from dataclasses import asdict
 from functools import partial
 
@@ -303,7 +302,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         if row is None:
             return None
         job = await self.jobs.get(row["job_id"])
-        if job["payload"].get("request") != request:
+        if job["admission"].get("request", job["payload"].get("request")) != request:
             raise JobConflict("idempotency key already identifies a different request")
         return job
 
@@ -333,9 +332,10 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             if kind not in {"extract", "rebuild", "topic_consolidate", "topic_rebuild", *CONTEXT_REBUILD_MODELS}:
                 raise ValueError("this task does not use an extraction model")
             request["model_selection"] = model_selection
-        existing = await self._existing_request(idempotency_key, request)
-        if existing:
-            return existing
+        if replaces is None:
+            existing = await self._existing_request(idempotency_key, request)
+            if existing:
+                return existing
         space = await self.memory.get_space(space_id)
         if not space or space["space_id"] != space_id:
             raise ValueError("unknown memory space ID")
@@ -394,7 +394,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             if receipt and receipt["model_id"] != "manual-rejection":
                 raise ValueError("window already committed; resume the original task")
         return await self.jobs.submit(kind, space_id, payload, idempotency_key,
-                                      max_attempts=self.config.job_max_attempts, hide_on_success=automatic, replaces=replaces)
+                                      max_attempts=self.config.job_max_attempts, hide_on_success=automatic, replaces=replaces,
+                                      invalidate_nodes=self.runtime.cache.invalidate_nodes if replaces and self.runtime.cache else None)
 
     async def _submit_extract(self, space, generation, records, decision, key, *, request, replaces=None):
         ids = decision.source_ids or (decision.blocked_source_id,)
@@ -469,11 +470,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             return await self.jobs.finish(job["job_id"], job["lease_token"], result=result)
         if job["kind"] == "short_term":
             return await self.short_term.auto_reprepare(job)
-        key = "auto-restart:" + job["job_id"]
-        if job["kind"] == "topic_consolidate" and job["idempotency_key"].startswith("topics:auto:"):
-            topic_key = job["idempotency_key"].split(":", 3)[:3]
-            key = ":".join([*topic_key, job["job_id"]])
-        return await self.snapshot()._enqueue(job["kind"], job["scope_key"], key,
+        return await self.snapshot()._enqueue(job["kind"], job["scope_key"], job["idempotency_key"],
             automatic=True, replaces=job)
 
     async def retry(self, job_id, *, fresh=False, regenerate_window=False, model_selection=None):
@@ -484,10 +481,15 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         if regenerate_window:
             return await self.jobs.regenerate_window(job_id)
         job = await self.jobs.get(job_id)
-        if not job or job["state"] not in {"failed", "cancelled"}:
-            raise ValueError("task must be failed or cancelled before retry")
+        if not job:
+            raise ValueError("unknown task")
         if job["kind"] == "short_term" and self.short_term is not None:
             return await self.short_term.retry(job_id, fresh=fresh, **({"model_selection": model_selection} if model_selection else {}))
+        if fresh and job["state"] == "queued" and job["attempts"] and job["attempts"][-1].get("action") == "fresh":
+            if (model_selection or {}) == job["payload"].get("request", {}).get("model_selection", {}):
+                return job
+        if job["state"] not in {"failed", "cancelled"}:
+            raise ValueError("task must be failed or cancelled before retry")
         if job["kind"] == "model_test" and self.model_tests is not None:
             return await self.model_tests.retry(job_id, fresh=fresh)
         if job["kind"] == "note" and fresh:
@@ -496,9 +498,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             return await self.jobs.retry(job_id)
         kind, space = job["kind"], job["scope_key"]
         request = job["payload"].get("request", {})
-        # A new task starts with current inputs and no old model output. Keep the
-        # old error record until successful submission, then resolve its blocker.
-        return await self.snapshot()._enqueue(kind, space, "restart:" + uuid.uuid4().hex, replaces=job,
+        return await self.snapshot()._enqueue(kind, space, job["idempotency_key"], replaces=job,
             operation=job["payload"].get("operation"), reason=request.get("reason", ""),
             failed_job_id=job["payload"].get("failed_job_id"), include_topics=bool(job["payload"].get("include_topics")),
             model_selection=model_selection)
@@ -513,7 +513,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         result = {key: job[key] for key in fields}
         if lanes := job["checkpoint"].get("section_progress"):
             result["section_progress"] = lanes
-        result["hidden_from_task_list"] = bool(job["hide_on_success"] and job["state"] == "succeeded")
+        result["hidden_from_task_list"] = bool((job["result"] or {}).get("replacement_job_id") or
+                                               (job["hide_on_success"] and job["state"] == "succeeded"))
         checkpoint = inspection_checkpoint(job)
         window = checkpoint.get("window", {})
         result.update(await self.jobs.recovery_actions(job))

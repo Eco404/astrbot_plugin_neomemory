@@ -114,7 +114,7 @@ async def test_provider_change_requires_fresh_test(env):
     stored = await env.jobs.get(queued["job_id"])
     assert stored["error_code"] == "model_test_configuration_changed" and not env.calls
     replacement = await env.service.retry(stored["job_id"], fresh=True)
-    assert replacement["job_id"] != stored["job_id"]
+    assert replacement["job_id"] == stored["job_id"]
     await env.runner._execute(await env.jobs.claim("worker"))
     assert (await env.jobs.get(replacement["job_id"]))["result"]["model"] == "changed"
 

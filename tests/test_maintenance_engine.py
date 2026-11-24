@@ -502,10 +502,19 @@ async def test_fresh_retry_rebuilds_candidate_and_resolves_old_failure(environme
     env = environment
     env.adapter.output = "invalid"
     failed = await execute(env, await enqueue_and_claim(env))
+    extra = await capture(env.sources, number=3)
     env.adapter.output = json.dumps(output())
     restarted = await env.engine.retry(failed["job_id"], fresh=True)
-    assert restarted["job_id"] != failed["job_id"]
-    assert (await env.engine.jobs.get(failed["job_id"]))["state"] == "cancelled"
+    assert restarted["job_id"] == failed["job_id"]
+    assert restarted["payload"]["source_ids"] == [*failed["payload"]["source_ids"], extra.source_id]
+    assert (await env.engine.retry(failed["job_id"], fresh=True))["attempts"] == restarted["attempts"]
+    replayed = await env.engine.enqueue("extract", env.space["space_id"], failed["idempotency_key"])
+    assert replayed["job_id"] == failed["job_id"] and replayed["payload"] == restarted["payload"]
+    assert restarted["progress_total"] == 3
+    assert restarted["created_at"] == failed["created_at"]
+    assert restarted["attempts"][-1]["action"] == "fresh"
+    same, = await env.engine.jobs.list(visible_only=True)
+    assert same["job_id"] == failed["job_id"] and same["state"] == "queued"
     completed = await execute(env, await env.engine.jobs.claim("fresh"))
     assert completed["state"] == "succeeded"
     assert len(env.adapter.calls) == 2
@@ -781,9 +790,10 @@ async def test_auto_recovery_reprepares_stale_checkpoint_once_and_keeps_origin(e
     jobs = env.engine.jobs
     jobs.clock = lambda: failed["available_at"]
     old = await execute(env, await jobs.claim("prepare"))
-    assert old["state"] == "cancelled"
+    assert old["state"] == "queued"
     current = await jobs.claim("new")
-    assert old["result"]["replacement_job_id"] == current["job_id"]
+    assert current["job_id"] == old["job_id"] == job["job_id"]
+    assert len(await jobs.list()) == 1
     assert current["automatic_origin"] and current["hide_on_success"] and current["attempt"] == 1
     assert current["checkpoint"] == {}
     assert (await execute(env, current))["state"] == "succeeded"

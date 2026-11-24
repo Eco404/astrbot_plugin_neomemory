@@ -202,7 +202,7 @@ class ShortTermService:
                    "source_ids": [row["source_id"] for row in chosen], "keep_messages": policy["keep_messages"],
                    "model_route": await self._route(space_id, chosen)}
         if replaces:
-            request_key = "auto-restart:" + replaces["job_id"]
+            request_key = replaces["idempotency_key"]
         else:
             request_key = await self.jobs.next_window_key("short_term:" + _digest([space_id, payload]))
             if request_key is None:
@@ -256,6 +256,14 @@ class ShortTermService:
             if model_selection:
                 raise ValueError("choose a model when preparing a fresh task")
             return await self.jobs.retry(job_id)
+        selection = model_selection or {}
+        validate_selection(selection)
+        if selection.keys() - {"window_provider_id"}:
+            raise ValueError("select a short-term summary provider")
+        if job["state"] == "queued" and job["attempts"] and job["attempts"][-1].get("action") == "fresh":
+            chosen = selection.get("window_provider_id")
+            if not chosen or chosen == job["payload"]["model_route"].get("provider_id"):
+                return job
         if job["state"] not in {"failed", "cancelled"}:
             raise JobConflict("only failed or cancelled summaries can be reprepared")
         if await self.store.receipt(job_id):
@@ -263,10 +271,6 @@ class ShortTermService:
         generation = await self.memory.get_active_generation(job["scope_key"])
         if not generation or generation["generation_id"] != job["payload"]["generation_id"]:
             raise ValueError("summary generation changed; use the current conversation")
-        selection = model_selection or {}
-        validate_selection(selection)
-        if selection.keys() - {"window_provider_id"}:
-            raise ValueError("select a short-term summary provider")
         payload = dict(job["payload"])
         current = await self.store.get(job["scope_key"], payload["conversation_key"],
                                        generation_id=payload["generation_id"])
@@ -285,7 +289,7 @@ class ShortTermService:
         if not payload["model_route"]:
             raise ValueError("model_required: select a short-term summary model")
         return await self.jobs.submit("short_term", job["scope_key"], payload,
-            "short_term_fresh:" + job_id, max_attempts=getattr(self.config, "job_max_attempts", 2), replaces=job)
+            job["idempotency_key"], max_attempts=getattr(self.config, "job_max_attempts", 2), replaces=job)
 
     async def _execution(self, space, prompt_version=PROMPT_VERSION, route=None):
         persona = self.persona_loader(space["persona_id"])
