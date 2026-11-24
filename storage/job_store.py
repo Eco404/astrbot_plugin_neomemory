@@ -501,7 +501,7 @@ class JobStore:
         async with self.database.transaction() as connection:
             scope_clause = " AND scope_key=?" if scope_key is not None else ""
             cursor = await connection.execute(
-                "SELECT job_id,scope_key FROM memory_jobs WHERE state='succeeded'"
+                "SELECT job_id,scope_key,kind FROM memory_jobs WHERE state='succeeded'"
                 + scope_clause + " ORDER BY created_at,job_id",
                 (scope_key,) if scope_key is not None else (),
             )

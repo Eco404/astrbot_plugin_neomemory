@@ -441,7 +441,27 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             self._read_hints.pop(generation_id, None)
         return result
 
+    async def _has_committed_window(self, job):
+        payload, checkpoint = job["payload"], job["checkpoint"]
+        if job["kind"] not in {"extract", "topic_consolidate"}:
+            return False
+        generation = await self.memory.get_active_generation(job["scope_key"])
+        if not generation or generation["generation_id"] != payload["expected_generation_id"]:
+            return False
+        if job["kind"] == "topic_consolidate":
+            from .topic_maintenance import TopicStore
+            window = checkpoint.get("topic_window")
+            return bool(window and not payload.get("topic_inputs_replaced")
+                        and await TopicStore(self.memory).receipt(window["receipt_key"]))
+        source_ids = checkpoint.get("window", {}).get("source_ids") or payload["source_ids"]
+        batch_id = "batch_" + digest([job["scope_key"], generation["generation_id"], source_ids])
+        return await self.memory.get_extraction_batch(batch_id) is not None
+
     async def _auto_reprepare(self, job):
+        if await self._has_committed_window(job):
+            handler = self._extract if job["kind"] == "extract" else self._consolidate_topics
+            result = await self._supported_handler(handler, job)
+            return await self.jobs.finish(job["job_id"], job["lease_token"], result=result)
         if job["kind"] == "short_term":
             return await self.short_term.auto_reprepare(job)
         key = "auto-restart:" + job["job_id"]
@@ -467,7 +487,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             return await self.model_tests.retry(job_id, fresh=fresh)
         if job["kind"] == "note" and fresh:
             raise ValueError("refresh and edit the note again; do not discard its version check")
-        if not fresh:
+        if not fresh or await self._has_committed_window(job):
             return await self.jobs.retry(job_id)
         kind, space = job["kind"], job["scope_key"]
         request = job["payload"].get("request", {})
@@ -972,6 +992,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
 
     async def _index_committed_window(self, job, checkpoint, receipt):
         if self.runtime.recall is None:
+            if checkpoint.get("window_index"):
+                raise ReviewRequired("index_provider_required")
             return {"indexed": 0, "configured": False}
         nodes = await self.memory.extraction_batch_index_nodes(receipt["batch_id"])
         if not nodes:

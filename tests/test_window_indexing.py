@@ -286,3 +286,25 @@ async def test_context_preparation_consumes_the_same_deadline_before_llm(indexin
     assert env.adapter.calls == []
     assert "window" not in waiting["checkpoint"]
     assert await env.memory.database.fetchall("SELECT * FROM extraction_batches") == []
+
+@pytest.mark.asyncio
+async def test_fresh_recovery_finishes_outstanding_index_without_new_sources(indexing_env):
+    env = indexing_env
+    create_candidates(env, 2)
+    env.vector_adapter.failure = ValueError("index unavailable")
+    job = await enqueue_and_claim(env, "extract", automatic=True)
+    initial = await execute(env, job)
+    assert initial["state"] == "failed" and initial["step"] == "window_index"
+    assert (await env.cache.health())["counts"]["node"] == 0
+    await env.memory.database.execute("UPDATE memory_jobs SET available_at=0 WHERE job_id=?", (job["job_id"],))
+    resumed = await execute(env, await env.engine.jobs.claim("resume"))
+    assert resumed["recovery_mode"] == "fresh"
+    failed = await execute(env, await env.engine.jobs.claim("fresh"))
+    assert failed["state"] == "failed" and failed["result"] is None
+    env.vector_adapter.failure = None
+    retry = await env.engine.retry(job["job_id"], fresh=True)
+    assert retry["job_id"] == job["job_id"]
+    completed = await execute(env, await env.engine.jobs.claim("manual"))
+    assert completed["result"]["index"]["indexed"] == 2
+    assert (await env.cache.health())["counts"]["node"] == 2
+    assert len(env.adapter.calls) == 1

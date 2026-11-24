@@ -209,7 +209,7 @@ class IdentityManagement:
                     node_ids = [row["node_id"] for row in await cursor.fetchall()]
                     if node_ids and self.runtime.cache is not None:
                         await self.runtime.cache.invalidate_nodes(space_id, node_ids)
-                    cursor = await connection.execute("SELECT job_id,scope_key FROM memory_jobs WHERE scope_key=?", (space_id,))
+                    cursor = await connection.execute("SELECT job_id,scope_key,kind FROM memory_jobs WHERE scope_key=?", (space_id,))
                     for old_job in await cursor.fetchall():
                         await self.jobs._delete_stopped(connection, old_job)
                     await connection.execute("DELETE FROM memory_spaces WHERE space_id=?", (space_id,))

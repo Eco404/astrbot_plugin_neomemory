@@ -337,3 +337,13 @@ async def test_delete_topic_rebuild_only_evicts_unpublished_draft_vectors(enviro
     finally:
         env.runtime.cache = None
         await cache.close()
+
+@pytest.mark.asyncio
+async def test_clear_completed_after_scoped_generation_retires(environment):
+    env = environment
+    env.adapter.output = '{"profile_changes":[]}'
+    claimed = await enqueue_and_claim(env, "profile_rebuild")
+    assert (await execute(env, claimed))["state"] == "succeeded"
+    result = await env.engine.clear_completed(scope_key=env.space["space_id"])
+    assert result["deleted_count"] == 1
+    assert await env.engine.jobs.get(claimed["job_id"]) is None
