@@ -341,22 +341,26 @@ async def test_basic_host_schema_preserves_hidden_settings_across_loads(tmp_path
     assert {key for key, meta in schema.items() if not meta.get("invisible")} == {
         key for key, meta in schema.items() if meta["type"] == "bool"
     } | {"llm_provider_id", "topic_provider_id", "short_term_provider_id", "embedding_provider_id", "rerank_provider_id",
-         "llm_concurrency", "embedding_concurrency", "embedding_batch_size", "embedding_revision"}
+         "llm_concurrency", "embedding_concurrency", "embedding_batch_size"}
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"llm_provider_id": "saved-llm", "embedding_provider_id": "saved-embedding",
-                               "recall_deadline_seconds": 7.0}))
+                               "recall_deadline_seconds": 7.0, "embedding_revision": "prior-cache"}))
     host = AstrBotConfig(str(path), schema=schema)
     item = service(host)
     state = await item.get()
     assert state["values"]["llm_provider_id"] == "saved-llm"
     assert state["values"]["embedding_provider_id"] == "saved-embedding"
     assert state["values"]["recall_deadline_seconds"] == 7.0
-    assert set(state["schema"]) == set(schema)
+    assert set(state["schema"]) == set(schema) - {"embedding_revision"}
+    assert "embedding_revision" not in state["values"] and "embedding_revision" not in state["runtime_values"]
+    with pytest.raises(ValueError, match="unknown settings"):
+        await item.save(state["revision"], {"embedding_revision": "other"})
     assert all("invisible" not in meta for meta in state["schema"].values())
     changed = await item.save(state["revision"], {"capture_group_messages": False})
     reloaded = AstrBotConfig(str(path), schema=schema)
     assert reloaded["llm_provider_id"] == "saved-llm"
     assert reloaded["embedding_provider_id"] == "saved-embedding"
+    assert reloaded["embedding_revision"] == item.plugin.config.embedding_revision == "prior-cache"
     assert reloaded["recall_deadline_seconds"] == 7.0
     assert not reloaded["capture_group_messages"] and changed["applied"]
 

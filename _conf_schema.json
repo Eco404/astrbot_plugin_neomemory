@@ -100,6 +100,7 @@
   },
   "embedding_revision": {
     "description": "[高级] Embedding 模型修订标识",
+    "invisible": true,
     "hint": "同名模型或服务输出发生变化时修改此标识，旧向量缓存随之隔离。",
     "type": "string",
     "default": ""

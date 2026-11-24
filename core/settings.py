@@ -14,6 +14,8 @@ from typing import Any
 from .config import NeoMemoryConfig
 
 _SCHEMA = json.loads((Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text())
+# Keep an existing vector-cache namespace in host configuration across Web edits.
+_SCHEMA.pop("embedding_revision")
 _MODEL_FIELDS = {"llm_provider_id", "topic_provider_id", "short_term_provider_id", "embedding_provider_id", "rerank_provider_id"}
 
 
@@ -119,7 +121,8 @@ class SettingsService:
         snapshot = self._snapshot()
         values = {key: copy.deepcopy(snapshot.get(key, meta["default"])) for key, meta in _SCHEMA.items()}
         runtime = getattr(self.plugin, "config", None)
-        runtime_values = runtime.as_dict() if isinstance(runtime, NeoMemoryConfig) else NeoMemoryConfig().as_dict()
+        runtime_config = runtime if isinstance(runtime, NeoMemoryConfig) else NeoMemoryConfig()
+        runtime_values = {key: getattr(runtime_config, key) for key in _SCHEMA}
         schema = copy.deepcopy(_SCHEMA)
         for key, meta in schema.items():
             # Visibility belongs to AstrBot's basic configuration form only.

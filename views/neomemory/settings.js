@@ -6,7 +6,7 @@ import { $, element, button, notify, on, setupTabs, enhanceSelect } from './ui.j
 export function initSettings(ui) {
   const state = { data: null, models: { llm: [], embedding: [] }, draft: {}, group: '功能', loading: null, posting: false, probing: false };
   const providerFields = new Set(['llm_provider_id', 'topic_provider_id', 'short_term_provider_id', 'embedding_provider_id', 'rerank_provider_id']);
-  const modelFields = new Set(['llm_provider_id','topic_provider_id','short_term_provider_id','embedding_provider_id','embedding_revision','llm_concurrency','embedding_concurrency','embedding_batch_size']);
+  const modelFields = new Set(['llm_provider_id','topic_provider_id','short_term_provider_id','embedding_provider_id','llm_concurrency','embedding_concurrency','embedding_batch_size']);
   const appearance = initAppearance(ui, () => { if (state.data) renderDraftStatus(); });
   const cleaning = initTextCleaning(ui);
   function isModelField(key, meta) {
