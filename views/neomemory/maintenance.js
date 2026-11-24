@@ -3,6 +3,10 @@ import { initRecallInspector } from './recall.js';
 import { taskTiming, taskFeedback } from './task-progress.js';
 import { $, element, notify, pretty, on, onSearchForm, newKey, emotionLabels, emotionEntries, enhanceSelect, setupTabs } from './ui.js';
 
+function attemptLabel(attempt = 0, limit = 0) {
+  return attempt > limit ? `网络恢复第${attempt - limit}次` : `尝试 ${attempt} / ${limit}`;
+}
+
 function fieldLabel(caption) {
   const label = element('label');
   label.append(element('span', caption));
@@ -474,7 +478,7 @@ export function initMaintenance(ui) {
         const identity = element('div');
         identity.append(title, element('div', job.job_id, 'muted'));
         heading.append(identity);
-        if (activeStates.has(job.state)) taskAction(heading, '取消', () => confirmCancelTask(job), false, 'danger');
+        if (activeStates.has(job.state) || (job.state === 'failed' && job.automatic_origin)) taskAction(heading, '取消', () => confirmCancelTask(job), false, 'danger');
         card.append(heading);
         if (job.section_progress) {
           for (const [lane, entry] of Object.entries(job.section_progress)) {
@@ -482,7 +486,7 @@ export function initMaintenance(ui) {
               profile_rebuild: '用户画像', relationship_rebuild: '人格关系', context_rebuild: '用户画像与人格关系'
             }[job.kind] || '会话回放');
             const state = job.state === 'cancelled' && entry.state !== 'succeeded' ? 'cancelled' : entry.state;
-            const attempt = entry.attempt ? ' · 尝试 ' + entry.attempt + ' / ' + job.max_attempts : '';
+            const attempt = entry.attempt ? ' · ' + attemptLabel(entry.attempt, job.max_attempts) : '';
             card.append(element('p', name + ' · ' + (states[state] || state) + ' · ' + stepLabel(entry.step)
               + ' · ' + entry.done + ' / ' + (entry.total ?? '待确定') + attempt));
             card.append(progressBar(name + '进度', entry.done, entry.total, state));
@@ -491,7 +495,7 @@ export function initMaintenance(ui) {
           }
         } else {
           card.append(progressBar('任务进度', job.progress_done, job.progress_total, job.state));
-          card.append(element('p', `当前步骤：${stepLabel(job.step)} · ${job.progress_done || 0} / ${job.progress_total ?? '待确定'} · 尝试 ${job.attempt || 0} / ${job.max_attempts || 0}`));
+          card.append(element('p', `当前步骤：${stepLabel(job.step)} · ${job.progress_done || 0} / ${job.progress_total ?? '待确定'} · ${attemptLabel(job.attempt, job.max_attempts)}`));
         }
         card.append(taskTiming(job), taskFeedback(job));
         const actions = element('div', '', 'row');

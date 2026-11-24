@@ -6,8 +6,7 @@ import pytest
 import pytest_asyncio
 
 from core.jobs import JobRunner, RetryableJobError, ReviewRequired
-from storage.memory_schema import MEMORY_SCHEMA
-from storage.schema import initialize_schema
+from storage.memory_schema import initialize_memory_schema
 from storage.job_store import JobConflict, JobStore, LeaseLost, assert_job_lease
 from storage.sqlite_executor import SQLiteExecutor
 
@@ -17,7 +16,7 @@ async def stores(tmp_path):
     first = SQLiteExecutor(tmp_path / "memory.db")
     second = SQLiteExecutor(tmp_path / "memory.db")
     await first.open()
-    await initialize_schema(first, MEMORY_SCHEMA)
+    await initialize_memory_schema(first)
     await second.open()
     clock = [100.0]
     yield JobStore(first, clock=lambda: clock[0]), JobStore(second, clock=lambda: clock[0]), clock
@@ -460,3 +459,73 @@ async def test_unknown_kind_requires_review(stores):
         assert result["error_code"] == "unsupported_job_kind"
     finally:
         await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_network_uses_three_spaced_attempts_after_normal_budget(stores):
+    from core.jobs import ModelNetworkError
+
+    store, reopened, clock = stores
+    await submit(store, max_attempts=2)
+
+    async def offline(job):
+        raise ModelNetworkError("provider_temporary_failure")
+
+    runner = JobRunner(store, {"extract": offline})
+    for attempt, delay in enumerate([5, 600, 600, 600, None], 1):
+        job = await reopened.claim("owner")
+        assert job["attempt"] == attempt
+        await runner._execute(job)
+        failed = await reopened.get(job["job_id"])
+        if delay is not None:
+            assert failed["state"] == "retry_wait" and failed["available_at"] == clock[0] + delay
+            clock[0] += delay - 1
+            assert await store.claim("early") is None
+            clock[0] += 1
+    assert failed["state"] == "failed"
+    clock[0] += 21600
+    assert await reopened.claim("manual-jobs-stay-failed") is None
+
+
+@pytest.mark.asyncio
+async def test_periodic_resume_obeys_scope_cancel_and_intervened_visibility(stores):
+    store, reopened, clock = stores
+    job = await submit(store, hide_on_success=True)
+    failure = dict(error_type="ReviewRequired", error_code="context_changed")
+
+    async def fail_after_claim():
+        running = await store.claim("owner")
+        return await store.fail(job["job_id"], running["lease_token"], **failure)
+
+    await fail_after_claim()
+    await store.retry(job["job_id"])
+    failed = await fail_after_claim()
+    assert failed["automatic_origin"] and not failed["hide_on_success"]
+    clock[0] += 21599
+    assert await reopened.claim("early") is None
+    global_job = await submit(store, "*", key="global")
+    clock[0] += 1
+    assert (await reopened.claim("blocker"))["job_id"] == global_job["job_id"]
+    assert await store.claim("busy") is None
+    await reopened.cancel(global_job["job_id"])
+    resumed = await reopened.claim("resume")
+    assert resumed["recovery_mode"] == "resume" and resumed["attempt"] == 1
+    await store.save_checkpoint(job["job_id"], resumed["lease_token"], checkpoint={"done": 1},
+                                step="replay", progress_done=1, progress_total=2)
+    failed = await store.fail(job["job_id"], resumed["lease_token"], **failure)
+    assert failed["state"] == "failed" and failed["available_at"] == clock[0] + 21600
+    await store.cancel(job["job_id"])
+    clock[0] += 21600
+    assert await reopened.claim("cancelled") is None
+
+
+@pytest.mark.asyncio
+async def test_recall_cannot_resubmit_failed_automatic_index_during_cooldown(stores):
+    store, _, clock = stores
+    options = {"kind": "reindex", "hide_on_success": True, "payload": {"expected_generation_id": "g"}}
+    job = await submit(store, **options)
+    running = await store.claim("indexer")
+    await store.fail(job["job_id"], running["lease_token"], error_type="ReviewRequired", error_code="context_changed")
+    same = await submit(store, key="another-recall", **options)
+    assert same["job_id"] == job["job_id"] and same["available_at"] == clock[0] + 21600
+    assert await store.claim("early") is None

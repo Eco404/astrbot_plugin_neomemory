@@ -516,8 +516,13 @@ class TemporaryProviderError(Exception):
     status_code = 503
 
 
+class HttpServiceUnavailable(Exception):
+    code = 503
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error", [TimeoutError("private response"), TemporaryProviderError("private response")])
+@pytest.mark.parametrize("error", [TimeoutError("private response"), TemporaryProviderError("private response"),
+                                    HttpServiceUnavailable("private response")])
 async def test_transient_provider_error_retries_only_as_delayed_job(environment, error):
     env = environment
 
@@ -696,3 +701,33 @@ async def test_governance_request_keeps_command_body_only_once(environment):
     assert "operation" not in first["payload"]["request"]
     repeated = await env.engine.enqueue("governance", env.space["space_id"], "governance-dedupe", operation=command)
     assert repeated["job_id"] == first["job_id"]
+
+
+@pytest.mark.asyncio
+async def test_auto_recovery_reprepares_stale_checkpoint_once_and_keeps_origin(environment):
+    env = environment
+    job = await enqueue_and_claim(env, automatic=True)
+    jobs = env.engine.jobs
+    await jobs.save_checkpoint(job["job_id"], job["lease_token"],
+        checkpoint={"window": {"signature": "obsolete"}}, step="prepared", progress_done=0, progress_total=2)
+    await jobs.fail(job["job_id"], job["lease_token"], error_type="ReviewRequired", error_code="configuration_changed")
+    failed = await jobs.get(job["job_id"])
+    restart(env)
+    jobs = env.engine.jobs
+    jobs.clock = lambda: failed["available_at"]
+    resumed = await jobs.claim("resume")
+    assert resumed["job_id"] == job["job_id"] and resumed["recovery_mode"] == "resume"
+    assert resumed["checkpoint"]["window"]["signature"] == "obsolete"
+    pending = await execute(env, resumed)
+    assert pending["recovery_mode"] == "fresh" and pending["state"] == "queued"
+    restart(env)
+    jobs = env.engine.jobs
+    jobs.clock = lambda: failed["available_at"]
+    old = await execute(env, await jobs.claim("prepare"))
+    assert old["state"] == "cancelled"
+    current = await jobs.claim("new")
+    assert old["result"]["replacement_job_id"] == current["job_id"]
+    assert current["automatic_origin"] and current["hide_on_success"] and current["attempt"] == 1
+    assert current["checkpoint"] == {}
+    assert (await execute(env, current))["state"] == "succeeded"
+    assert len(env.adapter.calls) == 1

@@ -49,3 +49,35 @@ async def test_shared_spaces_respect_sender_visibility_and_destination_type(tmp_
         assert not await visible(other)
     finally:
         await memory.close()
+
+
+@pytest.mark.asyncio
+async def test_release_jobs_keep_origin_and_due_time_on_upgrade(tmp_path):
+    from storage.space_policy import POLICY_SCHEMA
+    from storage.job_store import JobStore
+
+    path = tmp_path / "memory.db"
+    db = SQLiteExecutor(path)
+    await db.open()
+    await initialize_schema(db, MEMORY_SCHEMA + POLICY_SCHEMA)
+    await db.execute("PRAGMA user_version=2")
+    for key in ("short_term:automatic", "short_term_fresh:manual"):
+        await db.execute(
+            "INSERT INTO memory_jobs(job_id,kind,scope_key,idempotency_key,state,payload_json,"
+            "available_at,created_at,updated_at) VALUES (?,'short_term','s',?,'failed','{}',10,5,10)",
+            (key, key))
+    await db.close()
+    memory = MemoryStore(path)
+    await memory.open()
+    try:
+        store = JobStore(memory.database)
+        automatic = await store.get("short_term:automatic")
+        assert automatic["automatic_origin"] and automatic["available_at"] == 21610
+        manual = await store.get("short_term_fresh:manual")
+        assert not manual["automatic_origin"]
+        await memory.close()
+        await memory.open()
+        assert (await store.get("short_term:automatic")) == automatic
+        assert (await memory.health())["schema_revision"] == "v3-dev.1"
+    finally:
+        await memory.close()

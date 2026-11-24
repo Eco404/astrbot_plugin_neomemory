@@ -27,6 +27,9 @@ except ImportError:
 
 ACTIVE_STATES = ("queued", "running", "retry_wait")
 JOB_STATES = (*ACTIVE_STATES, "failed", "succeeded", "cancelled")
+AUTO_RECOVERY_SECONDS = 6 * 60 * 60
+NETWORK_RETRY_SECONDS = 10 * 60
+NETWORK_RETRIES = 3
 MAX_JSON_BYTES = 1024 * 1024
 
 
@@ -255,7 +258,7 @@ class JobStore:
 
     async def submit(
         self, kind: str, scope_key: str, payload: Mapping[str, Any], idempotency_key: str,
-        *, max_attempts: int = 2, hide_on_success: bool = False,
+        *, max_attempts: int = 2, hide_on_success: bool = False, replaces=None,
     ) -> dict[str, Any]:
         _text(kind, "kind", limit=80)
         _text(scope_key, "scope_key")
@@ -273,15 +276,33 @@ class JobStore:
                         or existing["payload_json"] != payload_json):
                     raise JobConflict("idempotency key already describes another task")
                 return _job(existing)
-            await assert_scope_available(connection, scope_key)
-            now = self.clock()
+            if kind == "reindex" and hide_on_success and not replaces:
+                cursor = await connection.execute(
+                    "SELECT * FROM memory_jobs WHERE kind='reindex' AND state='failed' AND automatic_origin=1 "
+                    "AND scope_key=? AND json_extract(payload_json,'$.expected_generation_id')=? "
+                    "ORDER BY updated_at DESC LIMIT 1", (scope_key, payload.get("expected_generation_id")))
+                if pending := await cursor.fetchone():
+                    return _job(pending)
             job_id = f"job_{uuid.uuid4().hex}"
+            automatic_origin = hide_on_success
+            now = self.clock()
+            if replaces:
+                previous = await self._lease(connection, replaces["job_id"], replaces["lease_token"])
+                if (previous["kind"], previous["scope_key"], previous["recovery_mode"]) != (kind, scope_key, "fresh"):
+                    raise JobConflict("replacement does not match the recovering task")
+                automatic_origin = previous["automatic_origin"]
+                hide_on_success = previous["hide_on_success"]
+                await connection.execute(
+                    "UPDATE memory_jobs SET state='cancelled',recovery_mode=NULL,updated_at=?,result_json=?,"
+                    "lease_token=NULL,lease_until=NULL,owner=NULL WHERE job_id=?",
+                    (now, _json({"replacement_job_id": job_id}), previous["job_id"]))
+            await assert_scope_available(connection, scope_key)
             await connection.execute(
                 "INSERT INTO memory_jobs (job_id,kind,scope_key,idempotency_key,state,"
-                "payload_json,max_attempts,available_at,created_at,updated_at,hide_on_success) "
-                "VALUES (?,?,?,?,'queued',?,?,?,?,?,?)",
+                "payload_json,max_attempts,available_at,created_at,updated_at,hide_on_success,automatic_origin) "
+                "VALUES (?,?,?,?,'queued',?,?,?,?,?,?,?)",
                 (job_id, kind, scope_key, idempotency_key, payload_json,
-                 max_attempts, now, now, now, hide_on_success),
+                 max_attempts, now, now, now, hide_on_success, automatic_origin),
             )
             return await _get(connection, job_id)
 
@@ -298,13 +319,19 @@ class JobStore:
                 "WHERE state='running' AND lease_until<=?", (now, now, now),
             )
             cursor = await connection.execute(
-                "SELECT job_id FROM memory_jobs WHERE state IN ('queued','retry_wait') "
-                "AND available_at<=? ORDER BY available_at,created_at,job_id LIMIT 1", (now,),
+                "SELECT j.job_id,j.state FROM memory_jobs j WHERE available_at<=? AND ("
+                "state IN ('queued','retry_wait') OR (state='failed' AND automatic_origin=1 AND NOT EXISTS ("
+                "SELECT 1 FROM memory_jobs active WHERE active.state IN ('running','queued','retry_wait') "
+                "AND (active.scope_key=j.scope_key OR active.scope_key='*' OR j.scope_key='*')))) "
+                "ORDER BY available_at,created_at,job_id LIMIT 1", (now,),
             )
             row = await cursor.fetchone()
             if row is None:
                 return None
             job_id = row["job_id"]
+            if row["state"] == "failed":
+                await connection.execute(
+                    "UPDATE memory_jobs SET attempt=0,recovery_mode='resume' WHERE job_id=?", (job_id,))
             await connection.execute(
                 "UPDATE memory_jobs SET state='running',owner=?,lease_token=?,lease_until=?,"
                 "attempt=attempt+1,error_type=NULL,error_code=NULL,updated_at=? WHERE job_id=?",
@@ -345,9 +372,11 @@ class JobStore:
         async with self.database.transaction() as connection:
             await self._lease(connection, job_id, lease_token)
             await connection.execute(
-                "UPDATE memory_jobs SET checkpoint_json=?,step=?,progress_done=?,"
+                "UPDATE memory_jobs SET recovery_mode=CASE WHEN recovery_mode='resume' AND "
+                "(?>progress_done OR ? IN ('model','topic_model','short_term_model')) "
+                "THEN NULL ELSE recovery_mode END,checkpoint_json=?,step=?,progress_done=?,"
                 "progress_total=?,error_type=NULL,error_code=NULL,updated_at=? WHERE job_id=?",
-                (checkpoint_json, step, progress_done, progress_total, self.clock(), job_id),
+                (progress_done, step, checkpoint_json, step, progress_done, progress_total, self.clock(), job_id),
             )
             return await _get(connection, job_id)
 
@@ -357,7 +386,7 @@ class JobStore:
             await self._lease(connection, job_id, lease_token)
             await connection.execute(
                 "UPDATE memory_jobs SET state='succeeded',lease_token=NULL,lease_until=NULL,"
-                "owner=NULL,result_json=?,checkpoint_json='{}',step='complete',"
+                "owner=NULL,result_json=?,checkpoint_json='{}',step='complete',recovery_mode=NULL,"
                 "progress_done=COALESCE(progress_total,progress_done),error_type=NULL,"
                 "error_code=NULL,updated_at=? WHERE job_id=?", (result_json, self.clock(), job_id),
             )
@@ -367,9 +396,16 @@ class JobStore:
     def retry_delay(attempt):
         return min(300, 5 * 2 ** min(10, max(0, attempt - 1)))
 
+    def next_retry_delay(self, attempt, max_attempts, *, retryable, model_network):
+        if retryable and attempt < max_attempts:
+            return self.retry_delay(attempt)
+        if retryable and model_network and attempt < max_attempts + NETWORK_RETRIES:
+            return NETWORK_RETRY_SECONDS
+        return None
+
     async def fail(
         self, job_id: str, lease_token: str, *, error_type: str, error_code: str,
-        retryable: bool = False, backoff_seconds: float | None = None,
+        retryable: bool = False, model_network: bool = False, backoff_seconds: float | None = None,
     ) -> dict[str, Any]:
         # Never store str(exception), URLs, model response bodies or credentials.
         for field, value in (("error_type", error_type), ("error_code", error_code)):
@@ -381,14 +417,23 @@ class JobStore:
             _positive_seconds(backoff_seconds, "backoff_seconds")
         async with self.database.transaction() as connection:
             job = await self._lease(connection, job_id, lease_token)
-            will_retry = retryable and job["attempt"] < job["max_attempts"]
             now = self.clock()
-            delay = backoff_seconds if backoff_seconds is not None else self.retry_delay(job["attempt"])
+            delay = self.next_retry_delay(job["attempt"], job["max_attempts"],
+                                         retryable=retryable, model_network=model_network)
+            mode = job["recovery_mode"]
+            if mode == "resume" and not retryable and job["attempt"] == 1:
+                state, mode, available = "queued", "fresh", now
+            elif delay is not None:
+                state, available = "retry_wait", now + (backoff_seconds or delay)
+                if mode == "resume":
+                    mode = None
+            else:
+                state, mode = "failed", None
+                available = now + AUTO_RECOVERY_SECONDS if job["automatic_origin"] else now
             await connection.execute(
-                "UPDATE memory_jobs SET state=?,lease_token=NULL,lease_until=NULL,owner=NULL,"
+                "UPDATE memory_jobs SET state=?,recovery_mode=?,attempt=?,lease_token=NULL,lease_until=NULL,owner=NULL,"
                 "error_type=?,error_code=?,available_at=?,updated_at=? WHERE job_id=?",
-                ("retry_wait" if will_retry else "failed", error_type, error_code,
-                 now + delay if will_retry else now, now, job_id),
+                (state, mode, 0 if state == "queued" else job["attempt"], error_type, error_code, available, now, job_id),
             )
             return await _get(connection, job_id)
 
@@ -411,7 +456,7 @@ class JobStore:
                 raise KeyError(job_id)
             if job["state"] in (*ACTIVE_STATES, "failed"):
                 await connection.execute(
-                    "UPDATE memory_jobs SET state='cancelled',lease_token=NULL,lease_until=NULL,"
+                    "UPDATE memory_jobs SET state='cancelled',recovery_mode=NULL,lease_token=NULL,lease_until=NULL,"
                     "owner=NULL,updated_at=? WHERE job_id=?", (self.clock(), job_id),
                 )
             return await _get(connection, job_id)
@@ -503,7 +548,7 @@ class JobStore:
                 )
             now = self.clock()
             await connection.execute(
-                "UPDATE memory_jobs SET state='queued',hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
+                "UPDATE memory_jobs SET state='queued',recovery_mode=NULL,hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
                 "error_type=NULL,error_code=NULL,result_json=NULL,checkpoint_json=? WHERE job_id=?",
                 (now, now, _manual_retry_checkpoint(job), job_id),
             )
@@ -576,7 +621,7 @@ class JobStore:
                                          "refresh_feedback": True}
                 now = self.clock()
                 await connection.execute(
-                    "UPDATE memory_jobs SET state='queued',hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
+                    "UPDATE memory_jobs SET state='queued',recovery_mode=NULL,hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
                     "checkpoint_json=?,step='topic_prepare',error_type=NULL,error_code=NULL,result_json=NULL WHERE job_id=?",
                     (now, now, _manual_retry_checkpoint(job), job_id))
                 return await _get(connection, job_id)
@@ -592,7 +637,7 @@ class JobStore:
                 summary["regeneration"] = {"version": SHORT_TERM_RECOVERY_VERSION, "candidate_id": candidate_id}
                 now = self.clock()
                 await connection.execute(
-                    "UPDATE memory_jobs SET state='queued',hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
+                    "UPDATE memory_jobs SET state='queued',recovery_mode=NULL,hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
                     "checkpoint_json=?,step='short_term_prepared',error_type=NULL,error_code=NULL,result_json=NULL WHERE job_id=?",
                     (now, now, _json(summary), job_id))
                 return await _get(connection, job_id)
@@ -605,7 +650,7 @@ class JobStore:
             window["regeneration"] = {"version": REGENERATION_VERSION, "candidate_id": candidate_id}
             now = self.clock()
             await connection.execute(
-                "UPDATE memory_jobs SET state='queued',hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
+                "UPDATE memory_jobs SET state='queued',recovery_mode=NULL,hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
                 "checkpoint_json=?,step='prepared',error_type=NULL,error_code=NULL,result_json=NULL "
                 "WHERE job_id=?", (now, now, _manual_retry_checkpoint(job), job_id),
             )

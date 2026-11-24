@@ -105,6 +105,7 @@ async def test_exhausted_topic_budget_keeps_context_publication_and_allows_manua
     topic_attempts = 0
     context_calls = 0
     allow_topics = False
+    monkeypatch.setattr("storage.job_store.NETWORK_RETRY_SECONDS", 0)
     monkeypatch.setattr(env.engine.jobs, "retry_delay", lambda attempt: 0)
 
     async def generate(messages, **options):
@@ -125,7 +126,7 @@ async def test_exhausted_topic_budget_keeps_context_publication_and_allows_manua
     assert failed["error_code"] == "provider_temporary_failure"
     progress = failed["checkpoint"]["section_progress"]
     assert progress["context"]["state"] == "succeeded"
-    assert progress["topics"]["attempt"] == topic_attempts == job["max_attempts"]
+    assert progress["topics"]["attempt"] == topic_attempts == job["max_attempts"] + 3
     assert progress["topics"]["state"] == "failed"
     allow_topics = True
     await env.engine.retry(job["job_id"])

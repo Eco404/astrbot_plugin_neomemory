@@ -19,8 +19,9 @@ except ImportError:
     from storage.short_term_store import ShortTermStore
     from storage.source_scan import SourceScanner
 
-from .jobs import RetryableJobError, ReviewRequired
+from .jobs import ModelNetworkError, RetryableJobError, ReviewRequired
 from .model_routing import validate_selection, window_route
+from .provider_errors import is_transient_provider_error
 from .persona_policy import is_supported_persona
 from .memory_text import user_reference_ids
 from .forwarded_content import window_text
@@ -90,7 +91,6 @@ class ShortTermService:
                 "max_chars": getattr(self.config, "short_term_max_chars", 16000),
                 "summary_chars": getattr(self.config, "short_term_summary_chars", 400)}
 
-    def _query(self, space, *, stream_id, conversation_id):
     @staticmethod
     def _source_prefix(records, max_chars):
         """Return the longest complete source prefix within the summary budget."""
@@ -104,6 +104,7 @@ class ShortTermService:
             chars += size
         return chosen
 
+    def _query(self, space, *, stream_id, conversation_id):
         query, args = self.scanner._scope_query(space)
         query += ", matching AS (SELECT r.* FROM eligible e JOIN source_records r USING(source_id) " \
                  "WHERE e.replay_only=0 AND r.stream_id=? AND json_extract(r.metadata_json,'$.host_conversation_id')=?) "
@@ -134,7 +135,7 @@ class ShortTermService:
         return await copy.copy(self)._maybe_enqueue(
             space_id, conversation_id, stream_id=stream_id, host_contexts=host_contexts)
 
-    async def _maybe_enqueue(self, space_id, conversation_id, *, stream_id=None, host_contexts=None):
+    async def _maybe_enqueue(self, space_id, conversation_id, *, stream_id=None, host_contexts=None, replaces=None):
         if (not getattr(self.config, "short_term_enabled", True)
                 or not conversation_id or host_has_summary(host_contexts)):
             return None
@@ -151,19 +152,20 @@ class ShortTermService:
         previous = await self.store.get(space_id, key, generation_id=generation["generation_id"])
         if previous and previous["status"] != "active":
             return None
-        # Failed or cancelled work waits for explicit retry/reprepare. New
+        # Recovery owns the existing failed window. New
         # messages must not automatically recreate an overlapping cancelled
         # window. A successful replacement advances the summary version, so
         # old cancelled attempts no longer block the following increment.
         stopped = await self.memory.database.fetchone(
             "SELECT job_id FROM memory_jobs WHERE scope_key=? AND kind='short_term' "
             "AND state IN ('failed','cancelled') "
+            "AND COALESCE(json_extract(result_json,'$.replacement_job_id'),'')='' "
             "AND json_extract(payload_json,'$.generation_id')=? "
             "AND json_extract(payload_json,'$.conversation_key')=? "
             "AND json_extract(payload_json,'$.previous_version')=? LIMIT 1",
             (space_id, generation["generation_id"], key, previous["content_version"] if previous else 0),
         )
-        if stopped or not (await self.jobs.availability(space_id))["available"]:
+        if stopped or (not replaces and not (await self.jobs.availability(space_id))["available"]):
             return None
         policy = self._policy()
         query, args = self._query(space, stream_id=stream_id, conversation_id=conversation_id)
@@ -199,12 +201,19 @@ class ShortTermService:
                    "previous_version": previous["content_version"] if previous else 0,
                    "source_ids": [row["source_id"] for row in chosen], "keep_messages": policy["keep_messages"],
                    "model_route": await self._route(space_id, chosen)}
-        request_key = "short_term:" + _digest([space_id, payload])
+        request_key = "auto-restart:" + replaces["job_id"] if replaces else "short_term:" + _digest([space_id, payload])
         try:
             return await self.jobs.submit("short_term", space_id, payload, request_key,
-                                          max_attempts=getattr(self.config, "job_max_attempts", 2), hide_on_success=True)
+                                          max_attempts=getattr(self.config, "job_max_attempts", 2), hide_on_success=True, replaces=replaces)
         except JobConflict:
+            if replaces:
+                raise
             return None
+
+    async def auto_reprepare(self, job):
+        payload = job["payload"]
+        return await self._maybe_enqueue(job["scope_key"], payload["conversation_id"],
+                                         stream_id=payload["stream_id"], replaces=job)
 
     async def retry(self, job_id, *, fresh=False, model_selection=None):
         """Explicit resume or reprepare the same frozen source window."""
@@ -226,13 +235,13 @@ class ShortTermService:
             raise ValueError("select a short-term summary provider")
         payload = dict(job["payload"])
         records = await self.sources.get_records(tuple(payload["source_ids"]))
-        payload["model_route"] = await self._route(job["scope_key"], records, selection)
         policy = self._policy()
         if sum(len(window_text(row)) for row in records) > policy["max_chars"]:
             records = self._source_prefix(records, policy["max_chars"])
             payload["source_ids"] = [row["source_id"] for row in records]
             if not records:
                 raise ValueError("short-term source window cannot fit its first source")
+        payload["model_route"] = await self._route(job["scope_key"], records, selection)
         if not payload["model_route"]:
             raise ValueError("model_required: select a short-term summary model")
         result = await self.jobs.submit("short_term", job["scope_key"], payload,
@@ -391,13 +400,8 @@ class ShortTermService:
                 **({"model": route["model_override"]} if route.get("model_override") else {}),
                 timeout_seconds=max(.001, deadline - time.monotonic()), diagnostics=diagnostics)
         except Exception as exc:
-            status = getattr(exc, "status_code", None)
-            if not isinstance(exc, PermissionError) and (
-                isinstance(exc, (TimeoutError, ConnectionError, OSError))
-                or type(exc).__name__ in {"APIConnectionError", "APITimeoutError"}
-                or status in (408, 429) or isinstance(status, int) and status >= 500
-            ):
-                raise RetryableJobError("provider_temporary_failure") from None
+            if is_transient_provider_error(exc):
+                raise ModelNetworkError("provider_temporary_failure") from None
             raise ReviewRequired("provider_unavailable") from None
         if not isinstance(raw, str) or len(raw.encode()) > MAX_OUTPUT_BYTES:
             checkpoint["response_diagnostics"] = diagnostics

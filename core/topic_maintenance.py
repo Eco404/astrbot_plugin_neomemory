@@ -17,8 +17,9 @@ except ImportError:
 
 from .extraction_apply import digest
 from .extraction_context import node_vectors, _rank_page_with_query_coverage
-from .jobs import RetryableJobError, ReviewRequired
+from .jobs import ModelNetworkError, RetryableJobError, ReviewRequired
 from .model_routing import fixed_route
+from .provider_errors import is_transient_provider_error
 from .topic_prompt import (PROMPT_VERSION,
                            build_messages, schema_for_prompt_version)
 from .topic_schema import VERSION, model_output_schema, parse_output_for_context
@@ -57,8 +58,7 @@ class TopicMaintenanceMixin:
             return False
         key = "topics:auto:" + digest([generation["generation_id"],
             [(node["node_id"], node["content_version"]) for node in seeds]])
-        # Failed automatic jobs retain their identity instead of repeatedly spending
-        # a fresh retry budget. The maintenance page can retry or reprepare them.
+        # Let the job runner schedule recovery of an existing failed task.
         previous = await self.memory.database.fetchone(
             "SELECT job_id,state FROM memory_jobs WHERE idempotency_key=? OR idempotency_key GLOB ? "
             "ORDER BY created_at DESC,rowid DESC LIMIT 1", (key, key + ":*"))
@@ -254,12 +254,8 @@ class TopicMaintenanceMixin:
                     except Exception as exc:
                         window["response_diagnostics"] = diagnostics
                         await self._save(job, checkpoint, "topic_model", checkpoint["done"], checkpoint["total"])
-                        status = getattr(exc, "status_code", None)
-                        if not isinstance(exc, PermissionError) and (
-                                isinstance(exc, (TimeoutError, ConnectionError, OSError))
-                                or type(exc).__name__ in {"APIConnectionError", "APITimeoutError"}
-                                or status in (408, 429) or (isinstance(status, int) and status >= 500)):
-                            raise RetryableJobError("provider_temporary_failure") from None
+                        if is_transient_provider_error(exc):
+                            raise ModelNetworkError("provider_temporary_failure") from None
                         raise ReviewRequired("provider_unavailable") from None
                     window["response_diagnostics"] = diagnostics
                     await self._save(job, checkpoint, "topic_validate", checkpoint["done"], checkpoint["total"])

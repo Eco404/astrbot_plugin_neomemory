@@ -54,7 +54,8 @@ from .forwarded_content import window_text
 from .parallel_rebuild import rebuild_sections
 from .context_rebuild import MODELS as CONTEXT_REBUILD_MODELS, extraction_envelope, scoped_messages
 from .model_routing import ModelRoutingMixin, ModelSelectionRequired, fixed_route, validate_selection
-from .jobs import JobRunner, RetryableJobError, ReviewRequired
+from .jobs import JobRunner, ModelNetworkError, RetryableJobError, ReviewRequired
+from .provider_errors import is_transient_provider_error
 from .memory_spaces import RetiredIdentity
 from .persona_policy import is_supported_persona
 from .prompts import schema_for_prompt_version
@@ -90,7 +91,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                     "topic_consolidate": self._consolidate_topics, "topic_rebuild": self._replace_topics}
         self.runner = JobRunner(self.jobs, {kind: partial(self._supported_handler, handler)
                                             for kind, handler in handlers.items()}, concurrency=config.job_concurrency, lease_seconds=config.job_lease_seconds,
-            poll_seconds=config.job_poll_seconds)
+            poll_seconds=config.job_poll_seconds, reprepare=self._auto_reprepare)
         self._scanner_task = None
         self._scan_wake = asyncio.Event()
         self.closing = False
@@ -309,7 +310,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             include_topics=include_topics, automatic=automatic, model_selection=model_selection)
 
     async def _enqueue(self, kind, space_id, idempotency_key, *, operation=None, reason="",
-                       failed_job_id=None, include_topics=False, automatic=False, model_selection=None):
+                       failed_job_id=None, include_topics=False, automatic=False, model_selection=None, replaces=None):
         if self.closing:
             raise ValueError("maintenance is stopping")
         if kind not in {"extract", "rebuild", "reindex", "governance", "reject", "topic_consolidate", "topic_rebuild", *CONTEXT_REBUILD_MODELS}:
@@ -344,8 +345,10 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         if kind == "extract":
             records, decision = await self.live_plan(space, generation["generation_id"], manual=True)
             if decision.status == "waiting":
+                if replaces:
+                    return None
                 raise ValueError("pending messages are below the extraction minimum")
-            return await self._submit_extract(space, generation, records, decision, idempotency_key, request=request)
+            return await self._submit_extract(space, generation, records, decision, idempotency_key, request=request, replaces=replaces)
         if kind == "rebuild" or kind in CONTEXT_REBUILD_MODELS:
             payload["highwater"] = await self.scanner.highwater(space)
             payload["total"] = await self.scanner.count(space, highwater=payload["highwater"])
@@ -386,9 +389,9 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             if receipt and receipt["model_id"] != "manual-rejection":
                 raise ValueError("window already committed; resume the original task")
         return await self.jobs.submit(kind, space_id, payload, idempotency_key,
-                                      max_attempts=self.config.job_max_attempts, hide_on_success=automatic)
+                                      max_attempts=self.config.job_max_attempts, hide_on_success=automatic, replaces=replaces)
 
-    async def _submit_extract(self, space, generation, records, decision, key, *, request):
+    async def _submit_extract(self, space, generation, records, decision, key, *, request, replaces=None):
         ids = decision.source_ids or (decision.blocked_source_id,)
         by_id = {row["source_id"]: row for row in records}
         payload = {"request": request, "space_id": space["space_id"],
@@ -402,7 +405,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         payload["model_route"] = route
         return await self.jobs.submit("extract", space["space_id"], payload, key,
                                       max_attempts=self.config.job_max_attempts,
-                                      hide_on_success=bool(request.get("automatic")))
+                                      hide_on_success=bool(request.get("automatic")), replaces=replaces)
 
     async def delete(self, job_id):
         """Remove a non-running task after its local worker has relinquished resources."""
@@ -435,6 +438,16 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             self._pending_reads.pop(generation_id, None)
             self._read_hints.pop(generation_id, None)
         return result
+
+    async def _auto_reprepare(self, job):
+        if job["kind"] == "short_term":
+            return await self.short_term.auto_reprepare(job)
+        key = "auto-restart:" + job["job_id"]
+        if job["kind"] == "topic_consolidate" and job["idempotency_key"].startswith("topics:auto:"):
+            topic_key = job["idempotency_key"].split(":", 3)[:3]
+            key = ":".join([*topic_key, job["job_id"]])
+        return await self.snapshot()._enqueue(job["kind"], job["scope_key"], key,
+            automatic=True, replaces=job)
 
     async def retry(self, job_id, *, fresh=False, regenerate_window=False, model_selection=None):
         if model_selection and not fresh:
@@ -470,7 +483,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         if job is None:
             raise KeyError("unknown task")
         fields = ("job_id", "kind", "scope_key", "state", "step", "progress_done", "progress_total",
-                  "attempt", "max_attempts", "error_type", "error_code", "created_at", "updated_at",
+                  "attempt", "max_attempts", "automatic_origin", "error_type", "error_code", "created_at", "updated_at",
                   "available_at", "result")
         result = {key: job[key] for key in fields}
         if lanes := job["checkpoint"].get("section_progress"):
@@ -585,13 +598,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         if isinstance(exc, IndexCacheUnavailable):
             return RetryableJobError("index_cache_unavailable")
         prefix = "context_embedding" if context else "window_index"
-        status = getattr(exc, "status_code", None)
-        if not isinstance(exc, PermissionError) and (
-            isinstance(exc, (TimeoutError, ConnectionError, OSError))
-            or type(exc).__name__ in {"APIConnectionError", "APITimeoutError"}
-            or status in (408, 429) or (isinstance(status, int) and status >= 500)
-        ):
-            return RetryableJobError(prefix + "_temporary_failure")
+        if is_transient_provider_error(exc):
+            return ModelNetworkError(prefix + "_temporary_failure")
         return ReviewRequired(prefix + "_unavailable")
 
     async def _context_ids(self, space, generation_id, sources, *, timeout_seconds=None, progress=None):
@@ -750,11 +758,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                 except Exception as exc:
                     window["response_diagnostics"] = diagnostics
                     await self._save(job, checkpoint, "model", checkpoint.get("done", 0), checkpoint.get("total"))
-                    status = getattr(exc, "status_code", None)
-                    if (not isinstance(exc, PermissionError) and (isinstance(exc, (TimeoutError, ConnectionError, OSError))
-                            or type(exc).__name__ in {"APIConnectionError", "APITimeoutError"}
-                            or status in (408, 429) or (isinstance(status, int) and status >= 500))):
-                        raise RetryableJobError("provider_temporary_failure") from None
+                    if is_transient_provider_error(exc):
+                        raise ModelNetworkError("provider_temporary_failure") from None
                     raise ReviewRequired("provider_unavailable") from None
             if "regeneration" in window:
                 diagnostics["repeated_candidate"] = raw == archived["window"]["raw"]
@@ -783,13 +788,6 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             raise ReviewRequired("invalid_output") from None
         except ReferenceValidationError as exc:
             window["validation_errors"] = [{"path": exc.path, "type": exc.code}]
-        except CandidateValidationError as exc:
-            path = "$" + "".join(
-                f"[{item}]" if isinstance(item, int) else f".{item}" for item in exc.location
-            )
-            window["validation_errors"] = [{"path": path, "type": exc.code}]
-            await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
-            raise ReviewRequired(exc.code) from None
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
             raise ReviewRequired("unknown_reference") from None
         except ExtractionCapacityError as exc:
@@ -797,6 +795,13 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                 "stage": "raw", "actual_chars": exc.actual_chars, "limit_chars": exc.limit_chars}]
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
             raise ReviewRequired("invalid_output") from None
+        except CandidateValidationError as exc:
+            path = "$" + "".join(
+                f"[{item}]" if isinstance(item, int) else f".{item}" for item in exc.location
+            )
+            window["validation_errors"] = [{"path": path, "type": exc.code}]
+            await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
+            raise ReviewRequired(exc.code) from None
         except ValueError as exc:
             if isinstance(exc, ValidationError):
                 window["validation_errors"] = _schema_diagnostics(exc)
@@ -823,18 +828,18 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
             raise ReviewRequired("invalid_output") from None
         except ValidationError as exc:
-        except CandidateValidationError as exc:
-            path = "$" + "".join(
-                f"[{item}]" if isinstance(item, int) else f".{item}" for item in exc.location
-            )
-            window["validation_errors"] = [{"path": path, "type": exc.code}]
-            await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
-            raise ReviewRequired(exc.code) from None
             window["validation_errors"] = _schema_diagnostics(exc)
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
             raise ReviewRequired("invalid_output") from None
         except InvalidExtractionCandidate as exc:
             window["validation_errors"] = [{"path": exc.path, "type": exc.code}]
+            await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
+            raise ReviewRequired(exc.code) from None
+        except CandidateValidationError as exc:
+            path = "$" + "".join(
+                f"[{item}]" if isinstance(item, int) else f".{item}" for item in exc.location
+            )
+            window["validation_errors"] = [{"path": path, "type": exc.code}]
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
             raise ReviewRequired(exc.code) from None
         except ValueError as exc:
@@ -1012,7 +1017,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                 try:
                     _, missing = await node_vectors(service, batch, space_id, deadline=deadline, require_persisted=True)
                     repaired += missing
-                except IndexCacheUnavailable as exc:
+                except Exception as exc:
                     raise self._embedding_failure(exc) from None
                 if service.fingerprint != fingerprint:
                     raise ReviewRequired("index_embedding_changed")

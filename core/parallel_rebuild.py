@@ -3,7 +3,7 @@
 import asyncio
 from copy import deepcopy
 
-from .jobs import LeaseLost, RetryableJobError, ReviewRequired, classify_job_error
+from .jobs import LeaseLost, ModelNetworkError, RetryableJobError, ReviewRequired, classify_job_error
 
 
 async def rebuild_sections(engine, job):
@@ -63,11 +63,13 @@ async def rebuild_sections(engine, job):
                 raise
             except Exception as exc:
                 temporary, code = classify_job_error(exc)
-                retry = temporary and entry["attempt"] < job["max_attempts"]
+                delay = engine.jobs.next_retry_delay(entry["attempt"], job["max_attempts"],
+                    retryable=temporary, model_network=isinstance(exc, ModelNetworkError))
+                retry = delay is not None
                 async with lock:
                     entry.update(state="retry_wait" if retry else "failed", error_code=code)
                     if retry:
-                        entry["available_at"] = engine.jobs.clock() + engine.jobs.retry_delay(entry["attempt"])
+                        entry["available_at"] = engine.jobs.clock() + delay
                     elif temporary:
                         entry["retry_exhausted"] = True
                     await persist()

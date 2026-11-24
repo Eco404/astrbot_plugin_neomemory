@@ -49,7 +49,7 @@ except ImportError:  # Tests import ``storage`` directly from the plugin root.
 
 from .job_store import assert_scope_available
 from .extraction_context_store import ExtractionContextStoreMixin
-from .memory_schema import MEMORY_FORMAT, initialize_memory_schema
+from .memory_schema import MEMORY_FORMAT, MEMORY_FORMAT_REVISION, initialize_memory_schema
 from .space_policy import SpacePolicyStoreMixin
 from .provenance_store import (
     ProvenanceStoreMixin,
@@ -137,6 +137,7 @@ class MemoryStore(SpacePolicyStoreMixin, RecallStoreMixin, ProvenanceStoreMixin,
             "exists": self.path.exists(),
             "schema_version": self.schema_version,
             "expected_schema_version": MEMORY_FORMAT,
+            "schema_revision": MEMORY_FORMAT_REVISION,
             "node_count": int(nodes["count"] if nodes else 0),
             "space_count": int(spaces["count"] if spaces else 0),
             "generation_count": int(generations["count"] if generations else 0),

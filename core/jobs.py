@@ -15,7 +15,9 @@ try:
 except ImportError:
     from storage.job_store import JobConflict, JobStore, LeaseLost
 
-__all__ = ["JobConflict", "JobRunner", "LeaseLost", "RetryableJobError", "ReviewRequired"]
+from .provider_errors import is_transient_provider_error
+
+__all__ = ["JobConflict", "JobRunner", "LeaseLost", "ModelNetworkError", "RetryableJobError", "ReviewRequired"]
 
 logger = logging.getLogger(__name__)
 Handler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -29,6 +31,10 @@ class RetryableJobError(RuntimeError):
         super().__init__(code)
 
 
+class ModelNetworkError(RetryableJobError):
+    """A model request failed at the transport or HTTP service boundary."""
+
+
 class ReviewRequired(RuntimeError):
     """A task needs review; it must not keep spending automatic model attempts."""
 
@@ -38,7 +44,7 @@ class ReviewRequired(RuntimeError):
 
 
 def classify_job_error(exc):
-    retryable = isinstance(exc, (RetryableJobError, TimeoutError, ConnectionError, OSError))
+    retryable = isinstance(exc, RetryableJobError) or is_transient_provider_error(exc)
     if isinstance(exc, (ValueError, PermissionError, ReviewRequired)):
         retryable = False
     code = "temporary_failure" if retryable else "review_required"
@@ -61,12 +67,14 @@ class JobRunner:
     def __init__(
         self, store: JobStore, handlers: Mapping[str, Handler], *, concurrency: int = 2,
         lease_seconds: float = 30, poll_seconds: float = 0.25,
+        reprepare: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None,
     ):
         if type(concurrency) is not int or not 1 <= concurrency <= 32:
             raise ValueError("concurrency must be between 1 and 32")
         for key, value in (("lease_seconds", lease_seconds), ("poll_seconds", poll_seconds)):
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{key} must be a finite positive number")
+        self.reprepare = reprepare
         self.store = store
         self.handlers = dict(handlers)
         self.concurrency = concurrency
@@ -157,7 +165,8 @@ class JobRunner:
         work: asyncio.Task | None = None
         heartbeat: asyncio.Task | None = None
         try:
-            handler = self.handlers.get(job["kind"])
+            fresh = job["recovery_mode"] == "fresh"
+            handler = self.reprepare if fresh else self.handlers.get(job["kind"])
             if handler is None:
                 raise ReviewRequired("unsupported_job_kind")
             work = asyncio.create_task(handler(job))
@@ -168,7 +177,9 @@ class JobRunner:
                 heartbeat.result()  # A lost lease must cancel the old handler.
                 raise LeaseLost("heartbeat ended")
             result = work.result()
-            await self.store.finish(job["job_id"], job["lease_token"], result=result)
+            if not fresh or result is None:
+                await self.store.finish(job["job_id"], job["lease_token"],
+                                        result={"skipped": True, "reason": "no_pending_work"} if fresh else result)
         except asyncio.CancelledError:
             # Handler cancellation must finish before releasing its mutation right.
             if work is not None:
@@ -182,7 +193,8 @@ class JobRunner:
             retryable, code = classify_job_error(exc)
             try:
                 await self.store.fail(job["job_id"], job["lease_token"], error_type=type(exc).__name__,
-                                      error_code=code, retryable=retryable)
+                                      error_code=code, retryable=retryable,
+                                      model_network=isinstance(exc, ModelNetworkError))
             except LeaseLost:
                 pass
             except Exception as failure:

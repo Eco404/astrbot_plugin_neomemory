@@ -29,7 +29,7 @@ PREFIX = "/astrbot_plugin_neomemory"
 KINDS = frozenset({"extract", "rebuild", "reindex", "governance", "reject", "topic_consolidate", "topic_rebuild", "profile_rebuild", "relationship_rebuild", "section_rebuild"})
 SUMMARY_FIELDS = (
     "job_id", "kind", "scope_key", "state", "step", "progress_done", "progress_total",
-    "attempt", "max_attempts", "error_type", "error_code", "created_at", "updated_at", "available_at",
+    "attempt", "max_attempts", "automatic_origin", "error_type", "error_code", "created_at", "updated_at", "available_at",
 )
 
 

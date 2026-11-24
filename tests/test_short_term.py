@@ -351,6 +351,23 @@ async def test_timeout_uses_job_retry_without_inline_provider_retry(env):
 
 
 @pytest.mark.asyncio
+async def test_http_503_uses_job_retry_without_inline_provider_retry(env):
+    job = await claim(env)
+
+    class HttpServiceUnavailable(Exception):
+        code = 503
+
+    async def unavailable():
+        raise HttpServiceUnavailable("temporary provider load")
+
+    env.adapter.hook = unavailable
+    result = await execute(env, job)
+    assert result["state"] == "retry_wait"
+    assert result["error_code"] == "provider_temporary_failure"
+    assert len(env.adapter.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_fresh_retry_trims_legacy_window_to_complete_source_budget(env):
     job = await claim(env)
     env.config.short_term_max_chars = 25
@@ -512,3 +529,21 @@ async def test_output_mode_and_window_schema_apply_to_first_call_and_correction(
         else:
             assert request["output_schema"] is None
     assert (await current(env))["content_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_reprepare_replans_the_eligible_short_term_prefix(env):
+    job = await claim(env)
+    env.config.short_term_max_chars = 25
+    failed = await execute(env, job)
+    env.jobs.clock = lambda: failed["available_at"]
+    resume = await env.jobs.claim("resume")
+    pending = await execute(env, resume)
+    assert pending["recovery_mode"] == "fresh"
+    env.runner.reprepare = env.service.auto_reprepare
+    old = await execute(env, await env.jobs.claim("reprepare"))
+    current = await env.jobs.claim("fresh")
+    assert old["result"]["replacement_job_id"] == current["job_id"]
+    assert current["payload"]["source_ids"] == job["payload"]["source_ids"][:3]
+    assert current["automatic_origin"]
+    assert (await execute(env, current))["state"] == "succeeded"
