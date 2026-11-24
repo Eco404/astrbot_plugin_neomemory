@@ -74,12 +74,111 @@ def _checkpoint_json(checkpoint):
 
 def _manual_retry_checkpoint(job):
     checkpoint = job["checkpoint"]
+    error_code = job.get("error_code")
+    candidate_kind = job.get("kind") in {
+        "extract", "rebuild", "profile_rebuild", "relationship_rebuild", "context_rebuild",
+        "topic_consolidate",
+    }
+    clear_candidate = bool(
+        candidate_kind and (error_code == "invalid_topic_output"
+        or error_code in {"invalid_output", "unknown_reference", "output_incomplete", "prompt_budget_exceeded"}
+        or (isinstance(error_code, str) and (error_code.startswith("expected_")
+                                             or error_code.startswith("coverage_"))))
+    )
+
+    def has_candidate_diagnostics(container):
+        if not isinstance(container, dict):
+            return False
+        if container.get("validation_errors") or container.get("errors"):
+            return True
+        return any(has_candidate_diagnostics(container.get(key)) for key in ("window", "topic_window", "topic_synthesis"))
+
+    clear_candidate = clear_candidate or (candidate_kind and has_candidate_diagnostics(checkpoint))
+
+    def reset_candidate(container):
+        """Discard only the failed model draft before a manual resume.
+
+        A normal retry resumes committed windows, but a terminal candidate
+        validation failure must not reuse the same raw response and exhausted
+        correction counter.  The frozen input and progress remain intact.
+        """
+        if not isinstance(container, dict):
+            return
+        for key in ("raw", "canonical_raw", "validation_errors", "model_request_digest",
+                    "response_diagnostics"):
+            container.pop(key, None)
+        container.pop("regeneration", None)
+        if "corrections" in container:
+            container["corrections"] = 0
+        if "correction_attempt" in container:
+            container["correction_attempt"] = 0
+
+    def reset_failed_lane(lane):
+        if not isinstance(lane, dict):
+            return
+        # Rebuilds keep the active topic synthesis nested in the lane.
+        for candidate in (
+            lane,
+            lane.get("window"),
+            lane.get("topic_window"),
+            lane.get("topic_synthesis", {}).get("topic_window")
+            if isinstance(lane.get("topic_synthesis"), dict) else None,
+        ):
+            if clear_candidate and isinstance(candidate, dict) and "raw" in candidate:
+                reset_candidate(candidate)
+
+    if checkpoint.get("sections"):
+        failed_section = checkpoint.get("failed_section")
+        if failed_section in checkpoint["sections"]:
+            reset_failed_lane(checkpoint["sections"][failed_section])
+        else:
+            for lane in checkpoint["sections"].values():
+                if lane.get("state") != "succeeded":
+                    reset_failed_lane(lane)
+    else:
+        reset_failed_lane(checkpoint)
+        reset_failed_lane(checkpoint.get("window"))
+        reset_failed_lane(checkpoint.get("topic_window"))
+        synthesis = checkpoint.get("topic_synthesis")
+        if isinstance(synthesis, dict):
+            reset_failed_lane(synthesis)
     for lane in checkpoint.get("section_progress", {}).values():
         if lane["state"] != "succeeded":
             lane.update(state="queued", attempt=1)
             for field in ("available_at", "error_code", "retry_exhausted"):
                 lane.pop(field, None)
     return _checkpoint_json(checkpoint)
+
+
+def _candidate_windows(checkpoint):
+    """Yield failed model windows that should remain inspectable on retry."""
+    if not isinstance(checkpoint, dict):
+        return
+    seen = set()
+
+    def visit(container):
+        if not isinstance(container, dict):
+            return
+        if "raw" in container and id(container) not in seen:
+            seen.add(id(container))
+            yield container
+        for key in ("window", "topic_window"):
+            child = container.get(key)
+            if isinstance(child, dict):
+                yield from visit(child)
+        synthesis = container.get("topic_synthesis")
+        if isinstance(synthesis, dict):
+            yield from visit(synthesis)
+
+    sections = checkpoint.get("sections")
+    if isinstance(sections, dict):
+        failed_section = checkpoint.get("failed_section")
+        lanes = ([sections[failed_section]] if failed_section in sections
+                 else [lane for lane in sections.values() if lane.get("state") != "succeeded"])
+        for lane in lanes:
+            yield from visit(lane)
+    else:
+        yield from visit(checkpoint)
 
 
 def inspection_checkpoint(job):
@@ -398,6 +497,10 @@ class JobStore:
             if job["state"] not in ("failed", "cancelled"):
                 raise JobConflict("only failed or cancelled tasks can be retried")
             await assert_scope_available(connection, job["scope_key"], exclude_job_id=job_id)
+            for window in _candidate_windows(job["checkpoint"]):
+                await self._archive_candidate(
+                    connection, job_id, window, job["error_code"] or "manual_retry"
+                )
             now = self.clock()
             await connection.execute(
                 "UPDATE memory_jobs SET state='queued',hide_on_success=0,attempt=0,available_at=?,updated_at=?,"

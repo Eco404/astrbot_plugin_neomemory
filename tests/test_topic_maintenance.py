@@ -107,8 +107,10 @@ async def test_topic_invalid_output_has_bounded_persisted_correction(environment
     assert failed["checkpoint"]["topic_window"]["corrections"] == 3
     await env.engine.retry(job["job_id"])
     resumed = await env.engine.jobs.claim("resume", lease_seconds=60)
-    await execute(env, resumed)
-    assert len(env.adapter.calls) == 4
+    retried = await execute(env, resumed)
+    assert retried["state"] == "failed"
+    assert len(env.adapter.calls) == 8
+    assert retried["checkpoint"]["topic_window"]["corrections"] == 3
 
 
 @pytest.mark.asyncio
