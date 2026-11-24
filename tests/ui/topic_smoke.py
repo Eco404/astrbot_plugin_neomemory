@@ -175,7 +175,7 @@ async def main():
             assert submitted[0]["model_selection"] == {"missing_window_provider_id": "llm-1", "topic_provider_id": "llm-first"}
             assert submitted[0]["sections"] == ["topics", "profiles", "relationship"]
             card = page.locator("#tasks article").filter(has_text="parallel-progress")
-            assert "尝试 1 / 2" in await card.inner_text()
+            assert "第 1 次尝试" in await card.inner_text()
             assert "后继续" in await card.locator(".task-recovery").inner_text()
             assert await card.get_by_role("progressbar", name="主题进度").get_attribute("value") == "50"
             assert await card.get_by_role("progressbar", name="用户画像与人格关系进度").get_attribute("value") == "25"

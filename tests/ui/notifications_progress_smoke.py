@@ -19,7 +19,7 @@ window.testJobs=['running','retry_wait','failed','succeeded'].map(state=>({
  job_id:'clock-'+state,kind:'rebuild',scope_key:'space-1',state,step:'topic_model:2/8',
  progress_done:5,progress_total:8,attempt:2,max_attempts:3,
  created_at:now-70,updated_at:now-10,available_at:now+20,
- error_type:'temporary',error_code:'extraction_timeout'
+ error_type:'temporary',error_code:state==='retry_wait'?'model_queue_timeout':'extraction_timeout'
 }));
 const originalGet=window.AstrBotPluginView.apiGet;
 window.AstrBotPluginView.apiGet=async(endpoint,args={})=>{
@@ -29,6 +29,11 @@ window.AstrBotPluginView.apiGet=async(endpoint,args={})=>{
  if(endpoint==='task' && args.job_id==='clock-failed') result.attempts=[
    {ended_at:stamp-30,action:'execute',step:'validate',state:'failed',model_calls:2,commits:1,remaining:4,http_status:503},
    {ended_at:stamp-10,action:'resume',step:'validate',state:'failed',model_calls:0,commits:0,remaining:4,queued_without_call:true}
+ ];
+ if(endpoint==='task' && args.job_id==='clock-failed') result.validation_errors=[
+   {type:'source_budget_exceeded',actual_chars:101,limit_chars:100,actual_tokens:81,limit_tokens:80},
+   {type:'prompt_budget_exceeded',actual_bytes:125,limit_bytes:128,reserved_feedback_bytes:8},
+   {type:'output_capacity_exceeded',limit_bytes:512}
  ];
  if(endpoint==='ingress') result.health.oldest_pending_at=stamp-65;
  if(endpoint==='health'){
@@ -109,6 +114,7 @@ async def verify_progress(page):
         await expect(cards[state].locator('.error')).to_have_count(0)
     await expect(cards['failed'].locator('.error')).to_contain_text('extraction_timeout')
     await expect(cards['retry_wait'].locator('.task-recovery')).to_contain_text('自动重试')
+    await expect(cards['retry_wait'].locator('.task-recovery')).to_contain_text('本次排队未发起模型调用')
     await expect(cards['running']).not_to_contain_text('extraction_timeout')
     await expect(cards['succeeded']).not_to_contain_text('extraction_timeout')
     await page.clock.run_for(1000)
@@ -135,6 +141,10 @@ async def verify_progress(page):
     await expect(cards['retry_wait'].locator('.error')).to_have_count(0)
     await cards['failed'].get_by_role('radio').check()
     await page.locator('#task-detail-panel > summary').click()
+    for message in ('原文用量 101 / 100 字符', '原文用量 81 / 80 估算 token',
+                    '提示词用量 125 / 128 UTF-8 字节', '为纠正反馈预留 8 字节'):
+        await expect(page.locator('#task-diagnostics')).to_contain_text(message)
+    await expect(page.locator('#task-diagnostics')).not_to_contain_text('模型输出用量')
     await page.locator('#task-attempts > summary').click()
     rows = page.locator('#task-attempt-list li')
     await expect(rows).to_have_count(2)
