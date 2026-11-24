@@ -325,11 +325,12 @@ class NeoMemoryPlugin(Star):
         await self.settings.drain()
         self._ready = False
         self.external_memory.disconnect()
+        deadline = asyncio.get_running_loop().time() + self.config.write_flush_timeout_ms / 1000
         tasks = list(self._tasks)
         if tasks:
             done, pending = await asyncio.wait(
                 tasks,
-                timeout=self.config.write_flush_timeout_ms / 1000,
+                timeout=deadline - asyncio.get_running_loop().time(),
             )
             del done
             for task in pending:
@@ -337,9 +338,19 @@ class NeoMemoryPlugin(Star):
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
         try:
-            await self._close_stores()
+            if self._failed_sources and self.ingress is not None:
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        await self.retry_failed_sources(enqueue_only=True)
+                except TimeoutError:
+                    pass
+                if self._failed_sources:
+                    logger.warning("NeoMemory stopped with %s original records still in memory", len(self._failed_sources))
         finally:
-            _set_active_plugin(None)
+            try:
+                await self._close_stores()
+            finally:
+                _set_active_plugin(None)
 
     async def _close_stores(self) -> None:
         """Release the dependent memory store before its source validator."""
@@ -600,27 +611,29 @@ class NeoMemoryPlugin(Star):
             max_chars=max_chars,
             max_tokens=getattr(self.config, "extraction_max_tokens", max_chars),
         )
+        await self.submit_sources(fragments, remember_on_failure=True)
+
+    async def submit_sources(self, sources, *, remember_on_failure=False):
+        """Admit one stream in order, acknowledging external submissions only after durable admission."""
         async with self._admission_lock:
-            # A previously unpersisted record must not be overtaken when queue
-            # space recovers. The queue itself orders only admitted records.
-            predecessors = [item for item, _ in self._failed_sources.values()
-                            if item.identity.stream_id == source.identity.stream_id]
-            predecessor_ids = {item.source_id for item in predecessors}
-            candidates = predecessors + [item for item in fragments
-                                         if item.source_id not in self._failed_sources
-                                         and item.source_id not in predecessor_ids]
+            stream_id = sources[0].identity.stream_id
+            candidates = [item for item, _ in self._failed_sources.values()
+                          if item.identity.stream_id == stream_id]
+            candidates.extend(item for item in sources if item.source_id not in self._failed_sources)
+            result = None
             for index, candidate in enumerate(candidates):
                 try:
-                    await self.ingress.submit(candidate)
-                    self._failed_sources.pop(candidate.source_id, None)
-                except asyncio.CancelledError:
-                    raise
+                    result = await self.ingress.submit(candidate)
                 except Exception as exc:
+                    if not remember_on_failure:
+                        raise
                     for pending in candidates[index:]:
                         self._remember_unpersisted(pending, exc)
-                    return
+                    return None
+                self._failed_sources.pop(candidate.source_id, None)
+            return result
 
-    async def retry_failed_sources(self, limit: int | None = None) -> int:
+    async def retry_failed_sources(self, limit: int | None = None, *, enqueue_only=False) -> int:
         """Try to durably admit emergency records; durable source retries run separately."""
         if self.ingress is None:
             return 0
@@ -635,7 +648,10 @@ class NeoMemoryPlugin(Star):
                 if source.identity.stream_id in blocked_streams:
                     continue
                 try:
-                    await self.ingress.submit(source)
+                    if enqueue_only:
+                        await self.ingress.enqueue_before_stop(source)
+                    else:
+                        await self.ingress.submit(source)
                 except Exception as exc:
                     # A full or unavailable inbox affects every stream. Let its
                     # writer drain before trying another emergency admission.

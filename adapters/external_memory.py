@@ -470,7 +470,7 @@ class ExternalMemoryAdapter:
             return source.source_id
         if not source.content_text.strip():
             return None
-        submitted = await self.plugin.ingress.submit(source)
+        submitted = await self.plugin.submit_sources((source,))
         return source.source_id if submitted.durable and submitted.state != "failed" else None
 
     async def write(self, record: Any) -> str | None:
@@ -519,7 +519,7 @@ class ExternalMemoryAdapter:
             return source.source_id
         if not source.content_text.strip():
             return None
-        submission = await self.plugin.ingress.submit(source)
+        submission = await self.plugin.submit_sources((source,))
         return source.source_id if submission.state in {"queued", "captured"} else None
 
     async def summary(self, request: Any) -> dict[str, dict[str, int]]:

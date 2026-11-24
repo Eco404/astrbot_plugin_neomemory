@@ -109,6 +109,18 @@ class IngressService:
             if not self._submissions:
                 self._idle.set()
 
+    async def enqueue_before_stop(self, source: CapturedSource) -> None:
+        """Persist the source for restart, draining eligible queue heads if space is needed."""
+        while True:
+            try:
+                await self.store.enqueue(source, max_attempts=self.max_attempts)
+                return
+            except IngressError as exc:
+                if exc.code not in {"ingress_entry_limit", "ingress_byte_limit"}:
+                    raise
+                if await self.process_once() is None:
+                    raise
+
     async def _submit(self, source: CapturedSource) -> IngressSubmission:
         try:
             await self.store.enqueue(source, max_attempts=self.max_attempts)

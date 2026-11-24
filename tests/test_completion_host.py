@@ -11,6 +11,7 @@ pytest.importorskip("astrbot.api")
 from astrbot.api.provider import LLMResponse, ProviderRequest  # noqa: E402
 
 from core.memory_spaces import private_space  # noqa: E402
+from tests.test_delivered_extraction import receipt  # noqa: E402
 from tests.test_recall_runtime import RuntimeContext, RuntimeEvent  # noqa: E402
 from tests.test_recall_runtime import plugin_factory as _plugin_factory  # noqa: E402
 from tests.test_source_store import make_source  # noqa: E402
@@ -134,6 +135,53 @@ async def test_emergency_backlog_is_readmitted_without_new_host_message(plugin_f
             await asyncio.sleep(.01)
     records = await plugin.source_store.list_records(stream_id=first.identity.stream_id)
     assert [record["source_id"] for record in reversed(records)] == [first.source_id, second.source_id]
+
+
+@pytest.mark.asyncio
+async def test_delivery_does_not_overtake_unpersisted_chat_in_same_stream(plugin_factory, monkeypatch):
+    plugin = await plugin_factory({"automatic_extraction_enabled": False})
+    await _controlled_ingress(plugin)
+    record = receipt(1, 150)
+    delivery = plugin.external_memory._delivery(record)
+    earlier = replace(make_source("original"), identity=replace(delivery.identity, message_id="original"))
+    with monkeypatch.context() as patch:
+        async def offline(*args, **kwargs):
+            raise OSError("offline")
+
+        patch.setattr(plugin.ingress_store, "enqueue", offline)
+        await plugin._persist_source(earlier)
+        with pytest.raises(RuntimeError, match="ingress_persistence_unavailable"):
+            await plugin.external_memory.write(record)
+    assert [*plugin._failed_sources] == [earlier.source_id]
+    assert await plugin.external_memory.write(record) == delivery.source_id
+    assert await plugin.external_memory.write(record) == delivery.source_id
+    history = await plugin.source_store.list_records(stream_id=earlier.identity.stream_id)
+    assert [row["source_id"] for row in reversed(history)] == [earlier.source_id, delivery.source_id]
+    assert not plugin._failed_sources
+
+
+@pytest.mark.asyncio
+async def test_reload_persists_emergency_source_if_inbox_recovered(plugin_factory, monkeypatch, tmp_path):
+    config = {"automatic_extraction_enabled": False, "ingress_max_entries": 1}
+    plugin = await plugin_factory(config, directory=tmp_path)
+    await _controlled_ingress(plugin)
+    sources = [make_source(f"survives-reload-{number}") for number in range(2)]
+    with monkeypatch.context() as patch:
+        async def offline(*args, **kwargs):
+            raise OSError("offline")
+
+        patch.setattr(plugin.ingress_store, "enqueue", offline)
+        for source in sources:
+            await plugin._persist_source(source)
+    assert [*plugin._failed_sources] == [source.source_id for source in sources]
+    await plugin.terminate()
+    assert not plugin._failed_sources
+    restarted = await plugin_factory(config, directory=tmp_path)
+    async with asyncio.timeout(2):
+        while not await restarted.source_store.has_source(sources[-1].source_id):
+            await asyncio.sleep(.01)
+    records = await restarted.source_store.list_records(stream_id=sources[0].identity.stream_id)
+    assert [row["source_id"] for row in reversed(records)] == [source.source_id for source in sources]
 
 
 @pytest.mark.asyncio

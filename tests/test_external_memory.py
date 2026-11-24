@@ -106,6 +106,9 @@ class FakePlugin:
         self.ingress = SimpleNamespace()
         self.api = api
 
+    async def submit_sources(self, sources):
+        return await self.ingress.submit(sources[0])
+
 
 def test_parse_scope_rejects_untrusted_or_non_private_context():
     scope = parse_external_scope(companion_context())
