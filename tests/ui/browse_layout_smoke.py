@@ -54,6 +54,11 @@ async def check_page_picker(page, prefix, expected_text):
     assert await picker.evaluate("""el => getComputedStyle(el).backdropFilter.includes('blur(')
         && getComputedStyle(el.parentElement).backdropFilter === 'none'
         && getComputedStyle(el.parentElement, '::before').backdropFilter.includes('blur(')""")
+    controls = await picker.locator('.page-jump input, .page-count, button[type=submit]').evaluate_all(
+        "els => els.map(el => el.getBoundingClientRect().toJSON())")
+    centers = [box['y'] + box['height'] / 2 for box in controls]
+    assert max(centers) - min(centers) <= 1, controls
+    assert all(left['right'] <= right['left'] for left, right in zip(controls, controls[1:])), controls
     await picker.get_by_label('第 3 页').click()
     await expect(page.locator('#' + prefix + '-list > article').first).to_contain_text(expected_text)
     await expect(trigger).to_have_text('第 3 页')
@@ -197,6 +202,12 @@ async def exercise(page, artifacts, name):
     await page.screenshot(path=str(artifacts/f'{name}-notes.png'))
     await page.locator('[data-page=models]').click()
     await expect(page.locator('.floating-pagination:visible')).to_have_count(0)
+    await page.locator('[data-page=maintenance]').click()
+    await page.locator('[data-maintenance-tab=manual]').click()
+    action = await page.locator('#action').bounding_box()
+    title = await page.locator('#node-title').bounding_box()
+    assert abs(action['width'] - title['width']) <= 1, (action, title)
+    assert action['x'] >= 0 and action['x'] + action['width'] <= page.viewport_size['width']
 
 
 async def main():
