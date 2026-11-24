@@ -114,7 +114,8 @@ class IdentityManagement:
             "profile_versions": f"SELECT COUNT(*) AS n FROM profile_versions WHERE profile_id IN (SELECT profile_id FROM user_profiles WHERE space_id IN ({spaces}))",
             "relationships": f"SELECT COUNT(*) AS n FROM relationship_states WHERE space_id IN ({spaces})",
             "relationship_versions": f"SELECT COUNT(*) AS n FROM relationship_versions WHERE relationship_id IN (SELECT relationship_id FROM relationship_states WHERE space_id IN ({spaces}))",
-            "short_term": f"SELECT COUNT(*) AS n FROM short_term_states WHERE space_id IN ({spaces})",
+            "short_term": (f"SELECT COUNT(*) AS n FROM short_term_states WHERE space_id IN ({spaces}) "
+                           "AND json_extract(coverage_json, '$.summary_deleted') IS NULL"),
             "notes": f"SELECT COUNT(*) AS n FROM notes WHERE space_id IN ({spaces})",
             "tasks": f"SELECT COUNT(*) AS n FROM memory_jobs WHERE scope_key IN ({spaces})",
         }

@@ -1170,7 +1170,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         await self._save(job, {}, "governance", 0, 1)
         result = await self.governance.apply(payload["space_id"], payload["operation"],
             actor="webui", reason=payload.get("reason", ""), job_id=job["job_id"], lease_token=job["lease_token"])
-        if self.runtime.cache is not None and not result.get("title_only", False):
+        if self.runtime.cache is not None and "nodes" in result and not result.get("title_only", False):
             ids = set(result["before_nodes"]) | set(result["nodes"]) | set(result["stale_parent_ids"])
             try:
                 await self.runtime.cache.invalidate_nodes(payload["space_id"], ids)

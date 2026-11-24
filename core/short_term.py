@@ -128,7 +128,8 @@ class ShortTermService:
         if not space or not is_supported_persona(space["persona_id"]):
             return None
         value = await self.store.get(space_id, conversation_key(stream_id, conversation_id))
-        if (not value or value["status"] != "active" or value["coverage"].get("stream_id") != stream_id
+        if (not value or value["status"] != "active" or value["coverage"].get("summary_deleted")
+                or value["coverage"].get("stream_id") != stream_id
                 or value["coverage"].get("host_conversation_id") != conversation_id):
             return None
         return value

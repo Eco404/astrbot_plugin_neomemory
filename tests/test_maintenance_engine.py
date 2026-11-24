@@ -788,3 +788,20 @@ async def test_auto_recovery_reprepares_stale_checkpoint_once_and_keeps_origin(e
     assert current["checkpoint"] == {}
     assert (await execute(env, current))["state"] == "succeeded"
     assert len(env.adapter.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_manual_profile_task_commits_with_node_cache_enabled(environment):
+    env = environment
+    sid = env.space["space_id"]
+    profile = await env.memory.upsert_profile(
+        space_id=sid, logical_user_id=env.space["logical_user_id"], description="旧描述", tags=[])
+    env.runtime.cache = SimpleNamespace()
+    op = {"entity_kind": "profile", "entity_id": profile["profile_id"], "action": "edit",
+          "expected_generation_id": profile["generation_id"], "expected_version": 1,
+          "patch": {"description": "人工修正", "tags": []}}
+    job = await execute(env, await enqueue_and_claim(env, "governance", operation=op))
+    assert job["state"] == "succeeded"
+    assert job["result"]["content_version"] == 2
+    current, = await env.memory.list_profiles(space_id=sid)
+    assert current["description"] == "人工修正"

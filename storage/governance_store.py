@@ -1,6 +1,6 @@
 """Atomic human governance, fenced by durable jobs and optimistic snapshots.
 
-All operations require ``action``, ``expected_generation_id`` and an
+Node operations require ``action``, ``expected_generation_id`` and an
 ``expected_versions`` node-ID/version mapping. ``expected_updated_at`` must
 cover directly governed nodes and checks metadata/status changes as well. Mutation requests never contain arbitrary
 SQL, scope selectors, source additions or model-generated repair instructions.
@@ -12,6 +12,8 @@ SQL, scope selectors, source additions or model-generated repair instructions.
 ``merge``: node_ids, keep_id, content_text, importance; preserves valid redirected
            relations and combines provenance/participants.
 Other actions: node_id. Delete is a tombstone; source records remain untouched.
+Context entries use entity_kind, entity_id and expected_version together with
+expected_generation_id.
 Relations use source_ref, target_ref, relation_type. Existing explicit endpoints
 must appear in expected_versions. New split refs need no expected version.
 """
@@ -46,6 +48,7 @@ except ImportError:
         validate_title,
     )
 
+from .context_governance import apply_context_change, validate_context_operation
 from .job_store import assert_job_lease
 from .provenance_store import record_derivation, version_reference
 
@@ -146,6 +149,8 @@ def validate_operation(operation: Any) -> dict[str, Any]:
     if len(encoded.encode("utf-8")) > 256_000:
         raise ValueError("governance operation exceeds its size limit")
     operation = json.loads(encoded)
+    if "entity_kind" in operation:
+        return validate_context_operation(operation)
     action = operation.get("action")
     if (
         not isinstance(action, str)
@@ -360,6 +365,20 @@ class GovernanceService:
             )
             if generation is None:
                 raise ValueError("stale or foreign generation")
+            if kind := operation.get("entity_kind"):
+                version = await apply_context_change(connection, space_id, operation, now)
+                entity_id = operation["entity_id"]
+                previous_version = operation["expected_version"]
+                result = {"job_id": job_id, "space_id": space_id, "generation_id": generation_id,
+                          "action": action, "entity_kind": kind, "entity_id": entity_id,
+                          "before_version": previous_version, "content_version": version, "replayed": False}
+                await self._receipt(connection, result, lease_token, actor, reason, request_digest, now)
+                if kind != "short_term" and version is not None and version != previous_version:
+                    await record_derivation(
+                        connection, kind, entity_id, version, operation="edit", editor_kind="manual",
+                        now=now, governance_job_id=job_id, base_versions=[version_reference(kind, entity_id, previous_version)],
+                    )
+                return result
             nodes = {}
             for node_id, version in operation["expected_versions"].items():
                 row = await self.memory._node_row_in_connection(connection, node_id)
@@ -479,22 +498,7 @@ class GovernanceService:
             }
             if action == "delete":
                 result["deletion_kind"] = "derived_tombstone"
-            await assert_job_lease(connection, job_id, lease_token, scope_key=space_id)
-            await connection.execute(
-                """INSERT INTO governance_receipts(job_id,space_id,generation_id,action,actor,reason,input_digest,result_json,committed_at)
-                VALUES (?,?,?,?,?,?,?,?,?)""",
-                (
-                    job_id,
-                    space_id,
-                    generation_id,
-                    action,
-                    actor,
-                    reason,
-                    request_digest,
-                    _json(result),
-                    now,
-                ),
-            )
+            await self._receipt(connection, result, lease_token, actor, reason, request_digest, now)
             if action == "split":
                 original_id = affected[0]
                 source_rows = await _all(connection, "SELECT * FROM node_sources WHERE node_id=?", (original_id,))
@@ -526,6 +530,16 @@ class GovernanceService:
                                   "title_after": after[target]["title"]},
                     )
             return result
+
+    @staticmethod
+    async def _receipt(connection, result, lease_token, actor, reason, request_digest, now):
+        await assert_job_lease(connection, result["job_id"], lease_token, scope_key=result["space_id"])
+        await connection.execute(
+            """INSERT INTO governance_receipts(job_id,space_id,generation_id,action,actor,reason,input_digest,result_json,committed_at)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (result["job_id"], result["space_id"], result["generation_id"], result["action"],
+             actor, reason, request_digest, _json(result), now),
+        )
 
     async def _edit(self, connection, node, patch, generation, now, reason, *, title_only=False):
         title = validate_title(patch["title"]) if "title" in patch else node["title"]

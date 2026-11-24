@@ -211,6 +211,8 @@ class ConsoleStore:
             parameters = [space_id, space["generation_id"]]
             if kind == "relationships" and space["space_type"] != "private":
                 return _listing(space, [], limit, offset, kind=kind, total=0)
+            if kind == "short_term":
+                conditions.append("json_extract(coverage_json, '$.summary_deleted') IS NULL")
             if status != "all":
                 conditions.append("status=?")
                 parameters.append(status)

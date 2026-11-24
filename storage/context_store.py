@@ -72,7 +72,8 @@ class ContextStore:
                 if short:
                     item = dict(short)
                     item["coverage"] = json.loads(item.pop("coverage_json"))
-                    if (item["coverage"].get("stream_id") == stream_id
+                    if (not item["coverage"].get("summary_deleted")
+                            and item["coverage"].get("stream_id") == stream_id
                             and item["coverage"].get("host_conversation_id") == host_conversation_id):
                         result["short_term"] = item
             cursor = await connection.execute(
