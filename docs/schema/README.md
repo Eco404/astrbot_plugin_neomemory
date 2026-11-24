@@ -1,6 +1,6 @@
 # NeoMemory 数据库结构
 
-memory.db 的 SQLite `user_version` 为 2，任务恢复格式的开发修订为 `v3-dev.2`，保存在 `pipeline_state` 表的 `memory_format_revision` 键中。首次打开 v1 库时在事务内升级，已有空间默认关闭共享并继承插件模型。source.db 的 SQLite `user_version` 为 1，`source_format` 表记录开发修订 `v2-dev.1`。ingress.db 和 cache.db 的格式为 v1。数据目录由 AstrBot 的 `StarTools.get_data_dir("astrbot_plugin_neomemory")` 提供。每个文件独立记录 schema 版本。数据库结构版本用于识别文件格式，节点、画像和关系的内容版本则用于记录某个实体在使用过程中的修订。
+memory.db 的 SQLite `user_version` 为 2，记忆库的开发修订为 `v3-dev.3`，保存在 `pipeline_state` 表的 `memory_format_revision` 键中。首次打开 v1 库时在事务内升级，已有空间默认关闭共享并继承插件模型。source.db 的 SQLite `user_version` 为 1，`source_format` 表记录开发修订 `v2-dev.1`。ingress.db 和 cache.db 的格式为 v1。数据目录由 AstrBot 的 `StarTools.get_data_dir("astrbot_plugin_neomemory")` 提供。每个文件独立记录 schema 版本。数据库结构版本用于识别文件格式，节点、画像和关系的内容版本则用于记录某个实体在使用过程中的修订。
 
 | 数据库 | 持久内容 | 写入与清理 |
 | --- | --- | --- |

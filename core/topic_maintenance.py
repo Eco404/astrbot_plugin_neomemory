@@ -18,7 +18,7 @@ except ImportError:
 from .extraction_apply import digest
 from .extraction_context import node_vectors, _rank_page_with_query_coverage
 from .jobs import ReviewRequired, deadline_failure, provider_failure
-from .model_routing import fixed_route
+from .model_routing import fixed_route, topic_model_policy
 from .attempts import observe_action, observe_commit, observed_call
 from .topic_prompt import (PROMPT_VERSION,
                            build_messages, schema_for_prompt_version)
@@ -358,7 +358,8 @@ class TopicMaintenanceMixin:
                     raise ReviewRequired("invalid_topic_output")
                 policy = payload.get("model_policy")
                 if policy is None:
-                    policy = await (stage_for or self.memory).get_space_policy(space["space_id"])
+                    policy = topic_model_policy(await (stage_for or self.memory).get_space_policy(space["space_id"]),
+                                                self.config, payload.get("request", {}).get("model_selection", {}))
                 route = fixed_route(policy, policy.get("default_provider_id", self.config.llm_provider_id),
                                     payload.get("request", {}).get("model_selection", {}), topic=True)
                 if not route and store.can_propose_changes(prepared):

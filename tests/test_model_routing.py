@@ -126,6 +126,38 @@ async def test_topic_stage_uses_the_confirmed_model_of_its_members(environment):
 
 
 @pytest.mark.asyncio
+async def test_specialist_models_and_rebuild_steps(environment):
+    env = environment
+    restart(env, config=replace(env.config, topic_provider_id="global-topic", topic_consolidation_enabled=True))
+    for kind, include_topics, lanes in (
+        ("topic_rebuild", False, {"topic"}), ("relationship_rebuild", False, {"window"}),
+        ("context_rebuild", True, {"topic", "window"}), ("rebuild", False, {"topic", "window"}),
+    ):
+        preview = await env.engine.model_preview(kind, env.space, include_topics=include_topics)
+        assert set(preview) == lanes
+        if "topic" in lanes:
+            assert preview["topic"]["provider_id"] == "global-topic" and not preview["topic"]["follows_main"]
+
+    space_id = env.space["space_id"]
+    await env.memory.set_space_policy(space_id, {"model_mode": "fixed", "provider_id": "space-main"})
+    preview = await env.engine.model_preview("rebuild", env.space)
+    assert preview["topic"]["follows_main"] and preview["topic"]["provider_id"] == "space-main"
+    changed = await env.engine.model_preview("rebuild", env.space, selection={"window_provider_id": "manual-main"})
+    assert changed["topic"]["provider_id"] == changed["window"]["provider_id"] == "manual-main"
+
+    await env.memory.set_space_policy(space_id, {"topic_provider_id": "space-topic"})
+    for text in ("I visited a planetarium", "I booked another visit"):
+        await env.memory.create_node(space_id=space_id, node_type="event", content_text=text,
+                                     source_ids=[env.records[0].source_id])
+    job = await enqueue_and_claim(env, "topic_rebuild")
+    await env.memory.set_space_policy(space_id, {"topic_provider_id": "changed-after-queue"})
+    calls = record_calls(env)
+    env.adapter.output = json.dumps({"schema_version": VERSION, "changes": []})
+    assert (await execute(env, job))["state"] == "succeeded"
+    assert calls == [("space-topic", None)]
+
+
+@pytest.mark.asyncio
 async def test_existing_multi_stream_replay_resumes_its_original_cursor(environment):
     env = environment
     await source(env, "alternate", 3)

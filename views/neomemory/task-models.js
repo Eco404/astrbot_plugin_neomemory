@@ -3,10 +3,13 @@ import { $, element, enhanceSelect } from './ui.js';
 const bases = { space: '来自空间设置', plugin: '来自插件设置', chat: '来自对话窗口', topic: '来自主题模型设置',
   short_term: '来自短期模型设置', session_config: '按会话配置选择', request_provider: '来自对话请求' };
 
-function modelField(title, step, available, lane, { optionalTopic = false } = {}) {
-  const block = element(optionalTopic ? 'details' : 'div', '', 'task-model-field');
+function modelField(title, step, available, lane, mainField) {
+  const block = element('div', '', 'task-model-field');
   const label = element('label'), select = element('select');
-  label.append(element('span', title), select); block.append(label);
+  const caption = element('span', title);
+  caption.id = 'task-model-' + lane + '-label';
+  select.setAttribute('aria-labelledby', caption.id);
+  label.append(caption, select); block.append(label);
   const option = (value, name) => { const opt = element('option', name); opt.value = value; return opt; };
   select.append(option('', '请选择模型')); select.required = true;
   const follow = lane === 'window' && (step.mode === 'windows' || (step.missing_windows > 0 && step.providers?.length));
@@ -21,20 +24,22 @@ function modelField(title, step, available, lane, { optionalTopic = false } = {}
   providers(select);
   if (byWindow) byWindow.selected = true;
   else select.value = available.some(item => item.provider_id === step.provider_id) ? step.provider_id : '';
-  if (optionalTopic) {
-    const summary = element('summary');
-    block.prepend(summary);
-    const showChoice = () => { summary.textContent = '主题整理模型 · ' + (select.value || '请选择模型'); };
-    select.addEventListener('change', showChoice);
-    select.addEventListener('invalid', () => { block.open = true; });
-    block.open = !select.value;
-    showChoice();
+  const canFollowMain = mainField && step.follows_main;
+  if (canFollowMain) {
+    select.value = '';
+    const sync = () => {
+      const resolved = step.mode === 'fixed' || Boolean(mainField.selection().window_provider_id);
+      select.options[0].text = resolved ? '未指定：跟随主模型' : '请选择模型';
+      select.required = !resolved;
+    };
+    mainField.select.addEventListener('change', sync);
+    sync();
   }
   const hints = [];
   if (bases[step.basis]) hints.push(bases[step.basis]);
   if (follow && step.providers?.length) hints.push('涉及模型 ' + step.providers.join('、'));
   if (lane === 'topic' && step.mode === 'missing') {
-    hints.push('无法为这些主题来源确定一个可用模型，请为本次主题整理选择模型。');
+    hints.push(canFollowMain ? '来源缺少统一模型时，可指定本次主模型或主题抽取模型。' : '请为本次主题抽取选择模型。');
   } else if (step.missing_windows > 0) hints.push(step.missing_windows + ' 个窗口需要选择模型');
   if (hints.length) block.append(element('small', hints.join(' · '), 'muted'));
   enhanceSelect(select);
@@ -49,9 +54,10 @@ function modelField(title, step, available, lane, { optionalTopic = false } = {}
     };
     select.addEventListener('change', sync); sync();
   }
-  return { block, selection() {
+  return { block, select, selection() {
+    if (canFollowMain && !select.value) return {};
     if (following()) return fallback ? { missing_window_provider_id: fallback.value } : {};
-    if (select.value === step.provider_id && step.mode === 'fixed') return {};
+    if (!canFollowMain && select.value === step.provider_id && step.mode === 'fixed') return {};
     return { [lane + '_provider_id']: select.value };
   } };
 }
@@ -69,15 +75,11 @@ export function initTaskModels(ui) {
     ]);
     if (id !== request || !ui.current(epoch) || ui.page() !== 'maintenance') return null;
     const fields = [];
-    for (const [lane, caption] of [['window', kind === 'short_term' ? '短期摘要模型' : '记忆 LLM 模型（窗口抽取）'], ['topic', '主题整理模型']]) {
-      if (!preview[lane]) continue;
-      const optionalTopic = lane === 'topic' && preview.window && preview.topic.mode === 'fixed';
-      const field = modelField(caption, preview[lane], models.llm, lane, { optionalTopic });
-      if (lane === 'topic' && preview.window) {
-        field.block.append(element('small', '本次更改窗口抽取模型时，主题整理仍使用此处所选的模型。', 'muted'));
-      }
-      fields.push(field);
+    if (preview.window) {
+      const caption = kind === 'short_term' ? '短期摘要模型' : '主模型';
+      fields.push(modelField(caption, preview.window, models.llm, 'window'));
     }
+    if (preview.topic) fields.push(modelField('主题抽取模型', preview.topic, models.llm, 'topic', fields[0]));
     const selected = Array.from($('space').options).find(item => item.value === space_id);
     $('section-rebuild-scope').textContent = selected ? '记忆空间 · ' + selected.textContent : '任务 ' + job_id;
     $('section-rebuild-title').textContent = title;

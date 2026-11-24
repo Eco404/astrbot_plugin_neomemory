@@ -8,12 +8,12 @@ const personaFields = [
 ];
 const spaceFields = [
   ['exclude_from_shared_recall', '禁止其他空间检索本空间', '开启后，本空间仍可按人格设置检索其他空间。'],
-  ['model_mode', '记忆 LLM 模型', '用于本空间的长期记忆抽取和主题整理。继承插件设置且全局模型留空时，跟随来源窗口。'],
-  ['provider_id', '指定模型', '用于本空间的长期记忆抽取。'],
+  ['model_mode', '主模型', '用于长期记忆、用户画像和人格关系。可以继承插件设置、跟随对话或直接选择模型。'],
+  ['topic_provider_id', '主题抽取模型', '用于本空间的主题整理和重构。'],
+  ['short_term_provider_id', '短期摘要模型', '用于本空间的短期滚动摘要。'],
 ];
-const topicField = ['topic_provider_id', '单独指定主题整理模型（可选）', '仅在希望主题使用其他模型，或需要统一多个来源窗口的模型时选择。'];
 
-export function initSpaceSettings(ui, modelChoices) {
+export function initSpaceSettings(ui, modelChoices, pluginProvider) {
   let saved, draft = {}, saving = false, request = 0;
   const changes = () => Object.fromEntries(Object.entries(draft).filter(([key, value]) => saved && value !== saved[key]));
   const dirty = () => Object.keys(changes()).length > 0;
@@ -23,26 +23,33 @@ export function initSpaceSettings(ui, modelChoices) {
     $('policy-discard').disabled = saving;
     $('policy-save').disabled = saving || !changed;
     $('policy-draft-state').textContent = saving ? '正在保存…' : changed ? '有未保存的修改' : '没有未保存的改动';
-    $('policy-topic-summary').textContent = '主题整理模型 · ' + (draft.topic_provider_id || '沿用本空间的记忆 LLM 模型');
+    for (const key of ['topic_provider_id', 'short_term_provider_id']) {
+      const inherited = draft.model_mode === 'inherit' && pluginProvider(key);
+      $('policy-' + key).options[0].text = inherited ? '继承插件设置 · ' + inherited : '未指定：跟随主模型';
+    }
   }
   function field([key, name, hint, max]) {
     const row = element('div', '', 'field'), label = element('label', name);
     const description = element('div', '', 'field-description'), help = element('small', hint);
-    const select = ['model_mode', 'provider_id', 'topic_provider_id'].includes(key);
+    const select = ['model_mode', 'short_term_provider_id', 'topic_provider_id'].includes(key);
     const input = element(select ? 'select' : 'input');
     input.id = 'policy-' + key; label.htmlFor = input.id;
     help.id = input.id + '-help'; input.setAttribute('aria-describedby', help.id);
     if (select) {
       if (key === 'model_mode') {
-        for (const [value, text] of [['inherit', '继承插件设置'], ['chat', '跟随对话模型'], ['fixed', '指定模型']]) {
+        for (const [value, text] of [['inherit', '继承插件设置'], ['chat', '跟随对话模型']]) {
           const option = element('option', text); option.value = value; input.append(option);
         }
+        for (const option of modelChoices('llm', draft.provider_id, false)) {
+          option.value = 'provider:' + option.value;
+          input.append(option);
+        }
+        input.value = draft.model_mode === 'fixed' ? 'provider:' + draft.provider_id : draft.model_mode;
       } else {
         input.append(...modelChoices('llm', draft[key]));
-        input.firstChild.textContent = key === 'provider_id' ? '请选择模型' : '沿用本空间的记忆 LLM 模型';
-        input.required = key === 'provider_id' && draft.model_mode === 'fixed';
+        input.value = draft[key];
       }
-      input.value = draft[key]; enhanceSelect(input);
+      enhanceSelect(input);
     } else if (max !== undefined) {
       input.type = 'number'; input.min = 0; input.max = max; input.step = 1; input.required = true;
       input.value = draft[key] ?? '';
@@ -51,34 +58,30 @@ export function initSpaceSettings(ui, modelChoices) {
       input.checked = draft[key];
     }
     input.disabled = saving;
-    row.hidden = key === 'provider_id' && draft.model_mode !== 'fixed';
-    input.disabled ||= row.hidden;
     input.addEventListener('input', () => {
-      draft[key] = input.type === 'checkbox' ? input.checked : input.type === 'number' ? (input.value === '' ? null : Number(input.value)) : input.value;
-      if (key === 'model_mode') {
-        const provider = $('policy-provider_id'), hidden = draft.model_mode !== 'fixed';
-        provider.closest('.field').hidden = provider.disabled = hidden;
-        provider.required = !hidden;
+      if (key === 'model_mode' && input.value.startsWith('provider:')) {
+        draft.model_mode = 'fixed';
+        draft.provider_id = input.value.slice('provider:'.length);
+      } else {
+        draft[key] = input.type === 'checkbox' ? input.checked : input.type === 'number' ? (input.value === '' ? null : Number(input.value)) : input.value;
+        if (key === 'model_mode') draft.provider_id = saved.provider_id;
       }
       controls();
     });
     description.append(label, help); row.append(description, input);
-    // Fixed mode requires a provider. Restore inheritance on the model mode row.
-    if (key !== 'provider_id') {
-      const defaultValue = saved.defaults[key];
-      const reset = element('button', '恢复默认', 'reset-setting');
-      reset.type = 'button';
-      reset.setAttribute('aria-label', name + '恢复默认');
-      const updateReset = () => { reset.disabled = input.disabled || draft[key] === defaultValue; };
-      updateReset();
-      input.addEventListener('input', updateReset);
-      reset.addEventListener('click', () => {
-        if (input.type === 'checkbox') input.checked = defaultValue;
-        else input.value = defaultValue;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      row.append(reset);
-    }
+    const defaultValue = saved.defaults[key];
+    const reset = element('button', '恢复默认', 'reset-setting');
+    reset.type = 'button';
+    reset.setAttribute('aria-label', name + '恢复默认');
+    const updateReset = () => { reset.disabled = input.disabled || draft[key] === defaultValue; };
+    updateReset();
+    input.addEventListener('input', updateReset);
+    reset.addEventListener('click', () => {
+      if (input.type === 'checkbox') input.checked = defaultValue;
+      else input.value = defaultValue;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    row.append(reset);
     return row;
   }
   function render() {
@@ -89,10 +92,9 @@ export function initSpaceSettings(ui, modelChoices) {
     if (!sources.length) $('policy-source-list').append(element('li', '暂无已开放的来源空间。'));
     $('policy-persona-fields').replaceChildren(...personaFields.map(field));
     $('policy-space-fields').replaceChildren(...spaceFields.map(field));
-    $('policy-topic-field').replaceChildren(field(topicField));
     controls();
   }
-  function discard() { if (saved) { draft = Object.fromEntries([...personaFields, ...spaceFields, topicField].map(([key]) => [key, saved[key]])); render(); } }
+  function discard() { if (saved) { draft = Object.fromEntries([...personaFields, ...spaceFields, ['provider_id']].map(([key]) => [key, saved[key]])); render(); } }
   async function refresh() {
     const id = ui.space(), sequence = ++request;
     if (saved?.space_id === id && (dirty() || saving)) return;

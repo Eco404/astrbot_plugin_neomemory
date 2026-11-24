@@ -508,7 +508,11 @@ async def test_chat_model_is_scoped_to_summary_prefix_and_frozen_across_retry(en
     preview = (await env.service.model_preview(job))["window"]
     assert preview["provider_id"] == "next" and preview["basis"] == "space"
     env.config.short_term_provider_id = "dedicated"
-    assert (await env.service.model_preview(job))["window"]["basis"] == "short_term"
+    assert (await env.service.model_preview(job))["window"]["provider_id"] == "next"
+    await env.memory.set_space_policy(space, {"model_mode": "inherit"})
+    assert (await env.service.model_preview(job))["window"]["provider_id"] == "dedicated"
+    await env.memory.set_space_policy(space, {"short_term_provider_id": "space-summary"})
+    assert (await env.service.model_preview(job))["window"]["provider_id"] == "space-summary"
     fresh = await env.service.retry(job["job_id"], fresh=True, model_selection={"window_provider_id": "chosen"})
     assert fresh["payload"]["source_ids"] == job["payload"]["source_ids"]
     env.adapter.output = None

@@ -11,6 +11,7 @@ SPACE_DEFAULTS = {
     "model_mode": "inherit",
     "provider_id": "",
     "topic_provider_id": "",
+    "short_term_provider_id": "",
 }
 
 POLICY_SCHEMA = (
@@ -34,7 +35,7 @@ async def _policy(connection, space_id):
     row = await (await connection.execute(
         "SELECT s.space_id,s.persona_id,p.shared_recall_enabled,p.allow_group_read_private,"
         "p.external_limit,p.external_budget_percent,r.exclude_from_shared_recall,r.model_mode,"
-        "r.provider_id,r.topic_provider_id FROM memory_spaces s "
+        "r.provider_id,r.topic_provider_id,r.short_term_provider_id FROM memory_spaces s "
         "LEFT JOIN persona_policies p USING(persona_id) LEFT JOIN space_policies r USING(space_id) "
         "WHERE s.space_id=?", (space_id,))).fetchone()
     if row is None:

@@ -354,7 +354,7 @@ MEMORY_SCHEMA = (
 
 
 MEMORY_FORMAT = 2
-MEMORY_FORMAT_REVISION = "v3-dev.2"
+MEMORY_FORMAT_REVISION = "v3-dev.3"
 
 JOB_RECOVERY_SCHEMA = (
     "ALTER TABLE memory_jobs ADD COLUMN automatic_origin INTEGER NOT NULL DEFAULT 0",
@@ -389,6 +389,8 @@ async def initialize_memory_schema(database):
                 await connection.execute(statement)
         if revision is None or revision[0] == "v3-dev.1":
             await connection.execute("ALTER TABLE memory_jobs ADD COLUMN attempts_json TEXT NOT NULL DEFAULT '[]'")
+        if revision is None or revision[0] in {"v3-dev.1", "v3-dev.2"}:
+            await connection.execute("ALTER TABLE space_policies ADD COLUMN short_term_provider_id TEXT NOT NULL DEFAULT ''")
             await connection.execute(
                 "INSERT OR REPLACE INTO pipeline_state VALUES ('memory_format_revision',json_quote(?),unixepoch())",
                 (MEMORY_FORMAT_REVISION,))

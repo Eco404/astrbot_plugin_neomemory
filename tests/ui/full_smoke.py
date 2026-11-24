@@ -28,10 +28,10 @@ window.testUnpersisted=2; window.testOverflow=1;
 const health=()=>({pending_count:testIngress.length,max_entries:10000,payload_bytes:1024,max_bytes:67108864,counts:{failed:1}});
 const schema={recall_enabled:{type:'bool',default:true,description:'启用召回',hint:'控制采集',group:'功能'},
  external_memory_mode:{type:'string',default:'supplement',description:'陪伴插件记忆归属模式',options:['supplement','owner'],group:'高级'},
- llm_provider_id:{type:'string',default:'',description:'记忆 LLM',group:'model'},short_term_provider_id:{type:'string',default:'',description:'短期摘要模型',group:'model'},embedding_provider_id:{type:'string',default:'',description:'向量模型',group:'model'},
+ llm_provider_id:{type:'string',default:'',description:'主模型',group:'model'},topic_provider_id:{type:'string',default:'',description:'主题抽取模型',group:'model'},short_term_provider_id:{type:'string',default:'',description:'短期摘要模型',group:'model'},embedding_provider_id:{type:'string',default:'',description:'向量模型',group:'model'},
  llm_concurrency:{type:'int',default:2,description:'LLM 并发',slider:{min:1,max:32,step:1},group:'model'},embedding_concurrency:{type:'int',default:2,description:'向量并发',slider:{min:1,max:32,step:1},group:'model'},embedding_batch_size:{type:'int',default:16,description:'向量批次',slider:{min:1,max:256,step:1},group:'model'},
  recall_history_seconds:{type:'int',default:7200,description:'历史时间范围（秒）',hint:'补充检索',slider:{min:0,max:100000,step:1},group:'高级'}};
-let values={recall_enabled:true,external_memory_mode:'supplement',llm_provider_id:'llm-1',short_term_provider_id:'',embedding_provider_id:'embed-1',llm_concurrency:2,embedding_concurrency:2,embedding_batch_size:16,recall_history_seconds:7200};
+let values={recall_enabled:true,external_memory_mode:'supplement',llm_provider_id:'llm-1',topic_provider_id:'',short_term_provider_id:'',embedding_provider_id:'embed-1',llm_concurrency:2,embedding_concurrency:2,embedding_batch_size:16,recall_history_seconds:7200};
 const runtime={...values}; let revision='rev-1'; window.testApplyFailure=false; window.testPendingResponse=false; window.testExternalResponse=false; let applyError=null;
 const settings=()=>({schema,values:{...values},runtime_values:runtime,revision,can_save:true,reload_required:false,applied:!applyError&&!Object.keys(values).some(k=>values[k]!==runtime[k]),apply_error:applyError});
 window.AstrBotPluginView={ready:async()=>{},apiGet:async(endpoint,args={})=>{
@@ -322,13 +322,16 @@ async def main():
             assert await page.locator("#probe-provider").input_value() == "llm-1"
             await page.select_option("#setting-llm_provider_id", "llm-first")
             assert await page.locator("#probe-provider").input_value() == "llm-first"
+            for field in ("topic_provider_id", "short_term_provider_id"):
+                assert await page.locator("#setting-" + field + " option:checked").inner_text() == "未指定：跟随主模型"
+            await page.select_option("#setting-topic_provider_id", "llm-1")
             await page.select_option("#setting-short_term_provider_id", "llm-1")
             await page.locator("#setting-embedding_batch_size").fill("8")
             await page.locator("#models-save").click()
             await page.locator("#settings-result").filter(has_text="配置已保存并生效").wait_for(state="attached")
             assert await page.locator("#models-state").is_hidden()
             saved = await page.evaluate("testCalls.filter(c=>c.endpoint==='settings').at(-1).body.changes")
-            assert saved == {"llm_provider_id": "llm-first", "short_term_provider_id": "llm-1", "embedding_batch_size": 8}
+            assert saved == {"llm_provider_id": "llm-first", "topic_provider_id": "llm-1", "short_term_provider_id": "llm-1", "embedding_batch_size": 8}
             await page.locator("#probe-start").click()
             assert await page.locator("#probe-start").is_disabled()
             await page.locator("#probe-result").filter(has_text='连接成功').wait_for()

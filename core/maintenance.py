@@ -55,7 +55,7 @@ from .extraction_window import WindowMessage, WindowPolicy, select_window
 from .forwarded_content import window_text
 from .parallel_rebuild import rebuild_sections
 from .context_rebuild import MODELS as CONTEXT_REBUILD_MODELS, model_schema, scoped_messages
-from .model_routing import ModelRoutingMixin, ModelSelectionRequired, fixed_route, validate_selection
+from .model_routing import ModelRoutingMixin, ModelSelectionRequired, fixed_route, topic_model_policy, validate_selection
 from .jobs import JobRunner, RetryableJobError, ReviewRequired, deadline_failure, provider_failure
 from .attempts import observe_action, observe_commit, observed_call
 from .memory_spaces import RetiredIdentity
@@ -359,11 +359,12 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             if await self.scanner.has_deliveries(space, payload["highwater"]):
                 payload["replay_deliveries"] = True
         if kind in {"rebuild", "topic_consolidate", "topic_rebuild", *CONTEXT_REBUILD_MODELS}:
-            policy = await self.memory.get_space_policy(space_id)
-            payload["model_policy"] = {key: policy[key] for key in ("model_mode", "provider_id", "topic_provider_id")}
-            payload["model_policy"]["default_provider_id"] = self.config.llm_provider_id
+            policy = topic_model_policy(await self.memory.get_space_policy(space_id), self.config, model_selection or {})
+            payload["model_policy"] = policy
             preview = await self.model_preview(kind, space, policy=policy, include_topics=include_topics,
                                                selection=model_selection, highwater=payload.get("highwater"))
+            if kind == "rebuild":
+                payload["rebuild_topics"] = "topic" in preview
             if any(row["mode"] == "missing" for row in preview.values()):
                 raise ModelSelectionRequired("model_required: select a model for the unresolved pipeline")
         if kind == "topic_consolidate":
@@ -1062,7 +1063,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                     if str(exc) == "context rebuild target changed":
                         raise ReviewRequired("context_changed") from None
                     raise
-            if self.config.topic_consolidation_enabled and "topic_result" not in checkpoint:
+            if payload.get("rebuild_topics", self.config.topic_consolidation_enabled) and "topic_result" not in checkpoint:
                 checkpoint["phase"] = "topics"
                 await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
                 await self._rebuild_topics(job, checkpoint, space, generation["generation_id"])

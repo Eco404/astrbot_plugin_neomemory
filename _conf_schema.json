@@ -66,14 +66,21 @@
     "default": true
   },
   "llm_provider_id": {
-    "description": "记忆 LLM 模型",
-    "hint": "用于长期记忆抽取和主题整理。留空时按来源窗口的对话模型选择。各记忆空间可以单独指定模型。",
+    "description": "主模型",
+    "hint": "用于长期记忆、用户画像和人格关系抽取。未指定时跟随来源窗口的对话模型。",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider"
+  },
+  "topic_provider_id": {
+    "description": "主题抽取模型",
+    "hint": "用于整理和重构主题。未指定时跟随主模型。",
     "type": "string",
     "default": "",
     "_special": "select_provider"
   },
   "short_term_provider_id": {
-    "description": "短期摘要 LLM 模型",
+    "description": "短期摘要模型",
     "hint": "选择专用短期摘要模型，留空时按当前空间及来源窗口的抽取设置选择。",
     "type": "string",
     "default": "",

@@ -20,7 +20,7 @@ except ImportError:
     from storage.source_scan import SourceScanner
 
 from .jobs import ReviewRequired, deadline_failure, provider_failure
-from .model_routing import validate_selection, window_route
+from .model_routing import specialist_provider, validate_selection, window_route
 from .attempts import observe_action, observe_commit, observed_call
 from .persona_policy import is_supported_persona
 from .memory_text import user_reference_ids
@@ -60,11 +60,11 @@ class ShortTermService:
 
     async def _route(self, space_id, records, selection=None):
         selection = selection or {}
-        dedicated = getattr(self.config, "short_term_provider_id", "")
+        policy = await self.memory.get_space_policy(space_id)
+        dedicated = specialist_provider(policy, "short_term_provider_id", self.config)
         if dedicated and not selection.get("window_provider_id"):
             route = {"provider_id": dedicated, "basis": "short_term"}
         else:
-            policy = await self.memory.get_space_policy(space_id)
             route = window_route(policy, self.config.llm_provider_id, records, selection)
         if route:
             try:

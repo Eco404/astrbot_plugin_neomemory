@@ -78,7 +78,7 @@ async def test_release_jobs_keep_origin_and_due_time_on_upgrade(tmp_path):
         await memory.close()
         await memory.open()
         assert (await store.get("short_term:automatic")) == automatic
-        assert (await memory.health())["schema_revision"] == "v3-dev.2"
+        assert (await memory.health())["schema_revision"] == "v3-dev.3"
     finally:
         await memory.close()
 

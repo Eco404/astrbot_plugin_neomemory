@@ -63,6 +63,7 @@ class NeoMemoryConfig:
     recall_enabled: bool = True
     tools_enabled: bool = True
     llm_provider_id: str = ""
+    topic_provider_id: str = ""
     short_term_provider_id: str = ""
     rerank_provider_id: str = ""
     embedding_provider_id: str = ""
@@ -273,6 +274,7 @@ class NeoMemoryConfig:
             recall_enabled=_as_bool(data.get("recall_enabled"), True),
             tools_enabled=_as_bool(data.get("tools_enabled"), True),
             llm_provider_id=_as_string(data.get("llm_provider_id")),
+            topic_provider_id=_as_string(data.get("topic_provider_id")),
             short_term_provider_id=_as_string(data.get("short_term_provider_id")),
             rerank_provider_id=_as_string(data.get("rerank_provider_id")),
             embedding_provider_id=_as_string(data.get("embedding_provider_id")),

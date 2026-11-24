@@ -19,7 +19,7 @@ window.topicSubmissionKeys = [];
 window.AstrBotPluginView.apiPost = async (endpoint, body) => {
  if(endpoint === 'tasks/model-preview' && body.kind === 'rebuild') {
    const step = {mode:'fixed',provider_id:'llm-1',providers:['llm-1'],basis:'plugin'};
-   return {window:step,topic:step};
+   return {window:step,topic:{...step,follows_main:true}};
  }
  if(endpoint === 'tasks/model-preview')return body.kind==='section_rebuild'
    ? {window:{mode:'windows',providers:['llm-first','llm-1'],missing_windows:1,basis:'chat'},topic:{mode:'missing',providers:[]}}
@@ -138,14 +138,13 @@ async def main():
             assert await page.locator("#rebuild").is_enabled()
             await page.locator("#rebuild").click()
             full = page.get_by_role("dialog")
-            topic_choice = full.locator("details.task-model-field")
-            await topic_choice.get_by_text("主题整理模型 · llm-1", exact=True).wait_for()
-            assert not await topic_choice.evaluate("el => el.open")
-            await full.get_by_label("记忆 LLM 模型（窗口抽取）").select_option("llm-first")
-            await topic_choice.locator("summary").click()
-            assert await topic_choice.get_by_label("主题整理模型").input_value() == "llm-1"
-            await topic_choice.get_by_label("主题整理模型").select_option("llm-first")
-            assert await topic_choice.locator("summary").inner_text() == "主题整理模型 · llm-first"
+            assert await full.get_by_role("combobox").count() == 2
+            main_choice = full.get_by_label("主模型", exact=True)
+            topic_choice = full.get_by_label("主题抽取模型", exact=True)
+            await main_choice.select_option("llm-first")
+            assert await topic_choice.locator("option:checked").inner_text() == "未指定：跟随主模型"
+            await topic_choice.select_option("llm-1")
+            assert await topic_choice.input_value() == "llm-1"
             await full.get_by_role("button", name="取消").click()
             await page.locator("#rebuild-confirm").uncheck()
             rebuild = page.get_by_role("button", name="启动板块重构", exact=True)
@@ -166,7 +165,7 @@ async def main():
             await dialog.get_by_role("button", name="确认重构").click()
             assert await dialog.is_visible()
             await dialog.get_by_label("仅用于缺少模型的窗口").select_option("llm-1")
-            await dialog.get_by_label("主题整理模型").select_option("llm-first")
+            await dialog.get_by_label("主题抽取模型").select_option("llm-first")
             await dialog.get_by_role("button", name="确认重构").click()
             await page.locator("#tasks article").filter(has_text="按板块重构").filter(has_text="完成").wait_for()
             assert await page.locator('[data-maintenance-tab="tasks"]').get_attribute("aria-selected") == "true"

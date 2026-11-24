@@ -12,6 +12,22 @@ def chat_route(record):
     return metadata.get("chat_model") or {}
 
 
+def specialist_provider(policy, key, config):
+    if policy.get(key):
+        return policy[key]
+    if policy.get("model_mode", "inherit") == "inherit":
+        return getattr(config, key, "")
+    return ""
+
+
+def topic_model_policy(policy, config, selection):
+    """Freeze the effective topic choice alongside the main model for queued work."""
+    dedicated = specialist_provider(policy, "topic_provider_id", config)
+    return {"model_mode": policy["model_mode"], "provider_id": policy["provider_id"],
+            "default_provider_id": config.llm_provider_id,
+            "topic_provider_id": dedicated or selection.get("window_provider_id", "")}
+
+
 def fixed_route(policy, default, selection, *, topic=False):
     override = selection.get("topic_provider_id" if topic else "window_provider_id")
     if override:
@@ -171,8 +187,9 @@ class ModelRoutingMixin:
 
     async def model_preview(self, kind, space, *, include_topics=False, selection=None, policy=None, highwater=None):
         selection = selection or {}
-        policy = policy if policy is not None else await self.memory.get_space_policy(space["space_id"])
-        default = self.config.llm_provider_id
+        if policy is None:
+            policy = topic_model_policy(await self.memory.get_space_policy(space["space_id"]), self.config, selection)
+        default = policy["default_provider_id"]
         generation = await self.memory.get_active_generation(space["space_id"])
         generation_id = generation["generation_id"]
         window_step = kind in {"extract", "rebuild", "profile_rebuild", "relationship_rebuild", "context_rebuild"}
@@ -198,4 +215,5 @@ class ModelRoutingMixin:
             elif kind != "rebuild":
                 topic_routes = await self.topic_routes(self.memory, space, generation_id)
             result["topic"] = self._route_summary(topic_routes)
+            result["topic"]["follows_main"] = not bool(policy["topic_provider_id"])
         return result
