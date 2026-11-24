@@ -183,3 +183,19 @@ async def test_empty_llm_response_is_a_failed_probe(env, completion):
     stored = await env.jobs.get(queued["job_id"])
     assert stored["state"] == "failed" and stored["result"] is None
     assert stored["error_code"] == "model_test_provider_failed"
+
+
+@pytest.mark.asyncio
+async def test_probe_reports_safe_http_status_without_creating_a_task(env):
+    async def denied(**kwargs):
+        error = RuntimeError("synthetic private token")
+        error.status_code = 403
+        raise error
+
+    env.host.llm_generate = denied
+    with pytest.raises(ReviewRequired) as failure:
+        await env.service.probe(kind="llm", provider_id="llm")
+    assert failure.value.code == "model_test_provider_failed"
+    assert failure.value.http_status == 403 and failure.value.failure_stage == "provider_call"
+    assert "private" not in str(failure.value)
+    assert await env.jobs.list() == []

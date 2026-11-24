@@ -8,7 +8,9 @@ import time
 import uuid
 from typing import Any
 
+from .attempts import observed_call
 from .jobs import ReviewRequired
+from .provider_errors import http_status
 
 
 def _text(value, *, maximum=256):
@@ -48,7 +50,7 @@ class ModelTestService:
         fingerprint = service._fingerprint(kind, provider_id)
         return await service._measure(kind, provider_id, fingerprint)
 
-    async def enqueue(self, *, kind, provider_id, idempotency_key):
+    async def enqueue(self, *, kind, provider_id, idempotency_key, replaces=None):
         if kind not in {"llm", "embedding"}:
             raise ValueError("invalid provider capability")
         _text(provider_id)
@@ -58,7 +60,7 @@ class ModelTestService:
         payload = {"kind": kind, "provider_id": provider_id, "fingerprint": fingerprint}
         scope = "provider_test:" + hashlib.sha256(provider_id.encode()).hexdigest()
         return await self.jobs.submit("model_test", scope, payload,
-                                            "model_test:" + idempotency_key, max_attempts=1)
+                                      "model_test:" + idempotency_key, max_attempts=1, replaces=replaces)
 
     async def retry(self, job_id, *, fresh=False):
         self._adapter()
@@ -70,10 +72,8 @@ class ModelTestService:
         # A deliberate new test may use a changed provider configuration.
         if job["state"] not in {"failed", "cancelled"}:
             raise ValueError("model test must be stopped before reprepare")
-        result = await self.enqueue(kind=job["payload"]["kind"], provider_id=job["payload"]["provider_id"],
-                                    idempotency_key="fresh:" + uuid.uuid4().hex)
-        await self.jobs.cancel(job_id)
-        return result
+        return await self.enqueue(kind=job["payload"]["kind"], provider_id=job["payload"]["provider_id"],
+                                  idempotency_key="fresh:" + uuid.uuid4().hex, replaces=job)
 
     async def _save(self, job, checkpoint, *, step, done):
         await self.jobs.save_checkpoint(job["job_id"], job["lease_token"], checkpoint=checkpoint,
@@ -107,24 +107,26 @@ class ModelTestService:
         started = time.monotonic()
         timeout = self.config.extraction_timeout_seconds
         dimension = None
+        diagnostics = {}
         try:
             if kind == "llm":
-                await adapter.generate([{"role": "user", "content": "Reply OK."}],
-                                       provider_id=provider_id, timeout_seconds=timeout)
+                await observed_call(adapter.generate, [{"role": "user", "content": "Reply OK."}],
+                                    provider_id=provider_id, timeout_seconds=timeout, diagnostics=diagnostics)
             else:
-                vectors = await adapter.embed_batch(["NeoMemory connectivity test"],
-                                                     provider_id=provider_id, timeout_seconds=timeout)
+                vectors = await observed_call(adapter.embed_batch, ["NeoMemory connectivity test"],
+                                              provider_id=provider_id, timeout_seconds=timeout, diagnostics=diagnostics)
                 dimension = len(vectors[0])
             if self._fingerprint(kind, provider_id) != fingerprint:
                 raise ReviewRequired("model_test_configuration_changed")
         except ReviewRequired:
             raise
-        except TimeoutError:
-            raise ReviewRequired("model_test_timeout") from None
-        except Exception:
-            # SDK errors can contain request bodies, URLs and credentials. Only
-            # these fixed identifiers reach task storage or the browser.
-            raise ReviewRequired("model_test_provider_failed") from None
+        except Exception as exc:
+            code = "model_test_timeout" if isinstance(exc, TimeoutError) else "model_test_provider_failed"
+            error = ReviewRequired(code)
+            error.failure_stage = diagnostics.get("failure_stage") or (
+                "provider_call" if diagnostics.get("call_started") else "provider_setup")
+            error.http_status = http_status(exc)
+            raise error from None
         result = {"ok": True, "kind": kind, "provider_id": provider_id, "model": model,
                   "elapsed_ms": round((time.monotonic() - started) * 1000, 2)}
         if dimension is not None:

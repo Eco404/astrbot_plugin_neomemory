@@ -167,4 +167,12 @@ class SettingsAPI:
                 "model_test_timeout": "模型连通性测试超时。",
                 "model_test_provider_failed": "模型调用失败，请检查 Provider 配置。",
             }[exc.code]
-            return error_response(message, status_code=502, data={"error_code": exc.code})
+            diagnostic = {"error_code": exc.code}
+            if stage := getattr(exc, "failure_stage", None):
+                diagnostic["failure_stage"] = stage
+                if stage == "provider_queue":
+                    message = "等待模型并发名额超时，请稍后重新测试。"
+            if status := getattr(exc, "http_status", None):
+                diagnostic["http_status"] = status
+                message += f" 上游 HTTP {status}。"
+            return error_response(message, status_code=502, data=diagnostic)
