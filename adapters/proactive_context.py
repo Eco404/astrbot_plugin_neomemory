@@ -23,7 +23,8 @@ def missing_deliveries(history, contexts):
     available = Counter(_assistant_texts(contexts))
     missing = []
     for contact, rows in groupby(reversed(history), key=lambda row: row.get("proactive_contact_id")):
-        texts = [row["content_text"] for row in rows if row.get("delivered_proactive")]
+        texts = [text for row in rows if row.get("delivered_proactive")
+                 for text in row.get("delivered_texts", [row["content_text"]])]
         if not texts:
             continue
         if contact and len(texts) > 1:

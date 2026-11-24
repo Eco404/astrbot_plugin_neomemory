@@ -19,10 +19,12 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from ..core.proactive_delivery import PART_WAIT_SECONDS, merge_deliveries
     from ..core.text_cleaning import RECEIPT_PROJECTION_FIELDS, receipt_text_matches
     from ..core.identity import EventIdentity
     from ..core.source_ingest import CapturedSource
 except ImportError:
+    from core.proactive_delivery import PART_WAIT_SECONDS, merge_deliveries
     from core.text_cleaning import RECEIPT_PROJECTION_FIELDS, receipt_text_matches
     from core.identity import EventIdentity
     from core.source_ingest import CapturedSource
@@ -214,7 +216,16 @@ class IngressStore:
                     (source.source_id,),
                 )
             ).fetchone()
-            if existing is not None:
+            parts = source.metadata.get("delivery_parts")
+            if existing is not None and parts:
+                queued = _deserialize(existing["payload_json"])
+                merged = merge_deliveries(queued.content_text, queued.metadata, source)
+                if merged is None:
+                    return self._public(existing)
+                source = merged
+                payload, digest = _serialize(source)
+                size = len(payload.encode("utf-8"))
+            elif existing is not None:
                 if existing["payload_hash"] != digest and not _same_queued_receipt(existing, source):
                     raise IngressError("ingress_source_conflict")
                 return self._public(existing)
@@ -223,28 +234,32 @@ class IngressStore:
                     "SELECT COUNT(*) AS count,COALESCE(SUM(payload_bytes),0) AS bytes FROM ingress_records"
                 )
             ).fetchone()
-            if counts["count"] >= self.max_entries:
+            if existing is None and counts["count"] >= self.max_entries:
                 raise IngressError("ingress_entry_limit")
-            if size > self.max_bytes or counts["bytes"] + size > self.max_bytes:
+            previous_size = existing["payload_bytes"] if existing is not None else 0
+            if counts["bytes"] - previous_size + size > self.max_bytes:
                 raise IngressError("ingress_byte_limit")
-            await connection.execute(
-                """
-                INSERT INTO ingress_records(source_id,stream_id,payload_json,payload_hash,
-                    payload_bytes,state,max_attempts,available_at,created_at,updated_at)
-                VALUES(?,?,?,?,?,'queued',?,?,?,?)
-            """,
-                (
-                    source.source_id,
-                    source.identity.stream_id,
-                    payload,
-                    digest,
-                    size,
-                    max_attempts,
-                    now,
-                    now,
-                    now,
-                ),
-            )
+            available_at = now
+            if parts and len(source.metadata["delivery_parts"]) < (source.metadata["part_count"] or 1):
+                available_at += PART_WAIT_SECONDS
+            if existing is not None:
+                # A worker may still hold the previous snapshot. Its acknowledgement
+                # cannot remove the extended contact after its lease is replaced.
+                await connection.execute(
+                    "UPDATE ingress_records SET payload_json=?,payload_hash=?,payload_bytes=?,"
+                    "state='queued',attempts=0,available_at=?,updated_at=?,lease_token=NULL,"
+                    "lease_until=NULL,error_code=NULL WHERE source_id=?",
+                    (payload, digest, size, available_at, now, source.source_id))
+            else:
+                await connection.execute(
+                    """
+                    INSERT INTO ingress_records(source_id,stream_id,payload_json,payload_hash,
+                        payload_bytes,state,max_attempts,available_at,created_at,updated_at)
+                    VALUES(?,?,?,?,?,'queued',?,?,?,?)
+                    """,
+                    (source.source_id, source.identity.stream_id, payload, digest, size,
+                     max_attempts, available_at, now, now),
+                )
             row = await (
                 await connection.execute(
                     "SELECT * FROM ingress_records WHERE source_id=?",

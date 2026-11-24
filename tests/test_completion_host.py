@@ -142,7 +142,7 @@ async def test_delivery_does_not_overtake_unpersisted_chat_in_same_stream(plugin
     plugin = await plugin_factory({"automatic_extraction_enabled": False})
     await _controlled_ingress(plugin)
     record = receipt(1, 150)
-    delivery = plugin.external_memory._delivery(record)
+    delivery = plugin.external_memory._contact(plugin.external_memory._delivery(record), record)
     earlier = replace(make_source("original"), identity=replace(delivery.identity, message_id="original"))
     with monkeypatch.context() as patch:
         async def offline(*args, **kwargs):

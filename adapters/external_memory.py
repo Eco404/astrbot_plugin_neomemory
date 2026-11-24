@@ -19,8 +19,10 @@ from typing import Any
 from .platforms import platform_name
 
 try:
+    from ..core.proactive_delivery import contact_source
     from ..core.persona_policy import is_supported_persona
 except ImportError:
+    from core.proactive_delivery import contact_source
     from core.persona_policy import is_supported_persona
 
 try:
@@ -447,7 +449,12 @@ class ExternalMemoryAdapter:
                               persona_id=_text(meta.get("host_persona_id")) or None)
 
     def delivered_source_id(self, record):
-        return self._delivery(record).source_id
+        return self._contact(self._delivery(record), record).source_id
+
+    @staticmethod
+    def _contact(segment, record):
+        return contact_source(segment, record["context"]["scope"]["installation_id"],
+                              record["metadata"].get("part_count"))
 
     async def delivery_space(self, record):
         source = self._delivery(record, cleaner=self.plugin.source_store.cleaner)
@@ -466,12 +473,14 @@ class ExternalMemoryAdapter:
             return None
         adapter = platform_name(self.plugin.context, source.identity.platform_instance_id) or ""
         source = replace(source, identity=replace(source.identity, platform_name=adapter))
-        if await self.plugin.source_store.has_delivery(source):
-            return source.source_id
+        contact = self._contact(source, record)
+        existing = await self.plugin.source_store.confirmed_delivery(source, contact)
+        if existing:
+            return existing
         if not source.content_text.strip():
             return None
-        submitted = await self.plugin.submit_sources((source,))
-        return source.source_id if submitted.durable and submitted.state != "failed" else None
+        submitted = await self.plugin.submit_sources((contact,))
+        return contact.source_id if submitted.durable and submitted.state != "failed" else None
 
     async def write(self, record: Any) -> str | None:
         """Persist a companion life/proactive record through durable ingress."""

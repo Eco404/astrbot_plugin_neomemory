@@ -166,3 +166,26 @@ SOURCE_SCHEMA = (
     )
     """,
 )
+
+
+SOURCE_FORMAT_REVISION = "v2-dev.1"
+
+
+async def initialize_source_schema(database):
+    from .schema import initialize_schema
+
+    version = await initialize_schema(database, SOURCE_SCHEMA)
+    async with database.transaction() as connection:
+        await connection.execute("CREATE TABLE IF NOT EXISTS source_format (revision TEXT PRIMARY KEY)")
+        row = await (await connection.execute("SELECT revision FROM source_format")).fetchone()
+        if row is None:
+            await connection.execute("""
+                CREATE TABLE proactive_receipt_sources (
+                    receipt_source_id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL REFERENCES source_records(source_id) ON DELETE CASCADE
+                )
+            """)
+            await connection.execute("INSERT INTO source_format VALUES (?)", (SOURCE_FORMAT_REVISION,))
+        elif row[0] != SOURCE_FORMAT_REVISION:
+            raise RuntimeError(f"Unsupported source.db development revision: {row[0]}")
+    return version

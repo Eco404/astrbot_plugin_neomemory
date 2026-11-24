@@ -11,19 +11,21 @@ from typing import Any
 
 try:
     from ..core.extraction_errors import ExtractionWindowChanged
+    from ..core.proactive_delivery import merge_deliveries, part_texts
     from ..core.group_addressing import address_entries
     from ..core.text_cleaning import DEFAULT_CLEANER, RECEIPT_PROJECTION_FIELDS, receipt_text_matches
     from ..core.image_capture import project_images, without_image_data
     from ..core.source_ingest import CapturedSource
 except ImportError:  # Tests import ``storage`` directly from the plugin root.
     from core.extraction_errors import ExtractionWindowChanged
+    from core.proactive_delivery import merge_deliveries, part_texts
     from core.group_addressing import address_entries
     from core.text_cleaning import DEFAULT_CLEANER, RECEIPT_PROJECTION_FIELDS, receipt_text_matches
     from core.image_capture import project_images, without_image_data
     from core.source_ingest import CapturedSource
 
-from .source_schema import SOURCE_SCHEMA
-from .schema import CURRENT_SCHEMA_VERSION, initialize_schema
+from .source_schema import SOURCE_FORMAT_REVISION, initialize_source_schema
+from .schema import CURRENT_SCHEMA_VERSION
 from .social_accounts import AmbiguousAccountOwner, account_routes, delivery_owner, group_accounts, register_platform, resolve_owner
 from .sqlite_executor import SQLiteExecutor
 
@@ -49,7 +51,7 @@ class SourceStore:
     async def open(self) -> None:
         await self.database.open()
         try:
-            self.schema_version = await initialize_schema(self.database, SOURCE_SCHEMA)
+            self.schema_version = await initialize_source_schema(self.database)
         except BaseException:
             await self.database.close()
             raise
@@ -70,6 +72,7 @@ class SourceStore:
             "exists": self.path.exists(),
             "schema_version": self.schema_version,
             "expected_schema_version": CURRENT_SCHEMA_VERSION,
+            "schema_revision": SOURCE_FORMAT_REVISION,
             "source_count": int(row["count"] if row else 0),
             "stream_count": int(stream_row["count"] if stream_row else 0),
             "last_source_write_at": stream_row["last_write"],
@@ -90,9 +93,33 @@ class SourceStore:
                 raise ValueError("delivery id conflicts with existing source")
         return row
 
-    async def has_delivery(self, source):
+    async def confirmed_delivery(self, segment, contact):
         async with self.database.transaction(write=False) as connection:
-            return await self._delivery_row(connection, source) is not None
+            # Source links created by the per-segment writer remain valid on replay.
+            legacy = await self._delivery_row(connection, segment)
+            if legacy:
+                return legacy["source_id"]
+            row = await (await connection.execute(
+                "SELECT r.source_id,r.content_text,r.metadata_json FROM proactive_receipt_sources p "
+                "JOIN source_records r ON r.source_id=p.source_id WHERE p.receipt_source_id=?",
+                (segment.source_id,))).fetchone()
+            if row is None:
+                return None
+            if row["source_id"] != contact.source_id:
+                raise ValueError("delivery id conflicts with existing source")
+            if merge_deliveries(row["content_text"], json.loads(row["metadata_json"]), contact) is not None:
+                raise ValueError("delivery sequence conflicts with existing source")
+            return row["source_id"]
+
+    @staticmethod
+    async def _index_delivery_parts(connection, source):
+        for part in source.metadata["delivery_parts"]:
+            result = await connection.execute(
+                "INSERT INTO proactive_receipt_sources(receipt_source_id,source_id) VALUES (?,?) "
+                "ON CONFLICT(receipt_source_id) DO UPDATE SET source_id=excluded.source_id "
+                "WHERE source_id=excluded.source_id", (part["receipt_source_id"], source.source_id))
+            if not result.rowcount:
+                raise ValueError("delivery id conflicts with existing source")
 
     @staticmethod
     async def _group_addresses(connection, source):
@@ -169,7 +196,22 @@ class SourceStore:
                     (identity.platform_instance_id, identity.group_id, identity.group_name, source.observed_at),
                 )
             delivered = metadata.get("delivered_proactive") is True
-            if delivered:
+            if metadata.get("delivery_parts"):
+                existing = await (await connection.execute(
+                    "SELECT * FROM source_records WHERE source_id=?", (source.source_id,))).fetchone()
+                if existing:
+                    merged = merge_deliveries(existing["content_text"], json.loads(existing["metadata_json"]), source)
+                    if merged:
+                        await self._index_delivery_parts(connection, source)
+                        await connection.execute(
+                            "UPDATE source_records SET content_text=?,observed_at=?,source_hash=?,metadata_json=? "
+                            "WHERE source_id=?", (merged.content_text, merged.observed_at,
+                                hashlib.sha256(merged.content_text.encode()).hexdigest(),
+                                json.dumps(merged.metadata, ensure_ascii=False), source.source_id))
+                        await connection.execute(
+                            "UPDATE conversation_streams SET last_observed_at=MAX(last_observed_at,?),updated_at=? "
+                            "WHERE stream_id=?", (merged.observed_at, now, identity.stream_id))
+            elif delivered:
                 existing = await self._delivery_row(connection, source)
             else:
                 existing = await (await connection.execute(
@@ -326,6 +368,8 @@ class SourceStore:
                     CURRENT_SCHEMA_VERSION,
                 ),
             )
+            if metadata.get("delivery_parts"):
+                await self._index_delivery_parts(connection, source)
             participant_values = []
             for participant_id in source.participant_ids:
                 participant_key = f"account:{participant_id}"
@@ -704,7 +748,8 @@ class SourceStore:
         rows = await self.database.fetchall(
             f"""SELECT source_id,actor_kind,content_text,observed_at,{recall_fields}
                 json_extract(metadata_json,'$.delivered_proactive') AS delivered_proactive,
-                json_extract(metadata_json,'$.proactive_contact_id') AS proactive_contact_id FROM source_records r
+                json_extract(metadata_json,'$.proactive_contact_id') AS proactive_contact_id,
+                json_extract(metadata_json,'$.delivery_parts') AS delivery_parts FROM source_records r
             WHERE stream_id=? AND persona_id=? AND identity_pending=0 AND source_type='conversation'
               AND actor_kind IN ('user','agent') AND observed_at>=? AND observed_at<=?
               AND NOT (actor_kind='user' AND COALESCE(message_id,'')=? AND ?<>'')
@@ -725,6 +770,9 @@ class SourceStore:
         result = []
         for row in rows:
             item = dict(row)
+            parts = item.pop("delivery_parts")
+            if parts:
+                item["delivered_texts"] = part_texts(item["content_text"], json.loads(parts))
             if not item["delivered_proactive"]:
                 del item["delivered_proactive"], item["proactive_contact_id"]
             result.append(item)

@@ -1,6 +1,6 @@
 # NeoMemory 数据库结构
 
-memory.db 的 SQLite `user_version` 为 2，任务恢复格式的开发修订为 `v3-dev.2`，保存在 `pipeline_state` 表的 `memory_format_revision` 键中。首次打开 v1 库时在事务内升级，已有空间默认关闭共享并继承插件模型。其他三个库的格式为 v1。数据目录由 AstrBot 的 `StarTools.get_data_dir("astrbot_plugin_neomemory")` 提供。每个文件独立记录 schema 版本。数据库结构版本用于识别文件格式，节点、画像和关系的内容版本则用于记录某个实体在使用过程中的修订。
+memory.db 的 SQLite `user_version` 为 2，任务恢复格式的开发修订为 `v3-dev.2`，保存在 `pipeline_state` 表的 `memory_format_revision` 键中。首次打开 v1 库时在事务内升级，已有空间默认关闭共享并继承插件模型。source.db 的 SQLite `user_version` 为 1，`source_format` 表记录开发修订 `v2-dev.1`。ingress.db 和 cache.db 的格式为 v1。数据目录由 AstrBot 的 `StarTools.get_data_dir("astrbot_plugin_neomemory")` 提供。每个文件独立记录 schema 版本。数据库结构版本用于识别文件格式，节点、画像和关系的内容版本则用于记录某个实体在使用过程中的修订。
 
 | 数据库 | 持久内容 | 写入与清理 |
 | --- | --- | --- |
@@ -8,6 +8,8 @@ memory.db 的 SQLite `user_version` 为 2，任务恢复格式的开发修订为
 | `source.db` | 带序号和观察时间的原始消息、外部来源、参与者、会话流、逻辑用户及账号归属、图片文字依据 | 原始记录供重放，插件不自动清理 |
 | `memory.db` | 空间与记忆代、节点及成员、强度、版本来源、画像、关系、短期摘要、笔记、任务和恢复凭据 | 派生变化与其提交凭据通过事务写入，重构成功后才发布 |
 | `cache.db` | 按模型、文本或节点版本区分的查询与节点向量 | 可重新计算，按配置清理 |
+
+`proactive_receipt_sources` 将每份已入库的分段回执关联到同一主动联系的会话原文，正文和回执索引在同一事务中写入。
 
 成功采集的人格回复可在来源元数据中记录请求 Provider、模型选择依据、显式模型覆盖值及响应报告的模型名。历史来源缺少这些字段时，可在空间设置或手动任务中指定可调用的模型。
 
