@@ -418,6 +418,38 @@ async def text_cleaning_controls(page, frame, harness):
     assert harness.plugin.cleaning_settings.config['root_order'][-1]['kind'] == 'group'
 
 
+async def context_governance_lifecycle(page, frame, harness):
+    space = harness.space['space_id']
+    await harness.plugin.memory_store.upsert_short_term(
+        space_id=space, conversation_id='synthetic-dialog', summary_text='Previous summary')
+    manual = frame.locator('[data-maintenance-tab="manual"]')
+
+    async def submit(control):
+        async with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/tasks')) as sent:
+            await control.click()
+        response = await sent.value
+        assert response.status == 200, await response.text()
+        job = await response.json()
+        await await_job(harness, job['job_id'])
+        await manual.click()
+
+    await manual.click()
+    for kind, field, content in (
+        ('profiles', '画像正文', 'Prefers the morning shift.'),
+        ('relationships', '近期余韵', 'I still feel grateful for the call.'),
+        ('short_term', '摘要正文', 'Continue discussing the timetable.'),
+    ):
+        section = frame.locator(f'[data-context-governance="{kind}"]')
+        card = section.locator('article')
+        await card.get_by_role('button', name='编辑', exact=True).click()
+        await card.get_by_label(field, exact=True).fill(content)
+        await submit(card.get_by_role('button', name='提交修改'))
+        await expect(card.locator('.body').filter(has_text=content)).to_be_visible()
+        await card.get_by_role('button', name='删除', exact=True).click()
+        await submit(card.get_by_role('button', name='确认删除'))
+        await expect(section).to_contain_text('当前空间暂无')
+
+
 async def main():
     with tempfile.TemporaryDirectory(prefix="neomemory-host-ui-") as directory:
         harness = HostConsoleHarness(Path(directory))
@@ -704,6 +736,7 @@ async def main():
                 await frame.locator("#notes-list").filter(has_text="Synthetic note after runtime reload").wait_for()
                 assert await frame.locator("#notes-list article").count() == 1
                 governance_result = await governance_lifecycle(page, frame, harness)
+                await context_governance_lifecycle(page, frame, harness)
                 await page.screenshot(path="/tmp/neomemory-host-console-desktop.png", full_page=True)
                 await page.set_viewport_size({"width": 390, "height": 844})
                 for name in ("memory", "notes", "models", "settings", "maintenance"):
