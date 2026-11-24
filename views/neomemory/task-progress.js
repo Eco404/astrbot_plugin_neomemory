@@ -1,4 +1,4 @@
-import { element } from './ui.js';
+import { date, element } from './ui.js';
 
 const activeStates = new Set(['queued', 'running', 'retry_wait']);
 export function formatDuration(seconds) {
@@ -11,6 +11,7 @@ export function formatDuration(seconds) {
 export function taskTiming(job) {
   const node = element('p', '', 'task-timing');
   node.dataset.created = job.created_at ?? '';
+  node.dataset.started = date(job.created_at);
   node.dataset.ended = activeStates.has(job.state) ? '' : job.updated_at ?? '';
   node.dataset.active = String(activeStates.has(job.state));
   updateTiming(node);
@@ -19,7 +20,7 @@ export function taskTiming(job) {
 function updateTiming(node) {
   const end = node.dataset.active === 'true' ? Date.now() / 1000 : Number(node.dataset.ended);
   const known = node.dataset.created !== '' && (node.dataset.active === 'true' || node.dataset.ended !== '');
-  node.textContent = '总用时：' + (known ? formatDuration(end - Number(node.dataset.created)) : '未记录');
+  node.textContent = `启动时间：${node.dataset.started} · 总用时：${known ? formatDuration(end - Number(node.dataset.created)) : '未记录'}`;
 }
 function updateRecovery(node) {
   const seconds = Math.max(0, Math.ceil(Number(node.dataset.available) - Date.now() / 1000));
