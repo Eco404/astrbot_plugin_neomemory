@@ -24,7 +24,7 @@ except ImportError:  # Tests import ``storage`` directly from the plugin root.
     from core.image_capture import project_images, without_image_data
     from core.source_ingest import CapturedSource
 
-from .source_schema import SOURCE_FORMAT_REVISION, initialize_source_schema
+from .source_schema import SOURCE_FORMAT, initialize_source_schema
 from .schema import CURRENT_SCHEMA_VERSION
 from .social_accounts import AmbiguousAccountOwner, account_routes, delivery_owner, group_accounts, register_platform, resolve_owner
 from .sqlite_executor import SQLiteExecutor
@@ -71,8 +71,8 @@ class SourceStore:
             "path": str(self.path),
             "exists": self.path.exists(),
             "schema_version": self.schema_version,
-            "expected_schema_version": CURRENT_SCHEMA_VERSION,
-            "schema_revision": SOURCE_FORMAT_REVISION,
+            "expected_schema_version": SOURCE_FORMAT,
+            "schema_revision": f"v{SOURCE_FORMAT}",
             "source_count": int(row["count"] if row else 0),
             "stream_count": int(stream_row["count"] if stream_row else 0),
             "last_source_write_at": stream_row["last_write"],

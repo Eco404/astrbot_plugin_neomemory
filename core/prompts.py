@@ -102,7 +102,7 @@ ${slot_body}""")
 
 
 def schema_for_prompt_version(prompt_version: str) -> str:
-    if prompt_version not in {"extraction-prompt.v1", "extraction-prompt.v2", "extraction-prompt.v3-dev.1", PROMPT_VERSION}:
+    if prompt_version not in {"extraction-prompt.v1", "extraction-prompt.v2", PROMPT_VERSION}:
         raise ValueError(f"unsupported prompt version {prompt_version!r}")
     return SCHEMA_VERSION
 
@@ -161,7 +161,7 @@ def build_extraction_prompt(
     basis = _PREVIOUS_BASIS_RULES
     extra_budget = _PREVIOUS_BUDGET_RULE
     slot_body = SLOT_BODY_RULE
-    if selected_version in {"extraction-prompt.v3-dev.1", PROMPT_VERSION}:
+    if selected_version == PROMPT_VERSION:
         relationship = "群聊的relationship_change固定为null。\n" if is_group else RELATIONSHIP_RULES
         if is_group:
             subjective = "对群成员的猜测不能升级成节点或画像中的客观事实。"

@@ -13,7 +13,7 @@ from tests.test_regeneration_contract import complete_candidate
 def test_default_prompt_matches_slot_and_emotion_schema():
     messages = build_extraction_prompt(persona='合成人格', sources=[])
     system = messages[0]['content'].split('\nJSON schema:\n')[0]
-    assert PROMPT_VERSION == 'extraction-prompt.v3-dev.2' and SCHEMA_VERSION == 'extraction.v1'
+    assert PROMPT_VERSION == 'extraction-prompt.v3' and SCHEMA_VERSION == 'extraction.v1'
     assert schema_for_prompt_version(PROMPT_VERSION) == SCHEMA_VERSION
     assert 'state_text' not in system and 'emotion_intensity' not in system
     assert '{tags,intensity,description}' not in system

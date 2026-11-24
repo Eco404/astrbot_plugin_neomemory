@@ -5,7 +5,7 @@ import pytest
 
 from core.identity import EventIdentity, default_logical_user_id
 from core.source_ingest import CapturedSource
-from storage.schema import CURRENT_SCHEMA_VERSION
+from storage.source_schema import SOURCE_FORMAT
 from storage.source_store import SourceStore
 
 
@@ -44,7 +44,7 @@ async def test_source_store_initializes_and_deduplicates(tmp_path):
     duplicate = await store.capture(make_source())
     second = await store.capture(make_source("m-2", "second"))
 
-    assert store.schema_version == CURRENT_SCHEMA_VERSION == 1
+    assert store.schema_version == SOURCE_FORMAT == 2
     assert first.inserted is True
     assert duplicate.inserted is False
     assert duplicate.sequence_no == first.sequence_no == 1
@@ -305,7 +305,7 @@ async def test_recent_conversation_does_not_guess_old_records_into_new_host_conv
             base.identity.stream_id, "persona-default", since=0, until=1000,
             host_conversation_id="unknown-conversation",
         ) == []
-        assert store.schema_version == CURRENT_SCHEMA_VERSION
+        assert store.schema_version == SOURCE_FORMAT
     finally:
         await store.close()
 

@@ -54,7 +54,7 @@ def scoped_messages(messages, kind, schema, *, prompt_version):
         duties.append(profile_rules(prompt_version))
     if kind != "profile_rebuild":
         fields.append("known_relationship")
-        relationship = RELATIONSHIP_RULES if prompt_version in {"extraction-prompt.v3-dev.1", PROMPT_VERSION} else COMPACT_RELATIONSHIP_RULES
+        relationship = RELATIONSHIP_RULES if prompt_version == PROMPT_VERSION else COMPACT_RELATIONSHIP_RULES
         duties.extend([relationship, SLOT_BODY_RULE])
     if any("forwarded_messages" in source for source in payload["sources"]):
         duties.append(FORWARDED_SOURCE_RULE)

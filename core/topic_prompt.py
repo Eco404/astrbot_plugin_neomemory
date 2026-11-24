@@ -9,7 +9,7 @@ from .window_users import WindowUsers
 from .topic_schema import MAX_OUTPUT_CHARS, VERSION, model_output_schema
 from .memory_text import memory_texts, user_reference_ids
 
-PROMPT_VERSION = "topic-prompt.v1"
+PROMPT_VERSION = "topic-prompt.v2"
 
 RULES = """你为当前人格整理已有记忆的持续关联。事件和原子的正文已经保存；本任务只创建或更新topic，不改写、合并或删除成员节点，不重新抽取会话、画像或人格关系。
 

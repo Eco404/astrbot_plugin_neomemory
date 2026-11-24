@@ -16,7 +16,7 @@ from .source_fragments import fragment_info
 from .extraction_errors import DuplicateJSONKey
 
 SCHEMA_VERSION = "short-term.v1"
-PROMPT_VERSION = "short-term.v2-dev.1"
+PROMPT_VERSION = "short-term.v2"
 MAX_OUTPUT_BYTES = 100_000
 HOST_SUMMARY_PREFIX = "Our previous history conversation summary:"
 

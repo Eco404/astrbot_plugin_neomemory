@@ -176,7 +176,7 @@ async def test_existing_per_segment_source_survives_source_format_upgrade_and_re
     await plugin.terminate()
     with sqlite3.connect(tmp_path / "source.db") as database:
         database.execute("DROP TABLE proactive_receipt_sources")
-        database.execute("DROP TABLE source_format")
+        database.execute("PRAGMA user_version=1")
 
     plugin = await plugin_factory(directory=tmp_path)
     assert await plugin.external_memory.write(item) == legacy.source_id

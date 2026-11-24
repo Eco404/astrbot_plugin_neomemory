@@ -145,7 +145,7 @@ async def test_memory_store_lifecycle_and_source_validation(tmp_path, monkeypatc
             await memory_store.add_node_source(node["node_id"], "missing-source")
         health = await plugin.api_health()
         assert health["ready"] is True
-        assert health["maintenance"]["extraction_prompt_version"] == "extraction-prompt.v3-dev.2"
+        assert health["maintenance"]["extraction_prompt_version"] == "extraction-prompt.v3"
         assert health["source_count"] == 1
         assert health["memory"]["node_count"] == 1
         assert health["memory"]["schema_version"] == MEMORY_FORMAT
@@ -284,7 +284,7 @@ async def test_stage_one_host_capture_and_restart(tmp_path: Path, monkeypatch):
     await restarted.initialize()
     health = await restarted.source_store.health()  # type: ignore[union-attr]
     assert health["source_count"] == 3
-    from storage.schema import CURRENT_SCHEMA_VERSION as SOURCE_SCHEMA_VERSION
+    from storage.source_schema import SOURCE_FORMAT as SOURCE_SCHEMA_VERSION
     assert health["schema_version"] == SOURCE_SCHEMA_VERSION
     await restarted.terminate()
 

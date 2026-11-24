@@ -60,8 +60,8 @@ async def test_profile_edits_preserve_frozen_details_and_history(environment, ki
 
 
 @pytest.mark.parametrize("version,expected", [
-    ("extraction-prompt.v3-dev.1", "参加器乐团。"),
-    ("extraction-prompt.v3-dev.2", "An instrument owner. 参加器乐团。"),
+    ("extraction-prompt.v2", "参加器乐团。"),
+    ("extraction-prompt.v3", "An instrument owner. 参加器乐团。"),
 ])
 def test_text_output_under_frozen_prompt_keeps_protocol_semantics(batch, version, expected):
     refs = ExtractionReferences(replace(batch, prompt_version=version))

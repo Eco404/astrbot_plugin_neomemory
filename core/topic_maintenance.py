@@ -202,6 +202,8 @@ class TopicMaintenanceMixin:
                 if str(exc) in TOPIC_CONTEXT_ERRORS:
                     raise ReviewRequired("context_changed") from None
                 raise
+        if window["prepared"]["prompt_version"] != self.topic_prompt_version:
+            raise ReviewRequired("configuration_changed")
         messages = build_messages(persona, window["prepared"]["nodes"], window["prepared"]["edges"],
                                   evidence=window["prepared"].get("evidence", ()),
                                   related_topics=window["prepared"].get("related_topics", ()),
