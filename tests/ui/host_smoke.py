@@ -291,6 +291,16 @@ async def text_cleaning_controls(page, frame, harness):
     await expect(preset_rows.nth(1)).to_be_visible()
     preset_count = await preset_rows.count()
     preset = preset_rows.first
+    desktop = page.viewport_size
+    for width in (320, 390):
+        await page.set_viewport_size({"width": width, "height": 844})
+        for row in (header, preset):
+            label = await row.locator('.cleaning-label').bounding_box()
+            edit = await row.get_by_role('button', name='编辑').bounding_box()
+            bounds = await row.bounding_box()
+            assert abs(label['x'] + label['width'] - bounds['x'] - bounds['width']) <= 1
+            assert edit['y'] >= label['y'] + label['height']
+    await page.set_viewport_size(desktop)
     await preset.get_by_role('button', name='编辑').click()
     await expect(dialog.get_by_label('规则类型')).to_have_value('regex')
     assert await dialog.get_by_label('匹配内容').input_value()

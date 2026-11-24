@@ -550,11 +550,11 @@ button.primary, button.primary:hover:not(:disabled) { background: var(--accent-s
 @media (max-width: 380px) { .appearance-sliders { grid-template-columns: 1fr; gap: 4px; } }
 
 
-#cleaning-list { margin-top: 16px; }
+#cleaning-list { container-type: inline-size; margin-top: 16px; }
 .cleaning-group { padding: 0 14px; margin: 12px 0; border: 1px solid var(--line-soft); border-radius: var(--radius); }
-.cleaning-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
+.cleaning-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) repeat(3, auto); align-items: center; gap: 8px; padding: 8px 0; }
 .cleaning-row + .cleaning-row { border-top: 1px solid var(--line-soft); }
-.cleaning-row .cleaning-label { flex: 1 1 9rem; min-width: 0; overflow-wrap: anywhere; }
+.cleaning-label { min-width: 0; overflow-wrap: anywhere; }
 .cleaning-group > .cleaning-row { padding-block: 0; }
 .cleaning-row button.cleaning-disclosure {
   align-self: stretch; flex-direction: column; align-items: flex-start; gap: 0;
@@ -566,7 +566,12 @@ button.primary, button.primary:hover:not(:disabled) { background: var(--accent-s
 .cleaning-disclosure[aria-expanded="true"] strong::before { transform: translateY(-.15em) rotate(45deg); }
 .cleaning-row small { display: block; color: var(--text-muted); }
 .cleaning-row[data-effective="false"] .cleaning-label { color: var(--text-muted); }
-.cleaning-row input.toggle { flex-shrink: 0; }
+.cleaning-row input.toggle { grid-column: 5; }
+@container (max-width: 34rem) {
+  .cleaning-label { grid-column: 2 / -1; }
+  .cleaning-label + button { grid-column: 3; }
+  .cleaning-group > .cleaning-row { padding-bottom: 8px; }
+}
 .cleaning-group .cleaning-members { border-inline-start: 2px solid var(--line-soft); padding-inline-start: 12px; }
 #cleaning-dialog:has(#cleaning-rule-fields:not([hidden])) { width: min(720px, calc(100vw - 32px)); }
 #cleaning-form .row { justify-content: flex-end; margin-top: 18px; }
@@ -575,7 +580,7 @@ button.primary, button.primary:hover:not(:disabled) { background: var(--accent-s
 @media (max-width: 520px) {
   #page-maintenance > .switches { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
-.cleaning-grip { display: inline-grid; flex: 0 0 28px; place-items: center; align-self: stretch; color: var(--text-muted); cursor: grab; touch-action: none; user-select: none; font-size: 22px; }
+.cleaning-grip { display: inline-grid; place-items: center; align-self: stretch; color: var(--text-muted); cursor: grab; touch-action: none; user-select: none; font-size: 22px; }
 .cleaning-dragging .cleaning-grip { cursor: grabbing; }
 .cleaning-dragging { opacity: .65; }
 #cleaning-list [data-drop="before"] { box-shadow: 0 -3px var(--accent); }

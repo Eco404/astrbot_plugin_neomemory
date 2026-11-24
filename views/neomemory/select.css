@@ -10,6 +10,7 @@ select {
   text-overflow: ellipsis;
 }
 select:disabled { color: var(--text-muted); cursor: not-allowed; }
+:where(select:not([multiple])) { inline-size: 10rem; }
 select[multiple] { padding: 6px; overflow: auto; overscroll-behavior: contain; }
 select[multiple] option { padding: 8px 10px; border-radius: 6px; }
 select[multiple] option:checked { background: var(--accent-soft); color: var(--accent-strong); }
@@ -63,9 +64,9 @@ select[multiple] option:checked { background: var(--accent-soft); color: var(--a
   select:not([multiple]):open::picker-icon { transform: rotate(180deg); }
   select:not([multiple])::picker(select) {
     box-sizing: border-box;
-    inline-size: anchor-size(self-inline);
-    min-inline-size: anchor-size(self-inline);
-    max-inline-size: calc(100dvw - 16px);
+    inline-size: max-content;
+    min-inline-size: min(anchor-size(self-inline), calc(100dvw - 24px));
+    max-inline-size: calc(100dvw - 24px);
     max-block-size: min(320px, calc(100dvh - 16px));
     margin-block: 4px;
     padding: 4px;
@@ -80,15 +81,14 @@ select[multiple] option:checked { background: var(--accent-soft); color: var(--a
     -webkit-backdrop-filter: blur(22px) saturate(112%);
   }
   select:not([multiple]) option {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    display: block;
     min-block-size: 36px;
     padding: 7px 10px;
     box-sizing: border-box;
     border-radius: 7px;
-    white-space: normal;
-    overflow-wrap: anywhere;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     color: var(--text);
     background: transparent;
   }
@@ -97,10 +97,10 @@ select[multiple] option:checked { background: var(--accent-soft); color: var(--a
   select:not([multiple]) option:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   select:not([multiple]) option:disabled { color: var(--text-muted); }
   select:not([multiple]) option::checkmark {
-    display: block;
+    display: inline-block;
     content: "";
-    order: -1;
-    flex: 0 0 14px;
+    margin-inline-end: 8px;
+    vertical-align: -.12em;
     width: 14px;
     height: 14px;
     visibility: hidden;

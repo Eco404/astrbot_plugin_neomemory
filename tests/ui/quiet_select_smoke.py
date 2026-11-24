@@ -73,6 +73,21 @@ async def primitive(page, origin, theme, width, engine):
     await page.select_option("#multiple", ["one", "three"])
     assert await page.locator("#multiple").evaluate("s => [...s.selectedOptions].map(o => o.value)") == ["one", "three"]
 
+    # A short selection in a narrow filter must still expose longer Chinese choices.
+    await choice.evaluate("""s => {
+      s.style.width = '76px';
+      s.replaceChildren(new Option('喜悦'), new Option('尚未设置情绪的记忆'));
+      window.testEnhanceSelect(s);
+    }""")
+    await choice.click()
+    options = choice.locator("option")
+    short_box = await options.first.bounding_box()
+    long_box = await options.last.bounding_box()
+    assert long_box["width"] > 76 and long_box["height"] == short_box["height"], long_box
+    assert await options.last.evaluate("o => o.scrollWidth <= o.clientWidth")
+    await options.last.click()
+    assert (await choice.bounding_box())["width"] == 76
+
     # Platform selection remains compatible with the plugin's existing events.
     await choice.evaluate("s => s.replaceChildren(new Option('Delta', 'delta'), new Option('Echo', 'echo'))")
     await choice.evaluate("s => window.testEnhanceSelect(s)")
