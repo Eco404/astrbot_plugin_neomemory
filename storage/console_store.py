@@ -9,6 +9,7 @@ import time
 import uuid
 
 try:
+    from ..core.attempts import observe_commit
     from ..core.jobs import ReviewRequired
     from ..core.memory_emotions import EMOTION_TAGS
     from ..core.memory_nodes import NODE_STATUSES, NODE_TYPES
@@ -16,6 +17,7 @@ try:
     from ..core.memory_text import memory_texts, render_display_text, render_memory_item, user_reference_ids
     from ..core.persona_policy import is_supported_persona
 except ImportError:
+    from core.attempts import observe_commit
     from core.jobs import ReviewRequired
     from core.memory_emotions import EMOTION_TAGS
     from core.memory_nodes import NODE_STATUSES, NODE_TYPES
@@ -445,4 +447,5 @@ class NoteService:
             result = {"note_id": note_id, "space_id": space_id, "action": action, "status": status, "updated_at": now}
             await connection.execute("INSERT INTO note_receipts(job_id,space_id,note_id,input_digest,result_json,committed_at) "
                 "VALUES (?,?,?,?,?,?)", (job["job_id"], space_id, note_id, digest, json.dumps(result, sort_keys=True), now))
-            return {**result, "replayed": False}
+        observe_commit()
+        return {**result, "replayed": False}

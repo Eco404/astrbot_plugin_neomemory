@@ -350,6 +350,8 @@ class ProviderAdapter:
         output_schema: dict | None = None,
         diagnostics: dict[str, Any] | None = None,
     ) -> str:
+        if diagnostics is not None:
+            diagnostics.update(call_started=False, call_count=0)
         timeout = _positive_timeout(timeout_seconds)
         self._resolve(provider_id, embedding=False)
         if output_format not in {"text", "json_object", "json_schema"}:
@@ -372,12 +374,14 @@ class ProviderAdapter:
         async with asyncio.timeout(timeout), AsyncExitStack() as stack:
             try:
                 await stack.enter_async_context(self._llm_limiter)
+            except asyncio.CancelledError:
+                if diagnostics is not None:
+                    diagnostics["failure_stage"] = "provider_queue"
+                raise
             finally:
                 if diagnostics is not None:
                     diagnostics.update(queue_seconds=loop.time() - queued_at, call_started=False)
             started = loop.time()
-            if diagnostics is not None:
-                diagnostics["call_started"] = True
             owned = None
             provider = self._resolve(provider_id, embedding=False)
             modalities = _provider_config(provider).get("modalities")
@@ -394,12 +398,16 @@ class ProviderAdapter:
                     try:
                         owned = _structured_provider(provider, output_format, output_schema)
                         kwargs = {"allow_context_truncation": False} if require_no_context_truncation else {}
+                        if diagnostics is not None:
+                            diagnostics.update(call_started=True, call_count=1)
                         response = await owned.text_chat(contexts=copy.deepcopy(contexts), **model_options, **kwargs)
                     except Exception as exc:
                         if output_format != "json_schema" or not _unsupported_schema_format(exc):
                             raise
                         effective_format = "text"
                 if effective_format == "text":
+                    if diagnostics is not None:
+                        diagnostics.update(call_started=True, call_count=diagnostics["call_count"] + 1)
                     if require_no_context_truncation:
                         response = await provider.text_chat(contexts=contexts, allow_context_truncation=False, **model_options)
                     else:
@@ -429,6 +437,8 @@ class ProviderAdapter:
         timeout_seconds: float = 30,
         diagnostics: dict[str, Any] | None = None,
     ) -> list[list[float]]:
+        if diagnostics is not None:
+            diagnostics["call_started"] = False
         timeout = _positive_timeout(timeout_seconds)
         provider = self._resolve(provider_id, embedding=True)
         if any(not isinstance(text, str) or not text.strip() for text in texts):

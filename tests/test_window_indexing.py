@@ -297,10 +297,15 @@ async def test_fresh_recovery_finishes_outstanding_index_without_new_sources(ind
     assert initial["state"] == "failed" and initial["step"] == "window_index"
     assert (await env.cache.health())["counts"]["node"] == 0
     await env.memory.database.execute("UPDATE memory_jobs SET available_at=0 WHERE job_id=?", (job["job_id"],))
+    # A missing provider fails before any new model request on the recovery lease.
+    recall = env.runtime.recall
+    env.runtime.recall = None
     resumed = await execute(env, await env.engine.jobs.claim("resume"))
+    assert resumed["attempts"][-1]["model_calls"] == 0
     assert resumed["recovery_mode"] == "fresh"
     failed = await execute(env, await env.engine.jobs.claim("fresh"))
     assert failed["state"] == "failed" and failed["result"] is None
+    env.runtime.recall = recall
     env.vector_adapter.failure = None
     retry = await env.engine.retry(job["job_id"], fresh=True)
     assert retry["job_id"] == job["job_id"]

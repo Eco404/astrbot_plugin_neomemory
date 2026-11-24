@@ -19,10 +19,12 @@ from typing import Any
 from .sqlite_executor import SQLiteExecutor
 
 try:
+    from ..core.attempts import current_attempt
     from ..core.extraction_apply import digest
     from ..core.extraction_regeneration import VERSION as REGENERATION_VERSION
     from ..core.candidate_feedback import SHORT_TERM_RECOVERY_VERSION, TOPIC_RECOVERY_VERSION
 except ImportError:
+    from core.attempts import current_attempt
     from core.extraction_apply import digest
     from core.extraction_regeneration import VERSION as REGENERATION_VERSION
     from core.candidate_feedback import SHORT_TERM_RECOVERY_VERSION, TOPIC_RECOVERY_VERSION
@@ -160,7 +162,19 @@ def _job(row) -> dict[str, Any] | None:
     for field in ("payload", "checkpoint", "result"):
         value = result.pop(f"{field}_json")
         result[field] = json.loads(value) if value is not None else None
+    result["attempts"] = json.loads(result.pop("attempts_json"))
     return result
+
+
+def _attempt_history(job, state, now, **details):
+    observation = current_attempt.get() or {}
+    remaining = None if job["progress_total"] is None else job["progress_total"] - job["progress_done"]
+    if outstanding := job["checkpoint"].get("window_index"):
+        remaining = outstanding["total"] - outstanding["indexed"]
+    entry = {"remaining": remaining, "attempt": job["attempt"], "step": job["step"], "state": state, "ended_at": now,
+             "progress_done": job["progress_done"], "progress_total": job["progress_total"],
+             **observation, **details}
+    return json.dumps([*job["attempts"][-11:], entry], separators=(",", ":"))
 
 
 async def _get(connection, job_id: str) -> dict[str, Any] | None:
@@ -257,15 +271,26 @@ class JobStore:
             automatic_origin = hide_on_success
             now = self.clock()
             if replaces:
-                previous = await self._lease(connection, replaces["job_id"], replaces["lease_token"])
-                if (previous["kind"], previous["scope_key"], previous["recovery_mode"]) != (kind, scope_key, "fresh"):
+                if replaces.get("lease_token"):
+                    previous = await self._lease(connection, replaces["job_id"], replaces["lease_token"])
+                    if previous["recovery_mode"] != "fresh":
+                        raise JobConflict("task has not entered fresh recovery")
+                    hide_on_success = previous["hide_on_success"]
+                else:
+                    previous = await _get(connection, replaces["job_id"])
+                    if not previous or previous["state"] not in ("failed", "cancelled"):
+                        raise JobConflict("only stopped tasks can be replaced manually")
+                    if (previous["result"] or {}).get("replacement_job_id"):
+                        raise JobConflict("task has already been replaced")
+                    hide_on_success = False
+                if (previous["kind"], previous["scope_key"]) != (kind, scope_key):
                     raise JobConflict("replacement does not match the recovering task")
                 automatic_origin = previous["automatic_origin"]
-                hide_on_success = previous["hide_on_success"]
+                history = _attempt_history(previous, "cancelled", now, action="fresh", replacement_job_id=job_id)
                 await connection.execute(
                     "UPDATE memory_jobs SET state='cancelled',recovery_mode=NULL,updated_at=?,result_json=?,"
-                    "lease_token=NULL,lease_until=NULL,owner=NULL WHERE job_id=?",
-                    (now, _json({"replacement_job_id": job_id}), previous["job_id"]))
+                    "lease_token=NULL,lease_until=NULL,owner=NULL,attempts_json=? WHERE job_id=?",
+                    (now, _json({"replacement_job_id": job_id}), history, previous["job_id"]))
             await assert_scope_available(connection, scope_key)
             await connection.execute(
                 "INSERT INTO memory_jobs (job_id,kind,scope_key,idempotency_key,state,"
@@ -346,22 +371,24 @@ class JobStore:
             await self._lease(connection, job_id, lease_token)
             await connection.execute(
                 "UPDATE memory_jobs SET recovery_mode=CASE WHEN recovery_mode='resume' AND "
-                "(?>progress_done OR ? IN ('model','topic_model','short_term_model')) "
+                "(?>progress_done OR ?) "
                 "THEN NULL ELSE recovery_mode END,checkpoint_json=?,step=?,progress_done=?,"
                 "progress_total=?,error_type=NULL,error_code=NULL,updated_at=? WHERE job_id=?",
-                (progress_done, step, checkpoint_json, step, progress_done, progress_total, self.clock(), job_id),
+                (progress_done, bool((current_attempt.get() or {}).get("model_calls")), checkpoint_json,
+                 step, progress_done, progress_total, self.clock(), job_id),
             )
             return await _get(connection, job_id)
 
     async def finish(self, job_id: str, lease_token: str, *, result=None) -> dict[str, Any]:
         result_json = _json({} if result is None else result)
         async with self.database.transaction() as connection:
-            await self._lease(connection, job_id, lease_token)
+            job = await self._lease(connection, job_id, lease_token)
+            history = _attempt_history(job, "succeeded", self.clock(), remaining=0)
             await connection.execute(
                 "UPDATE memory_jobs SET state='succeeded',lease_token=NULL,lease_until=NULL,"
                 "owner=NULL,result_json=?,checkpoint_json='{}',step='complete',recovery_mode=NULL,"
                 "progress_done=COALESCE(progress_total,progress_done),error_type=NULL,"
-                "error_code=NULL,updated_at=? WHERE job_id=?", (result_json, self.clock(), job_id),
+                "error_code=NULL,updated_at=?,attempts_json=? WHERE job_id=?", (result_json, self.clock(), history, job_id),
             )
             return await _get(connection, job_id)
 
@@ -391,10 +418,23 @@ class JobStore:
         async with self.database.transaction() as connection:
             job = await self._lease(connection, job_id, lease_token)
             now = self.clock()
-            delay = self.next_retry_delay(job["attempt"], job["max_attempts"],
+            # A long replay can have independent outages in successive windows.
+            progress = [job["step"], job["progress_done"], "network" if model_network else error_code]
+            prior = job["attempts"][-1] if job["attempts"] else {}
+            streak = job["attempt"] if not prior else 1
+            if job["attempt"] > 1 and prior.get("state") == "retry_wait" and prior.get("retry_progress") == progress:
+                streak = prior["streak"] + 1
+            delay = self.next_retry_delay(streak, job["max_attempts"],
                                          retryable=retryable, model_network=model_network)
             mode = job["recovery_mode"]
-            if mode == "resume" and not retryable and job["attempt"] == 1:
+            observation = current_attempt.get() or {}
+            waiting_for_slot = error_code == "model_queue_timeout" and retryable
+            if waiting_for_slot:
+                state, available = "retry_wait", now + self.retry_delay(1)
+                # Carry the preceding real failure through any number of local waits.
+                progress, streak = prior.get("retry_progress"), prior.get("streak", 0)
+            elif (mode == "resume" and not retryable and job["attempt"] == 1
+                  and not observation.get("model_calls") and not observation.get("commits")):
                 state, mode, available = "queued", "fresh", now
             elif delay is not None:
                 state, available = "retry_wait", now + (backoff_seconds or delay)
@@ -403,21 +443,26 @@ class JobStore:
             else:
                 state, mode = "failed", None
                 available = now + AUTO_RECOVERY_SECONDS if job["automatic_origin"] else now
+            attempt = 0 if state == "queued" else job["attempt"]
+            if waiting_for_slot:
+                attempt = max(0, attempt - 1)
+            history = _attempt_history(job, state, now, error_code=error_code, retry_progress=progress, streak=streak)
             await connection.execute(
-                "UPDATE memory_jobs SET state=?,recovery_mode=?,attempt=?,lease_token=NULL,lease_until=NULL,owner=NULL,"
+                "UPDATE memory_jobs SET attempts_json=?,state=?,recovery_mode=?,attempt=?,lease_token=NULL,lease_until=NULL,owner=NULL,"
                 "error_type=?,error_code=?,available_at=?,updated_at=? WHERE job_id=?",
-                (state, mode, 0 if state == "queued" else job["attempt"], error_type, error_code, available, now, job_id),
+                (history, state, mode, attempt, error_type, error_code, available, now, job_id),
             )
             return await _get(connection, job_id)
 
     async def defer_until(self, job_id, lease_token, available_at):
         """Park a task until one of its independently budgeted sections can run."""
         async with self.database.transaction() as connection:
-            await self._lease(connection, job_id, lease_token)
+            job = await self._lease(connection, job_id, lease_token)
+            history = _attempt_history(job, "retry_wait", self.clock(), branches=job["checkpoint"].get("section_progress", {}))
             await connection.execute(
-                "UPDATE memory_jobs SET state='retry_wait',available_at=?,updated_at=?,"
+                "UPDATE memory_jobs SET state='retry_wait',available_at=?,updated_at=?,attempts_json=?,"
                 "attempt=MAX(0,attempt-1),owner=NULL,lease_token=NULL,lease_until=NULL WHERE job_id=?",
-                (available_at, self.clock(), job_id),
+                (available_at, self.clock(), history, job_id),
             )
 
     async def release(self, job_id: str, lease_token: str) -> dict[str, Any]:

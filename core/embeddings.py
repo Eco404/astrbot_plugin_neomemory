@@ -9,6 +9,8 @@ from typing import Any
 
 import numpy as np
 
+from .attempts import current_attempt, observed_call
+
 try:
     from ..adapters.providers import (
         EmbeddingValidationError,
@@ -241,14 +243,15 @@ class EmbeddingService:
                     tasks = []
                     for start in range(0, len(pending), self.batch_size):
                         kwargs = {}
-                        if diagnostics is not None:
+                        if diagnostics is not None or current_attempt.get() is not None:
                             batch_diagnostics: dict[str, Any] = {}
                             batch_metrics.append(batch_diagnostics)
                             kwargs["diagnostics"] = batch_diagnostics
-                        tasks.append(asyncio.create_task(self.adapter.embed_batch(
-                            [text for _, text in pending[start:start + self.batch_size]],
-                            provider_id=self.provider_id, timeout_seconds=timeout, **kwargs,
-                        )))
+                        batch_texts = [text for _, text in pending[start:start + self.batch_size]]
+                        kwargs.update(provider_id=self.provider_id, timeout_seconds=timeout)
+                        call = (observed_call(self.adapter.embed_batch, batch_texts, **kwargs) if current_attempt.get() is not None
+                                else self.adapter.embed_batch(batch_texts, **kwargs))
+                        tasks.append(asyncio.create_task(call))
                     try:
                         results = await asyncio.gather(*tasks)
                     except BaseException:
@@ -283,8 +286,19 @@ class EmbeddingService:
                                 )
                         except (OSError, sqlite3.Error, RuntimeError) as exc:
                             self.last_cache_error = type(exc).__name__
+                            if require_persisted:
+                                from .jobs import storage_error
+                                failure = storage_error(exc)
+                                if failure:
+                                    raise failure from exc
                     return result
         except BaseException as exc:
+            if isinstance(exc, (asyncio.CancelledError, TimeoutError)):
+                if stage == "provider_batches":
+                    exc.neomemory_model_stage = ("provider_call" if any(
+                        item.get("call_started", True) for item in batch_metrics) else "provider_queue")
+                elif not acquired:
+                    exc.neomemory_model_stage = "provider_queue"
             if diagnostics is not None:
                 diagnostics.update(failure_stage=stage, error_type=type(exc).__name__)
             raise

@@ -354,7 +354,7 @@ MEMORY_SCHEMA = (
 
 
 MEMORY_FORMAT = 2
-MEMORY_FORMAT_REVISION = "v3-dev.1"
+MEMORY_FORMAT_REVISION = "v3-dev.2"
 
 JOB_RECOVERY_SCHEMA = (
     "ALTER TABLE memory_jobs ADD COLUMN automatic_origin INTEGER NOT NULL DEFAULT 0",
@@ -387,8 +387,10 @@ async def initialize_memory_schema(database):
         if revision is None:
             for statement in JOB_RECOVERY_SCHEMA:
                 await connection.execute(statement)
+        if revision is None or revision[0] == "v3-dev.1":
+            await connection.execute("ALTER TABLE memory_jobs ADD COLUMN attempts_json TEXT NOT NULL DEFAULT '[]'")
             await connection.execute(
-                "INSERT INTO pipeline_state VALUES ('memory_format_revision',json_quote(?),unixepoch())",
+                "INSERT OR REPLACE INTO pipeline_state VALUES ('memory_format_revision',json_quote(?),unixepoch())",
                 (MEMORY_FORMAT_REVISION,))
         elif revision[0] != MEMORY_FORMAT_REVISION:
             raise RuntimeError(f"Unsupported memory.db development revision: {revision[0]}")

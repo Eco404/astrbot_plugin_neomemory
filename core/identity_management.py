@@ -12,6 +12,7 @@ try:
 except ImportError:
     from storage.social_accounts import account_namespace, account_routes, group_accounts
     from storage.job_store import JobConflict, assert_job_lease
+from .attempts import observe_commit
 from .jobs import ReviewRequired
 
 
@@ -260,6 +261,7 @@ class IdentityManagement:
                       "deleted_logical_user_id": old_user, "removed": counts, "raw_records_preserved": True}
             await connection.execute("INSERT INTO identity_operation_receipts(job_id,result_json,committed_at) VALUES (?,?,?)",
                                      (job["job_id"], json.dumps(result, ensure_ascii=False), now))
+        observe_commit()
         return result
 
     async def cleanup_receipts(self):

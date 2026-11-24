@@ -78,6 +78,29 @@ async def test_release_jobs_keep_origin_and_due_time_on_upgrade(tmp_path):
         await memory.close()
         await memory.open()
         assert (await store.get("short_term:automatic")) == automatic
-        assert (await memory.health())["schema_revision"] == "v3-dev.1"
+        assert (await memory.health())["schema_revision"] == "v3-dev.2"
+    finally:
+        await memory.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_dev_database_with_existing_checkpoints(tmp_path):
+    from storage.memory_schema import JOB_RECOVERY_SCHEMA
+    from storage.space_policy import POLICY_SCHEMA
+    path = tmp_path / "memory.db"
+    old = SQLiteExecutor(path)
+    await old.open()
+    await initialize_schema(old, MEMORY_SCHEMA + POLICY_SCHEMA + JOB_RECOVERY_SCHEMA)
+    await old.execute("PRAGMA user_version=2")
+    await old.execute("INSERT INTO pipeline_state VALUES ('memory_format_revision',json_quote('v3-dev.1'),0)")
+    await old.execute("""INSERT INTO memory_jobs(job_id,kind,scope_key,idempotency_key,state,payload_json,
+        checkpoint_json,available_at,created_at,updated_at)
+        VALUES ('old','extract','s','k','failed','{}','{"done":2}',0,0,0)""")
+    await old.close()
+    memory = MemoryStore(path)
+    await memory.open()
+    try:
+        row = await memory.database.fetchone("SELECT checkpoint_json,attempts_json FROM memory_jobs WHERE job_id='old'")
+        assert tuple(row) == ('{"done":2}', '[]')
     finally:
         await memory.close()

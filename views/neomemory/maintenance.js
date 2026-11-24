@@ -1,6 +1,6 @@
 import { initTaskModels } from './task-models.js';
 import { initRecallInspector } from './recall.js';
-import { formatDuration, taskTiming, taskFeedback } from './task-progress.js';
+import { budgetDiagnostics, formatDuration, taskTiming, taskFeedback } from './task-progress.js';
 import { $, date, element, notify, pretty, on, onSearchForm, newKey, emotionLabels, emotionEntries, enhanceSelect, setupTabs } from './ui.js';
 
 function attemptLabel(attempt = 0, limit = 0) {
@@ -191,6 +191,8 @@ export function initMaintenance(ui) {
       state.detail = null;
       $('task-detail').textContent = '正在读取任务结果…';
       $('task-sources').replaceChildren();
+      $('task-attempts').hidden = true;
+      $('task-attempt-list').replaceChildren();
       $('task-diagnostics').textContent = $('restart-hint').textContent = $('reject-reason').value = '';
       $('reject-confirm').checked = false;
       buttons();
@@ -209,6 +211,7 @@ export function initMaintenance(ui) {
     if (diagnostic.call_started === false) summary.push('尚未取得模型并发名额');
     if (diagnostic.call_seconds !== undefined) summary.push(`调用耗时 ${diagnostic.call_seconds.toFixed(2)} 秒`);
     if (diagnostic.repeated_candidate) summary.push('候选与上次相同');
+    summary.push(...budgetDiagnostics(result.validation_errors));
     if (result.topic_budget) {
       const budget = result.topic_budget;
       summary.push(`主题提示词 ${budget.prompt_bytes ?? budget.base_prompt_bytes} / ${budget.max_prompt_bytes} 字节`);
@@ -216,6 +219,21 @@ export function initMaintenance(ui) {
       if (budget.seed_count != null) summary.push(`本批审阅 ${budget.seed_count} 条，展开 ${budget.expanded_nodes} 条记忆`);
     }
     $('task-diagnostics').textContent = summary.join(' · ');
+    const attempts = result.attempts || [];
+    const actions = { execute: '执行', resume: '从断点继续', fresh: '重新准备', regenerate: '重新生成窗口',
+      resize: '缩小窗口', resume_committed: '复用已提交的窗口', replan: '重新规划来源' };
+    $('task-attempts').hidden = !attempts.length;
+    $('task-attempt-list').replaceChildren(...attempts.slice().reverse().map(attempt => {
+      const info = [new Date(attempt.ended_at * 1000).toLocaleString(), actions[attempt.action] || '执行',
+        stepLabel(attempt.step), states[attempt.state] || attempt.state];
+      if (attempt.model_calls != null) info.push(`模型调用 ${attempt.model_calls} 次`);
+      if (attempt.queued_without_call) info.push('曾等待模型名额超时');
+      if (attempt.commits != null) info.push(`新增提交 ${attempt.commits} 次`);
+      if (attempt.remaining != null) info.push(`剩余 ${attempt.remaining}`);
+      if (attempt.error_code) info.push(attempt.error_code);
+      if (attempt.http_status) info.push(`HTTP ${attempt.http_status}`);
+      return element('li', info.join(' · '));
+    }));
     $('task-sources').replaceChildren();
     for (const sourceId of result.source_ids || []) taskAction($('task-sources'), '读取原文 ' + sourceId, () => readTaskSource(result, sourceId));
     $('restart-hint').textContent = result.recovery_action === 'review' && result.kind === 'identity' ? '账号归属或确认的影响范围已变化，请回到用户管理重新预览和确认。' : result.recovery_action === 'review' && result.kind === 'note' ? '笔记冲突需要返回笔记页，重新读取并编辑。断点重试保留原始版本条件，不会覆盖更新后的正文。' : result.restart_required ? '该任务需要按当前配置重新准备。请使用“重新准备后重试”。' : result.recovery_action === 'resize' ? '从断点重试会缩小截断的消息窗口并保留后续原文。' : result.recovery_action === 'regenerate' ? '从断点重试会归档被拒绝的草稿，把校验问题反馈给模型，并继续各个尚未完成的窗口。' : result.regenerate_window_available ? '从断点重试会继续处理已有草稿。选择“重新生成当前窗口”可另行生成候选。' : result.kind === 'short_term' && result.state === 'cancelled' ? '该短期摘要窗口已停止；使用“从断点重试”或“重新准备后重试”恢复处理。' : '';

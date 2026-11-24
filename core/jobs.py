@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import math
 import re
+import sqlite3
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
@@ -15,7 +17,8 @@ try:
 except ImportError:
     from storage.job_store import JobConflict, JobStore, LeaseLost
 
-from .provider_errors import is_transient_provider_error
+from .attempts import current_attempt
+from .provider_errors import exception_chain, http_status, is_transient_provider_error
 
 __all__ = ["JobConflict", "JobRunner", "LeaseLost", "ModelNetworkError", "RetryableJobError", "ReviewRequired"]
 
@@ -47,7 +50,42 @@ class ReviewRequired(RuntimeError):
         super().__init__(code)
 
 
+def storage_error(exc):
+    for cause in exception_chain(exc):
+        code = getattr(cause, "sqlite_errorcode", 0) & 255
+        if code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            return RetryableJobError("storage_busy")
+        if code == sqlite3.SQLITE_FULL or isinstance(cause, OSError) and cause.errno == errno.ENOSPC:
+            return ReviewRequired("storage_full")
+    return None
+
+
+def deadline_failure(exc, fallback):
+    for cause in exception_chain(exc):
+        stage = getattr(cause, "neomemory_model_stage", None)
+        if stage == "provider_queue":
+            return RetryableJobError("model_queue_timeout")
+        if stage == "provider_call":
+            return ModelNetworkError(fallback)
+    return RetryableJobError(fallback)
+
+
+def provider_failure(exc, *, temporary="provider_temporary_failure", unavailable="provider_unavailable"):
+    if failure := storage_error(exc):
+        return failure
+    if isinstance(exc, TimeoutError):
+        return deadline_failure(exc, temporary)
+    if is_transient_provider_error(exc):
+        return ModelNetworkError(temporary)
+    status = http_status(exc)
+    if status in (401, 403):
+        return ReviewRequired("provider_access_denied")
+    return ReviewRequired(unavailable)
+
+
 def classify_job_error(exc):
+    if failure := storage_error(exc):
+        return isinstance(failure, RetryableJobError), failure.code
     retryable = isinstance(exc, RetryableJobError) or is_transient_provider_error(exc)
     if isinstance(exc, (ValueError, PermissionError, ReviewRequired)):
         retryable = False
@@ -168,6 +206,10 @@ class JobRunner:
     async def _execute(self, job: dict[str, Any], *, lease_seconds: float | None = None) -> None:
         work: asyncio.Task | None = None
         heartbeat: asyncio.Task | None = None
+        attempt_token = current_attempt.set({
+            "started_at": self.store.clock(), "model_calls": 0, "commits": 0,
+            "action": job["recovery_mode"] or ("resume" if job["checkpoint"] else "execute"),
+        })
         try:
             fresh = job["recovery_mode"] == "fresh"
             handler = self.reprepare if fresh else self.handlers.get(job["kind"])
@@ -204,6 +246,7 @@ class JobRunner:
             except Exception as failure:
                 self._diagnostic(failure)
         finally:
+            current_attempt.reset(attempt_token)
             for task in (work, heartbeat):
                 if task is not None and not task.done():
                     task.cancel()
