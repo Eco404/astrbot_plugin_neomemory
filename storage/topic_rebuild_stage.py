@@ -26,7 +26,9 @@ async def _restore_rows(connection, table, rows):
 async def _load(stage, live, space_id, generation_id, job):
     db = stage.database
     # SQLite copies just this space's current bodies and membership in one read snapshot.
-    await db.execute("ATTACH DATABASE ? AS origin", (live.path.resolve().as_uri() + "?mode=ro",))
+    # URI query parameters are not enabled on this connection, so an attached
+    # ``file:///...?mode=ro`` value would be treated as a literal filename.
+    await db.execute("ATTACH DATABASE ? AS origin", (str(live.path.resolve()),))
     try:
         async with db.transaction(write=False) as connection:
             await connection.execute("INSERT INTO memory_spaces SELECT * FROM origin.memory_spaces WHERE space_id=?", (space_id,))
