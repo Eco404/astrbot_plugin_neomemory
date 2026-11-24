@@ -174,7 +174,18 @@ def _attempt_history(job, state, now, **details):
     entry = {"remaining": remaining, "attempt": job["attempt"], "step": job["step"], "state": state, "ended_at": now,
              "progress_done": job["progress_done"], "progress_total": job["progress_total"],
              **observation, **details}
+    entry["had_final_failure"] = (state == "failed" or job["state"] == "failed"
+        or (job["result"] or {}).get("cancelled_from") == "failed"
+        or any(item.get("had_final_failure") or item["state"] == "failed" for item in job["attempts"]))
     return json.dumps([*job["attempts"][-11:], entry], separators=(",", ":"))
+
+
+def _resume_history(job):
+    # A failed task from a version without execution telemetry still has a known terminal state.
+    observed = any(item.get("had_final_failure") or item["state"] == "failed" for item in job["attempts"])
+    if not observed and (job["state"] == "failed" or (job["result"] or {}).get("cancelled_from") == "failed"):
+        return _attempt_history(job, "failed", job["updated_at"], error_code=job["error_code"])
+    return json.dumps(job["attempts"], separators=(",", ":"))
 
 
 async def _get(connection, job_id: str) -> dict[str, Any] | None:
@@ -269,6 +280,7 @@ class JobStore:
                     return _job(pending)
             job_id = f"job_{uuid.uuid4().hex}"
             automatic_origin = hide_on_success
+            history = "[]"
             now = self.clock()
             if replaces:
                 if replaces.get("lease_token"):
@@ -294,10 +306,10 @@ class JobStore:
             await assert_scope_available(connection, scope_key)
             await connection.execute(
                 "INSERT INTO memory_jobs (job_id,kind,scope_key,idempotency_key,state,"
-                "payload_json,max_attempts,available_at,created_at,updated_at,hide_on_success,automatic_origin) "
-                "VALUES (?,?,?,?,'queued',?,?,?,?,?,?,?)",
+                "payload_json,max_attempts,available_at,created_at,updated_at,hide_on_success,automatic_origin,attempts_json) "
+                "VALUES (?,?,?,?,'queued',?,?,?,?,?,?,?,?)",
                 (job_id, kind, scope_key, idempotency_key, payload_json,
-                 max_attempts, now, now, now, hide_on_success, automatic_origin),
+                 max_attempts, now, now, now, hide_on_success, automatic_origin, history),
             )
             return await _get(connection, job_id)
 
@@ -328,8 +340,8 @@ class JobStore:
                 previous = await _get(connection, job_id)
                 checkpoint = await self._prepare_retry(connection, previous)
                 await connection.execute(
-                    "UPDATE memory_jobs SET attempt=0,recovery_mode='resume',checkpoint_json=? WHERE job_id=?",
-                    (checkpoint, job_id))
+                    "UPDATE memory_jobs SET attempt=0,recovery_mode='resume',checkpoint_json=?,attempts_json=? WHERE job_id=?",
+                    (checkpoint, _resume_history(previous), job_id))
             await connection.execute(
                 "UPDATE memory_jobs SET state='running',owner=?,lease_token=?,lease_until=?,"
                 "attempt=attempt+1,error_type=NULL,error_code=NULL,updated_at=? WHERE job_id=?",
@@ -617,8 +629,8 @@ class JobStore:
             now = self.clock()
             await connection.execute(
                 "UPDATE memory_jobs SET state='queued',recovery_mode=NULL,hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
-                "error_type=NULL,error_code=NULL,result_json=NULL,checkpoint_json=? WHERE job_id=?",
-                (now, now, checkpoint, job_id),
+                "error_type=NULL,error_code=NULL,result_json=NULL,checkpoint_json=?,attempts_json=? WHERE job_id=?",
+                (now, now, checkpoint, _resume_history(job), job_id),
             )
             return await _get(connection, job_id)
 
@@ -720,4 +732,40 @@ class JobStore:
         rows = await self.database.fetchall("SELECT state,COUNT(*) count FROM memory_jobs GROUP BY state")
         counts = {state: 0 for state in JOB_STATES}
         counts.update({row["state"]: row["count"] for row in rows})
-        return {"counts": counts}
+        outcomes = await self.database.fetchall("""
+            WITH RECURSIVE failed_chains(job_id) AS (
+                SELECT job_id FROM memory_jobs WHERE automatic_origin=1 AND (
+                    state='failed' OR json_extract(result_json,'$.cancelled_from')='failed' OR
+                    COALESCE(json_extract(attempts_json,'$[#-1].had_final_failure'), EXISTS(
+                        SELECT 1 FROM json_each(attempts_json) WHERE json_extract(value,'$.state')='failed')))
+                UNION
+                SELECT json_extract(j.result_json,'$.replacement_job_id')
+                FROM memory_jobs j JOIN failed_chains f ON j.job_id=f.job_id
+                WHERE json_extract(j.result_json,'$.replacement_job_id') IS NOT NULL
+            )
+            SELECT CASE WHEN hide_on_success=0 OR state='cancelled' THEN 'manual'
+                        WHEN state='succeeded' THEN 'recovered' ELSE 'pending' END AS outcome, COUNT(*) AS n
+            FROM memory_jobs JOIN failed_chains USING(job_id)
+            WHERE json_extract(result_json,'$.replacement_job_id') IS NULL GROUP BY outcome
+        """)
+        recovery = {"recovered": 0, "pending": 0, "manual": 0}
+        recovery.update({row["outcome"]: row["n"] for row in outcomes})
+        recovery["total"] = sum(recovery.values())
+        longest = await self.database.fetchone("""
+            SELECT * FROM (
+                SELECT job_id, step, updated_at, NULL AS branch,
+                       json_extract(attempts_json,'$[#-1].retry_progress[2]') AS reason,
+                       json_extract(attempts_json,'$[#-1].streak') AS streak
+                FROM memory_jobs WHERE state IN ('failed','retry_wait')
+                    AND json_type(checkpoint_json,'$.section_progress') IS NULL
+                UNION ALL
+                SELECT j.job_id, json_extract(b.value,'$.step'), j.updated_at, b.key,
+                       json_extract(b.value,'$.error_code'), json_extract(b.value,'$.consecutive_failures')
+                FROM memory_jobs j, json_each(j.checkpoint_json,'$.section_progress') b
+                WHERE j.state IN ('running','retry_wait','failed') AND
+                    json_extract(b.value,'$.state') IN ('failed','retry_wait')
+                    AND json_extract(b.value,'$.error_code')!='model_queue_timeout'
+            ) WHERE streak>0 ORDER BY streak DESC, updated_at DESC, job_id LIMIT 1
+        """)
+        return {"counts": counts, "automatic_recovery": recovery,
+                "longest_failure_streak": dict(longest) if longest else None}

@@ -232,6 +232,7 @@ export function initMaintenance(ui) {
       if (attempt.remaining != null) info.push(`剩余 ${attempt.remaining}`);
       if (attempt.error_code) info.push(attempt.error_code);
       if (attempt.http_status) info.push(`HTTP ${attempt.http_status}`);
+      if (attempt.streak > 0 && attempt.error_code !== 'model_queue_timeout') info.push(`同阶段同类故障连续 ${attempt.streak} 次`);
       return element('li', info.join(' · '));
     }));
     $('task-sources').replaceChildren();
@@ -376,6 +377,18 @@ export function initMaintenance(ui) {
   async function refreshHealth() {
     const health = await bridge.apiGet('health');
     pretty('health', health);
+    const recovery = health.maintenance?.automatic_recovery;
+    $('automatic-recovery').textContent = recovery?.total
+      ? `自动恢复率 ${(100 * recovery.recovered / recovery.total).toLocaleString(undefined, { maximumFractionDigits: 1 })}%（${recovery.recovered} / ${recovery.total}）。统计仍保留且曾失败的自动任务，其中等待或恢复中 ${recovery.pending} 项，人工介入 ${recovery.manual} 项。`
+      : recovery ? '仍保留的自动任务中尚无已知的失败记录。' : '后台任务恢复统计暂不可用。';
+    const longest = health.maintenance?.longest_failure_streak;
+    const failureStreak = $('failure-streak');
+    failureStreak.hidden = !longest;
+    if (longest) {
+      const label = longest.branch ? '分支连续失败' : '同阶段同类故障连续';
+      const reason = longest.reason === 'network' ? '模型网络故障' : longest.reason;
+      failureStreak.textContent = `当前最长记录 · ${longest.job_id} · ${stepLabel(longest.step)} · ${reason} · ${label} ${longest.streak} 次`;
+    }
     const deliveryIssue = $('companion-delivery-issue');
     const delivery = health.companion_delivery_progress || {};
     deliveryIssue.textContent = delivery.blocked_receipt

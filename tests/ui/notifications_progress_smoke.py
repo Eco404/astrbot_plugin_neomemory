@@ -40,6 +40,8 @@ window.AstrBotPluginView.apiGet=async(endpoint,args={})=>{
    result.last_source_write_at=stamp-20;
    result.ingress.oldest_unpersisted_at=stamp-120;
    result.companion_delivery_progress={blocked_receipt:'delivery-42',retry_at:stamp+10};
+   result.maintenance={automatic_recovery:{total:4,recovered:2,manual:1,pending:1},
+     longest_failure_streak:{job_id:'clock-failed',step:'validate',reason:'storage_busy',streak:3}};
  }
  return result;
 };
@@ -159,6 +161,8 @@ async def verify_progress(page):
     await expect(page.locator('#ingress-summary')).to_contain_text('最近写入')
     await expect(page.locator('#ingress-unpersisted')).to_contain_text('自动按序写入')
     await page.locator('[data-maintenance-tab=status]').click()
+    await expect(page.locator('#automatic-recovery')).to_contain_text('50%（2 / 4）')
+    await expect(page.locator('#failure-streak')).to_contain_text('storage_busy · 同阶段同类故障连续 3 次')
     await expect(page.locator('#companion-delivery-issue')).to_contain_text('等待重试陪伴回执 delivery-42')
     await expect(page.locator('#status')).to_have_text('已连接')
 

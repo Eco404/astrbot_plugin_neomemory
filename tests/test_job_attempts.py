@@ -72,7 +72,7 @@ async def test_health_tracks_each_retained_automatic_recovery_chain_once(stores)
     original = await fail_once("auto-fresh")
     assert await stats() == {"recovered":0, "manual":1, "pending":2, "total":3}
     await jobs.cancel(pending["job_id"])
-    for _ in range(2):
+    for cycle in range(2):
         clock[0] += 21600
         resume = await jobs.claim("worker")
         assert resume["job_id"] == original["job_id"]
@@ -83,7 +83,7 @@ async def test_health_tracks_each_retained_automatic_recovery_chain_once(stores)
         await jobs.delete(fresh["job_id"])
         claim = await jobs.claim("worker")
         assert claim["job_id"] == replacement["job_id"]
-        if _ == 0:
+        if cycle == 0:
             original = await jobs.fail(claim["job_id"], claim["lease_token"], error_type="ReviewRequired", error_code="invalid_output")
         else:
             await jobs.finish(claim["job_id"], claim["lease_token"])
@@ -102,6 +102,10 @@ async def test_successful_window_gets_its_own_network_retry_budget(stores):
                                    step="model", progress_done=done, progress_total=2)
         failed = await jobs.fail(j["job_id"], claimed["lease_token"], error_code="provider_temporary_failure",
                                  error_type="ModelNetworkError", retryable=True, model_network=True)
+        health = await jobs.health()
+        assert health["longest_failure_streak"]["reason"] == "network"
+        assert health["longest_failure_streak"]["streak"] == (2 if delay == 600 else 1)
+        assert health["automatic_recovery"]["total"] == 0
         assert failed["available_at"] == clock[0] + delay
         clock[0] += delay
 
