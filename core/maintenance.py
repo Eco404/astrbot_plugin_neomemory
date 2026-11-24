@@ -616,6 +616,9 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         prefix = "context_embedding" if context else "window_index"
         return provider_failure(exc, temporary=prefix + "_temporary_failure", unavailable=prefix + "_unavailable")
 
+    def _index_configured(self):
+        return self.runtime.recall is not None or bool(self.config.embedding_provider_id)
+
     async def _context_ids(self, space, generation_id, sources, *, timeout_seconds=None, progress=None):
         embeddings = self.runtime.recall.embeddings if self.runtime.recall is not None else None
         try:
@@ -743,6 +746,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         if not window or window.get("planned"):
             window = {"source_ids": list(source_ids), "source_cursor": source_cursor, "model_route": route,
                 "known_node_ids": list(known), "input_digest": batch.input_digest, "signature": signature,
+                "index_required": self._index_configured(),
                 "reference_protocol": REFERENCE_VERSION,
                 "correction_limit": self.config.extraction_max_regenerations}
             if space["space_type"] == "private":
@@ -950,6 +954,11 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         if parent["generation_id"] != payload["expected_generation_id"]:
             raise ReviewRequired("context_changed")
         scoped = job["kind"] in CONTEXT_REBUILD_MODELS
+        if not scoped:
+            checkpoint.setdefault("index_required", self._index_configured())
+            if self.runtime.recall is None and (checkpoint.get("window_index") or (
+                    checkpoint["index_required"] and (checkpoint.get("phase") == "index" or job["step"].startswith("topic_index")))):
+                raise ReviewRequired("index_provider_required")
         if scoped and await self.pipeline.context_basis(job["kind"], parent["generation_id"]) != payload["context_basis"]:
             raise ReviewRequired("context_changed")
         generation = await self.pipeline.begin_rebuild(job, space["space_id"], payload["expected_generation_id"])
@@ -1049,9 +1058,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         return switched["result"]
 
     async def _index_committed_window(self, job, checkpoint, receipt):
-        if self.runtime.recall is None:
-            if checkpoint.get("window_index"):
-                raise ReviewRequired("index_provider_required")
+        required = checkpoint.get("window_index") or checkpoint.get("window", {}).get("index_required")
+        if not (required or self._index_configured()):
             return {"indexed": 0, "configured": False}
         nodes = await self.memory.extraction_batch_index_nodes(receipt["batch_id"])
         if not nodes:
@@ -1066,6 +1074,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         state = {"batch_id": receipt["batch_id"], "indexed": 0, "total": len(nodes)}
         checkpoint["window_index"] = state
         await self._save(job, checkpoint, "window_index", checkpoint.get("done", 0), checkpoint.get("total"))
+        if self.runtime.recall is None:
+            raise ReviewRequired("index_provider_required")
         service = self.runtime.recall.embeddings
         fingerprint = service.fingerprint
         deadline = time.monotonic() + self.config.index_timeout_seconds
@@ -1085,32 +1095,37 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
 
     async def _index_generation(self, job, space_id, generation_id):
         if self.runtime.recall is None:
+            if job["kind"] == "reindex" or self._index_configured() or job["checkpoint"].get("index_required"):
+                raise ReviewRequired("index_provider_required")
             return {"indexed": 0, "configured": False}
         service = self.runtime.recall.embeddings
         fingerprint = service.fingerprint
         deadline = time.monotonic() + self.config.index_timeout_seconds
-        async with asyncio.timeout(self.config.index_timeout_seconds):
-            snapshot = await self.memory.index_nodes(space_id, generation_id=generation_id,
-                                                     limit=self.config.recall_index_limit)
-            nodes = snapshot["nodes"]
-            indexed = repaired = 0
-            for start in range(0, len(nodes), service.batch_size):
-                batch = nodes[start:start + service.batch_size]
-                try:
-                    _, missing = await node_vectors(service, batch, space_id, deadline=deadline, require_persisted=True)
-                    repaired += missing
-                except Exception as exc:
-                    raise self._embedding_failure(exc) from None
-                if service.fingerprint != fingerprint:
-                    raise ReviewRequired("index_embedding_changed")
-                indexed += len(batch)
-                if job["kind"] == "reindex":
-                    await self._save(job, {}, "index", indexed, len(nodes))
-                else:
-                    saved = await self.jobs.get(job["job_id"])
-                    await self._save(job, saved["checkpoint"], f"index:{indexed}/{len(nodes)}",
-                                     saved["progress_done"], saved["progress_total"])
-            return {"indexed": indexed, "repaired": repaired, "configured": True, "truncated": snapshot["truncated"]}
+        try:
+            async with asyncio.timeout(self.config.index_timeout_seconds):
+                snapshot = await self.memory.index_nodes(space_id, generation_id=generation_id,
+                                                         limit=self.config.recall_index_limit)
+                nodes = snapshot["nodes"]
+                indexed = repaired = 0
+                for start in range(0, len(nodes), service.batch_size):
+                    batch = nodes[start:start + service.batch_size]
+                    try:
+                        _, missing = await node_vectors(service, batch, space_id, deadline=deadline, require_persisted=True)
+                        repaired += missing
+                    except Exception as exc:
+                        raise self._embedding_failure(exc) from None
+                    if service.fingerprint != fingerprint:
+                        raise ReviewRequired("index_embedding_changed")
+                    indexed += len(batch)
+                    if job["kind"] == "reindex":
+                        await self._save(job, {}, "index", indexed, len(nodes))
+                    else:
+                        saved = await self.jobs.get(job["job_id"])
+                        await self._save(job, saved["checkpoint"], f"index:{indexed}/{len(nodes)}",
+                                         saved["progress_done"], saved["progress_total"])
+                return {"indexed": indexed, "repaired": repaired, "configured": True, "truncated": snapshot["truncated"]}
+        except TimeoutError as exc:
+            raise deadline_failure(exc, "window_index_temporary_failure") from None
 
     async def _reindex(self, job):
         payload = job["payload"]

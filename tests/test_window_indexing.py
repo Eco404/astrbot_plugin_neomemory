@@ -313,3 +313,83 @@ async def test_fresh_recovery_finishes_outstanding_index_without_new_sources(ind
     assert completed["result"]["index"]["indexed"] == 2
     assert (await env.cache.health())["counts"]["node"] == 2
     assert len(env.adapter.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["topic_consolidate", "topic_rebuild", "rebuild", "reindex"])
+async def test_required_index_survives_provider_removal_and_restoration(indexing_env, monkeypatch, kind):
+    from core.jobs import RetryableJobError
+    from tests.test_topic_maintenance import candidate, seed
+
+    env = indexing_env
+    if kind == "rebuild":
+        create_candidates(env)
+    else:
+        env.adapter.output = candidate(await seed(env))
+
+    if kind.startswith("topic"):
+        from core import topic_maintenance
+        original = topic_maintenance.node_vectors
+        async def fail_persist(embeddings, nodes, scope, **kwargs):
+            if kwargs.get("require_persisted"):
+                raise IndexCacheUnavailable()
+            return await original(embeddings, nodes, scope, **kwargs)
+        monkeypatch.setattr(topic_maintenance, "node_vectors", fail_persist)
+    else:
+        original = env.memory.index_nodes
+        async def fail_final(*args, **kwargs):
+            raise RetryableJobError("index_cache_unavailable")
+        monkeypatch.setattr(env.memory, "index_nodes", fail_final)
+
+    waiting = await execute(env, await enqueue_and_claim(env, kind))
+    assert waiting["state"] == "retry_wait" and waiting["error_code"] == "index_cache_unavailable"
+    calls = len(env.adapter.calls)
+    active = await env.memory.get_active_generation(env.space["space_id"])
+
+    recall, env.runtime.recall = env.runtime.recall, None
+    missing = await execute(env, await ready_retry(env, waiting))
+    assert missing["state"] == "failed" and missing["error_code"] == "index_provider_required"
+    assert len(env.adapter.calls) == calls
+    assert (await env.memory.get_active_generation(env.space["space_id"]))["generation_id"] == active["generation_id"]
+
+    env.runtime.recall = recall
+    if kind.startswith("topic"):
+        monkeypatch.setattr(topic_maintenance, "node_vectors", original)
+    else:
+        monkeypatch.setattr(env.memory, "index_nodes", original)
+    await env.engine.retry(missing["job_id"])
+    done = await execute(env, await env.engine.jobs.claim("restored"))
+    assert done["state"] == "succeeded", done["error_code"]
+    assert len(env.adapter.calls) == calls
+    if kind.startswith("topic"):
+        assert len(done["result"]["topic_ids"]) == 1
+        assert len(await env.memory.database.fetchall("SELECT * FROM topic_receipts")) == 1
+    else:
+        result = done["result"]["index"] if kind == "rebuild" else done["result"]
+        assert result["configured"] and result["indexed"] > 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["provider_call", "provider_queue"])
+async def test_outer_index_deadline_preserves_model_stage(indexing_env, monkeypatch, stage):
+    from core import maintenance
+    from tests.test_topic_maintenance import seed
+
+    env = indexing_env
+    env.config = replace(env.config, index_timeout_seconds=.15, job_max_attempts=1)
+    restart(env)
+    await seed(env)
+    async def await_slot_or_adapter(*args, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError as exc:
+            exc.neomemory_model_stage = stage
+            raise
+    monkeypatch.setattr(maintenance, "node_vectors", await_slot_or_adapter)
+    result = await execute(env, await enqueue_and_claim(env, "reindex"))
+    assert result["state"] == "retry_wait"
+    if stage == "provider_call":
+        assert result["error_code"] == "window_index_temporary_failure"
+        assert result["available_at"] - result["updated_at"] == 600
+    else:
+        assert result["error_code"] == "model_queue_timeout" and result["attempt"] == 0

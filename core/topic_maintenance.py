@@ -104,9 +104,16 @@ class TopicMaintenanceMixin:
         return ids
 
     async def _topic_index(self, job, checkpoint, receipt):
-        if self.runtime.recall is None or not receipt["changed_node_ids"]:
+        if not receipt["changed_node_ids"]:
             return
+        window = checkpoint["topic_window"]
+        required = window.get("index_required") or job["step"].split(":")[0] == "topic_index"
+        if not (required or self._index_configured()):
+            return
+        window["index_required"] = True
         await self._save(job, checkpoint, "topic_index", checkpoint["done"], checkpoint["total"])
+        if self.runtime.recall is None:
+            raise ReviewRequired("index_provider_required")
         nodes = [await self.memory.get_node(node_id) for node_id in receipt["changed_node_ids"]]
         try:
             await node_vectors(self.runtime.recall.embeddings, nodes, job["scope_key"],
@@ -363,7 +370,7 @@ class TopicMaintenanceMixin:
                     raise ReviewRequired("model_required")
                 _, signature = await self._execution(space, route)
                 checkpoint["topic_window"] = {"prepared": prepared, "signature": signature, "model_route": route,
-                    "budget": budget,
+                    "budget": budget, "index_required": self._index_configured(),
                     "request_digest": digest(build_messages(persona, prepared["nodes"], prepared["edges"],
                         evidence=prepared["evidence"], related_topics=prepared["related_topics"], allowed_user_ids=prepared["allowed_user_ids"], prompt_version=self.topic_prompt_version)),
                     "receipt_key": digest([job["job_id"], prepared["input_digest"], VERSION]),
@@ -424,8 +431,13 @@ class TopicMaintenanceMixin:
                 raise ReviewRequired("context_changed")
             basis = await topic_rebuild_basis(self.memory, space_id, generation_id)
             checkpoint = dict(job["checkpoint"])
+            index_required = self._index_configured() or checkpoint.get("index_required", False)
+            if "index_required" not in checkpoint and job["step"] == "topic_index":
+                index_required |= any(attempt.get("error_code", "").startswith(("index_", "window_index_"))
+                                      for attempt in job["attempts"] if attempt.get("error_code"))
             if "basis" not in checkpoint:
                 checkpoint["basis"] = basis
+                checkpoint["index_required"] = index_required
                 await self._save(job, checkpoint, "topic_prepare")
             if checkpoint["basis"] != basis:
                 raise ReviewRequired("context_changed")
@@ -435,10 +447,12 @@ class TopicMaintenanceMixin:
                 synthesis = await worker._consolidate_topics({**job, "checkpoint": checkpoint}, stage_for=self.memory)
                 drafts, reviewed = await export_topics(stage)
             done = len(reviewed)
-            checkpoint = {"basis": basis, "done": done, "total": done,
+            checkpoint = {"basis": basis, "done": done, "total": done, "index_required": index_required,
                           "prompt_versions": synthesis["prompt_versions"]}
             await self._save(job, checkpoint, "topic_index", done, done)
-            if self.runtime.recall is not None and drafts:
+            if index_required and drafts:
+                if self.runtime.recall is None:
+                    raise ReviewRequired("index_provider_required")
                 nodes = [{"node_id": draft["node_id"], "content_version": 1, "content_text": draft["content"]}
                          for draft in drafts]
                 try:
