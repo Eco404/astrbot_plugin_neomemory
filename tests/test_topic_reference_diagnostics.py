@@ -44,29 +44,24 @@ def test_invalid_topic_identity_names_exact_field_value_and_editable_domain(wron
     assert violation['path'] == '$.changes[0].topic_id'
     assert violation['actual_value'] == wrong
     assert violation['constraints'] == {'enum': [TOPIC_ID], 'nullable': False}
-    assert violation['allowed_topics'] == [{'topic_id': TOPIC_ID, 'expected_version': 4}]
+    assert violation['allowed_topics'] == [{'topic_id': TOPIC_ID}]
 
 
 @pytest.mark.parametrize('wrong', [None, 3])
-def test_correct_topic_with_wrong_version_keeps_identity_and_names_exact_version(wrong):
+def test_program_version_is_ignored_in_topic_feedback(wrong):
     value = proposal()
     value['changes'][0]['expected_version'] = wrong
     error, = validation_errors(CandidateValidationError('topic_update_identity', ('changes', 0), ''),
         json.dumps(value), output_schema(), EXPLANATIONS, context=CONTEXT, pipeline='topic')
-    violation, = error['violations']
-    assert violation['path'] == '$.changes[0].expected_version'
-    assert violation['actual_value'] == wrong
-    assert violation['constraints'] == {'const': 4}
+    assert 'violations' not in error
+    assert 'expected_version' not in error['constraints']
 
 
-def test_missing_version_is_not_suggested_as_nullable_for_update():
+def test_missing_version_is_filled_by_program_context():
     value = proposal()
     del value['changes'][0]['expected_version']
     errors = refresh_feedback(json.dumps(value), [], schema_version=VERSION, context=CONTEXT)
-    error, = errors
-    assert error['type'] == 'missing'
-    assert error['path'] == '$.changes[0].expected_version'
-    assert error['constraints'] == {'const': 4, 'nullable': False}
+    assert errors == []
 
 
 @pytest.mark.parametrize('wrong', [MEMBER_ID[:-1], TOPIC_ID, DIRECTORY_ID])

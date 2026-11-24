@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from .extraction_schema import parse_extraction_output
+from .extraction_schema import parse_extraction_output_for_context
 from .group_addressing import address_snapshot_users
 from .memory_text import map_user_references, memory_texts, user_reference_ids
 
@@ -140,7 +140,9 @@ class ExtractionReferences:
                 value, "user", f"{path}.tags[{index}]", decode=decode)) for index, tag in enumerate(item["tags"])]
 
     def _output(self, raw: str, *, decode: bool) -> str:
-        output = parse_extraction_output(raw).model_dump(mode="json")
+        output = parse_extraction_output_for_context(
+            raw, self.batch, validate_supplied_versions=False
+        ).model_dump(mode="json")
 
         def evidence(item: dict[str, Any], path: str) -> None:
             for field in ("source_ids", "context_source_ids", "confirmation_source_ids"):

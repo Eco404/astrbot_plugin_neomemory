@@ -15,9 +15,23 @@ from tests.test_regeneration_contract import complete_candidate, field_cases
 from tests.test_regeneration_target_schema import archive
 from tests.test_pipeline_recovery_standards import TOPIC, SUMMARY
 
-SCHEMAS = {'extraction': extraction_schema.extraction_json_schema(), 'topic': topic_schema.output_schema(),
+def model_extraction_candidate():
+    value = complete_candidate()
+    for change in value['node_changes']:
+        change.pop('expected_version', None)
+    for change in value['profile_changes']:
+        change.pop('expected_version', None)
+    if value['relationship_change']:
+        value['relationship_change'].pop('expected_version', None)
+    for change in value['coverage_changes']:
+        change.pop('expected_event_version', None)
+        change.pop('expected_atomic_version', None)
+    return value
+
+
+SCHEMAS = {'extraction': extraction_schema.extraction_model_json_schema(), 'topic': topic_schema.output_schema(),
            'summary': short_term_prompts.output_schema(source_ids=['s1', 's2'], summary_chars=400)}
-BASES = {'extraction': complete_candidate(), 'topic': TOPIC, 'summary': SUMMARY}
+BASES = {'extraction': model_extraction_candidate(), 'topic': TOPIC, 'summary': SUMMARY}
 
 
 def errors_for(pipeline, candidate):
@@ -160,14 +174,17 @@ def fixed_context():
 
 
 @pytest.mark.parametrize('kind,expected', [('node', 4), ('profile', 3), ('relationship', 5)])
-def test_versions_come_from_fixed_input_not_rejected_version(kind, expected):
+def test_versions_are_filled_from_fixed_input(kind, expected):
     candidate, context = complete_candidate(), fixed_context()
     candidate['node_changes'][0].update(operation='update', node_id='n1', expected_version=99)
-    path = {'node': '$.node_changes[0]', 'profile': '$.profile_changes[0]', 'relationship': '$.relationship_change'}[kind]
-    item = at(candidate, feedback._location(path))
-    item['expected_version'] = 99
-    error = dynamic(candidate, 'expected_' + kind + '_version_mismatch', path + '.expected_version', context)
-    assert error['constraints'] == {'const': expected} and error['actual_value'] == 99
+    parsed = extraction_schema.parse_extraction_output_for_context(
+        json.dumps(candidate), context, validate_supplied_versions=False).model_dump(mode='json')
+    path = {'node': ('node_changes', 0), 'profile': ('profile_changes', 0),
+            'relationship': ('relationship_change',)}[kind]
+    item = parsed
+    for component in path:
+        item = item[component]
+    assert item['expected_version'] == expected
 
 
 @pytest.mark.parametrize('change,expected', [('new', 1), ('title', 4), ('content', 5), ('emotion', 5), ('order', 4), ('unchanged', 4), ('whitespace', 5), ('emotion_whitespace', 4)])
@@ -189,9 +206,9 @@ def test_coverage_versions_match_content_and_normalized_emotion(change, expected
         node['emotion']['description'] = '\t' + node['emotion']['description'] + '  '
     elif change == 'title':
         node['title'] = '新标题'
-    error = dynamic(candidate, 'coverage_event_version_mismatch', '$.coverage_changes[0].expected_event_version', context)
-    assert error['constraints'] == {'const': expected}
-    assert error['version_basis'] == 'after_candidate_content_and_normalized_emotion'
+    parsed = extraction_schema.parse_extraction_output_for_context(
+        json.dumps(candidate), context, validate_supplied_versions=False).model_dump(mode='json')
+    assert parsed['coverage_changes'][0]['expected_event_version'] == expected
     from core.memory_emotions import encode_emotion
     parsed = extraction_schema.parse_extraction_output(json.dumps(candidate))
     stored = None if change == 'new' else dict(old, emotion_json=encode_emotion(old['emotion']))
@@ -236,7 +253,7 @@ def test_initial_summary_evidence_and_topic_create_minimum_are_measured():
     assert issue['actual_items'] == issue['distinct_items'] == 1
 
 
-def test_topic_update_domain_and_version_are_fixed_and_protection_is_not_recoverable():
+def test_topic_update_domain_is_fixed_and_protection_is_not_recoverable():
     candidate = deepcopy(TOPIC)
     candidate['changes'][0]['expected_version'] = 99
     context = {'nodes': [{'node_id': 't1', 'node_type': 'topic', 'content_version': 4, 'status': 'active'},
@@ -244,7 +261,7 @@ def test_topic_update_domain_and_version_are_fixed_and_protection_is_not_recover
     issues = feedback.validation_errors(feedback.CandidateValidationError('topic_update_identity', ('changes', 0), ''),
         json.dumps(candidate), SCHEMAS['topic'], topic_regeneration.EXPLANATIONS, context=context, pipeline='topic')
     assert issues[0]['constraints']['topic_id']['enum'] == ['t1']
-    assert issues[0]['constraints']['expected_version'] == {'const': 4}
+    assert 'expected_version' not in issues[0]['constraints']
     for code in ['protected', 'context_changed', 'configuration_changed', 'lease_lost', 'output_capacity_exceeded']:
         assert not feedback.correction_allowed([{'type': code}], topic_regeneration.EXPLANATIONS)
         assert not regeneration.automatic_correction_allowed('invalid_output', {'validation_errors': [{'type': code}]})

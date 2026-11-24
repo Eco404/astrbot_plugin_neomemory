@@ -23,7 +23,6 @@ def enable(env, limit=3):
     ('create_fields', 'create_identity_invalid'),
     ('update_fields', 'update_identity_required'),
     ('node_reference_kind', 'unknown_reference'),
-    ('version', 'expected_node_version_mismatch'),
     ('edge', 'unknown_local_reference'),
     ('self_edge', 'edge_self_reference'),
     ('relationship_evidence', 'evidence_user_mismatch'),
@@ -335,7 +334,8 @@ async def test_explicit_schema_rules_correct_through_durable_job(environment, fa
     env.adapter.on_generate = correct
     completed = await execute(env, await enqueue_and_claim(env))
     assert completed['state'] == 'succeeded'
-    assert len(env.adapter.calls) == 2
+    # The production contract derives result from the changes locally.
+    assert len(env.adapter.calls) == (1 if fault == 'result_mismatch' else 2)
     assert len(await env.memory.database.fetchall('SELECT * FROM extraction_batches')) == 1
 
 

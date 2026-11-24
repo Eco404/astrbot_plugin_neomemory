@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from core.topic_prompt import build_messages
-from core.topic_schema import output_schema, parse_output
+from core.topic_schema import VERSION, model_output_schema, output_schema, parse_output, parse_output_for_context
 
 
 def proposal(**changes):
@@ -21,6 +21,24 @@ def encoded(*changes):
 
 def test_empty_changes_is_a_complete_no_change_decision():
     assert parse_output(encoded()) == {"schema_version": "topic-consolidation.v1", "changes": []}
+
+
+def test_model_schema_omits_topic_version_and_parser_restores_it():
+    schema = model_output_schema()
+    assert "schema_version" not in schema["properties"]
+    assert "schema_version" not in schema.get("required", [])
+    assert "expected_version" not in schema["$defs"]["TopicChange"]["properties"]
+    assert "expected_version" not in schema["$defs"]["TopicChange"].get("required", [])
+    value = proposal(operation="update", topic_id="t1", expected_version=99)
+    parsed = parse_output_for_context(encoded(value), {
+        "nodes": [{"node_id": "t1", "node_type": "topic", "content_version": 4}],
+    }, validate_supplied_versions=False)
+    assert parsed["changes"][0]["expected_version"] == 4
+
+
+def test_topic_model_output_without_program_fields_gets_schema_version():
+    parsed = parse_output_for_context(json.dumps({"changes": []}), {"nodes": []})
+    assert parsed == {"schema_version": VERSION, "changes": []}
 
 
 def test_topic_creation_needs_distinct_members_but_existing_topic_can_keep_one():
@@ -55,7 +73,7 @@ def test_topic_does_not_accept_source_fabrication_or_member_rewrites():
             parse_output(encoded(proposal(**extra)))
 
 
-def test_prompt_exposes_member_versions_and_direction_without_private_metadata():
+def test_prompt_exposes_member_direction_without_private_metadata():
     nodes = [{"node_id": "e1", "node_type": "event", "content_version": 3,
               "content_text": "独立事件。", "metadata": {"irrelevant": "internal"}},
              {"node_id": "t1", "node_type": "topic", "content_version": 2,
@@ -64,7 +82,7 @@ def test_prompt_exposes_member_versions_and_direction_without_private_metadata()
               "edge_id": "internal-id"}]
     messages = build_messages("自然表达", nodes, edges)
     value = json.loads(messages[1]["content"])
-    assert value["nodes"][0]["content_version"] == 3
+    assert "content_version" not in value["nodes"][0]
     assert "metadata" not in value["nodes"][0]
     assert value["edges"] == [{"source_node_id": "t1", "target_node_id": "e1", "relation_type": "contains"}]
     assert output_schema()["additionalProperties"] is False

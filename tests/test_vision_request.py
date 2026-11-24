@@ -93,7 +93,7 @@ def test_regeneration_feedback_points_to_nested_extraction_or_image_slot():
     window = {"raw": json.dumps({"extraction": exc, "image_evidence": []}), "image_slots": slots}
     archived = {"window": window, "error_code": "invalid_output"}
     feedback = validation_feedback(archived, schema_version="extraction.v1")
-    assert [e["path"] for e in feedback["errors"]] == ["$.extraction.reason"]
+    assert [e["path"] for e in feedback["errors"]] == ["$.extraction"]
 
     window["raw"] = json.dumps({"extraction": exc, "image_evidence": [entry("s1")]})
     image_errors = validation_feedback(archived, schema_version="extraction.v1")["errors"]

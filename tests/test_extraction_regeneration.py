@@ -182,11 +182,11 @@ def test_json_feedback_uses_parser_coordinates_not_stored_diagnostics(raw, hint)
     assert json.dumps(archived) == before
 
 
-def test_typed_candidate_feedback_explains_version_without_changing_it():
+def test_typed_candidate_feedback_does_not_reintroduce_program_versions():
     candidate = output([node("s1", old={"node_id": "n1", "content_version": 9})])
     archived = {"error_code": "expected_node_version_mismatch", "window": {"raw": json.dumps(candidate),
         "validation_errors": [{"path": "$.node_changes[0].expected_version", "type": "expected_node_version_mismatch"}]}}
     before = json.dumps(archived, sort_keys=True)
     feedback = validation_feedback(archived)
-    assert feedback["errors"][0]["type"] == "expected_node_version_mismatch"
+    assert feedback["errors"] == []
     assert json.dumps(archived, sort_keys=True) == before

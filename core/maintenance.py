@@ -47,7 +47,8 @@ from .extraction_regeneration import (
     automatic_correction_allowed,
 )
 from .extraction_regeneration import build_messages as regeneration_messages
-from .extraction_schema import extraction_json_schema, parse_extraction_output
+from .extraction_schema import extraction_model_json_schema, parse_extraction_output
+from .candidate_feedback import CandidateValidationError
 from .extraction_window import WindowMessage, WindowPolicy, select_window
 from .forwarded_content import window_text
 from .parallel_rebuild import rebuild_sections
@@ -536,7 +537,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                 result["restart_required"] = True
         if topic_window:
             from .topic_maintenance import TopicStore
-            from .topic_schema import parse_output as parse_topic_output
+            from .topic_schema import parse_output_for_context as parse_topic_output
             result["regenerate_window_available"] = (
                 job["state"] in {"failed", "cancelled"} and "raw" in topic_window
                 and await TopicStore(self.memory).receipt(topic_window["receipt_key"]) is None)
@@ -547,8 +548,9 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             if "raw" in topic_window:
                 try:
                     prepared = topic_window["prepared"]
-                    result["candidate"] = parse_topic_output(topic_window["raw"], window_user_ids=(
-                        prepared["allowed_user_ids"]))
+                    result["candidate"] = parse_topic_output(
+                        topic_window["raw"], prepared,
+                        window_user_ids=prepared["allowed_user_ids"])
                 except ValueError:
                     result["candidate_format_invalid"] = True
         return result
@@ -699,7 +701,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                 schema = scoped_model.model_json_schema()
                 base = scoped_messages(base, job["kind"], schema, prompt_version=batch.prompt_version)
             else:
-                schema = extraction_json_schema(schema_for_prompt_version(batch.prompt_version))
+                schema = extraction_model_json_schema(schema_for_prompt_version(batch.prompt_version))
             while True:
                 attachments, changed = await load_slots(manifest, self.image_cache)
                 if changed:
@@ -773,7 +775,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             if collects_evidence(manifest):
                 raw, evidence = split_vision_output(raw, manifest)
             if scoped_model:
-                raw = extraction_envelope(raw, job["kind"], schema_for_prompt_version(batch.prompt_version))
+                raw = extraction_envelope(raw, job["kind"], schema_for_prompt_version(batch.prompt_version), batch)
             canonical = references.decode(raw)
         except VisionOutputError as exc:
             window["validation_errors"] = [{"path": exc.path, "type": exc.code, "instruction": exc.instruction}]
@@ -781,6 +783,13 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             raise ReviewRequired("invalid_output") from None
         except ReferenceValidationError as exc:
             window["validation_errors"] = [{"path": exc.path, "type": exc.code}]
+        except CandidateValidationError as exc:
+            path = "$" + "".join(
+                f"[{item}]" if isinstance(item, int) else f".{item}" for item in exc.location
+            )
+            window["validation_errors"] = [{"path": path, "type": exc.code}]
+            await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
+            raise ReviewRequired(exc.code) from None
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
             raise ReviewRequired("unknown_reference") from None
         except ExtractionCapacityError as exc:
@@ -814,6 +823,13 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
             raise ReviewRequired("invalid_output") from None
         except ValidationError as exc:
+        except CandidateValidationError as exc:
+            path = "$" + "".join(
+                f"[{item}]" if isinstance(item, int) else f".{item}" for item in exc.location
+            )
+            window["validation_errors"] = [{"path": path, "type": exc.code}]
+            await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
+            raise ReviewRequired(exc.code) from None
             window["validation_errors"] = _schema_diagnostics(exc)
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
             raise ReviewRequired("invalid_output") from None

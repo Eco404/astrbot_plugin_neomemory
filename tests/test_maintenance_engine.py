@@ -186,17 +186,15 @@ async def test_saved_provider_candidate_survives_worker_restart_without_second_c
 
 
 @pytest.mark.asyncio
-async def test_production_maintenance_rejects_unsupported_schema(environment):
+async def test_production_maintenance_owns_schema_version(environment):
     env = environment
     candidate = {**output(), "schema_version": "extraction.unsupported"}
     env.adapter.output = json.dumps(candidate)
     result = await execute(env, await enqueue_and_claim(env))
-    assert result["state"] == "failed"
-    assert result["error_code"] == "invalid_output"
-    assert result["checkpoint"]["window"]["raw"] == env.adapter.output
+    assert result["state"] == "succeeded"
     assert len(env.adapter.calls) == 1
-    assert (await env.memory.get_active_generation(env.space["space_id"]))["activity_round"] == 0
-    assert await env.memory.database.fetchall("SELECT * FROM extraction_batches") == []
+    batch = await env.memory.database.fetchone("SELECT schema_version FROM extraction_batches")
+    assert batch["schema_version"] == "extraction.v1"
 
 
 @pytest.mark.asyncio

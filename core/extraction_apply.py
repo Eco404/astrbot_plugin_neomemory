@@ -11,7 +11,9 @@ from typing import Any
 from .forwarded_content import project_forward
 from .group_addressing import group_source_addresses
 from .extraction_observations import build_observation_anchors
-from .extraction_schema import parse_extraction_output
+from .extraction_schema import parse_extraction_output_for_context
+from .candidate_feedback import CandidateValidationError
+from .extraction_errors import InvalidExtractionCandidate
 from .source_fragments import fragment_info
 from .prompts import (
     PROMPT_VERSION,
@@ -145,7 +147,6 @@ class PreparedExtraction:
                         "node_type",
                         "status",
                         "manual_protected",
-                        "content_version",
                         "content_text",
                         "importance",
                         "event_time_start",
@@ -164,7 +165,6 @@ class PreparedExtraction:
                         "logical_user_id",
                         "tags",
                         "description",
-                        "content_version",
                         "status",
                     ) + observation_fields,
                 )
@@ -172,18 +172,18 @@ class PreparedExtraction:
             ],
             known_relationship=select(
                 self.relationship,
-                ("logical_user_id", "state_text", "state", "content_version", "status") + observation_fields,
+                ("logical_user_id", "state_text", "state", "status") + observation_fields,
             )
             if self.relationship
             else None,
         )
-
         if any("source_fragment" in source for source in prepared_sources):
             messages[0]["content"] += (
                 "\nsource_fragment表示同一条原始消息的程序分段。相同parent_source_id的分段按index顺序阅读，"
                 "不要把分段边界当成新的发言、事件或事实；每段仍可作为evidence_source_ids中的独立来源。"
             )
         return messages
+
 
 class ExtractionService:
     """An explicit-call service: no network provider, scheduler, or hidden retry."""
@@ -372,7 +372,20 @@ class ExtractionService:
     async def apply(
         self, batch: PreparedExtraction, raw: str, *, model_id: str, image_evidence=()
     ) -> dict[str, Any]:
-        output = parse_extraction_output(raw)
+        # Version preconditions are derived from this frozen batch.  They are
+        # intentionally absent from the model-facing response contract.
+        try:
+            output = parse_extraction_output_for_context(raw, batch, validate_supplied_versions=False)
+        except CandidateValidationError as exc:
+            path = "$" + "".join(
+                f"[{item}]" if isinstance(item, int) else f".{item}" for item in exc.location
+            )
+            messages = {
+                "expected_node_version_mismatch": "node type or expected_version does not match",
+                "coverage_event_version_mismatch": "expected final content versions",
+                "coverage_atomic_version_mismatch": "expected final content versions",
+            }
+            raise InvalidExtractionCandidate(exc.code, path, messages.get(exc.code, str(exc))) from None
         # Check authoritative sources again before entering the memory transaction.
         current = await self.sources.get_records(
             tuple(item["source_id"] for item in batch.sources)

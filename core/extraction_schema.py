@@ -7,16 +7,19 @@ manual protection and generation membership must be checked by the apply layer.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, ValidationInfo, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
 from .memory_nodes import validate_title
-from .memory_emotions import validate_emotion
+from .memory_emotions import encode_emotion, validate_emotion
 from .text_lengths import encoded_text_limit, readable_text_length
 from .relationship_state import LONG_TERM_MAX_CHARS, AFTEREFFECT_MAX_CHARS, is_slot_operation
 from .extraction_errors import DuplicateJSONKey, ExtractionCapacityError
+from .candidate_feedback import CandidateValidationError
+from .memory_text import memory_texts, user_reference_ids
 
 SCHEMA_VERSION = "extraction.v1"
 MAX_OUTPUT_CHARS = 120_000
@@ -317,3 +320,236 @@ def extraction_json_schema(schema_version: str = SCHEMA_VERSION) -> dict[str, An
     by parsing and the apply layer even when a provider accepts this schema.
     """
     return _output_model(schema_version).model_json_schema()
+
+
+def extraction_model_json_schema(schema_version: str = SCHEMA_VERSION) -> dict[str, Any]:
+    """Return the wire schema shown to the model.
+
+    Content versions are storage and concurrency metadata.  They are derived
+    from the frozen input snapshot by the application after generation, so the
+    model does not spend output budget reproducing internal counters.
+    """
+    schema = deepcopy(extraction_json_schema(schema_version))
+    for field in ("schema_version", "result", "reason"):
+        schema["properties"].pop(field, None)
+        if field in schema.get("required", []):
+            schema["required"].remove(field)
+    for definition, fields in {
+        "NodeChange": ("expected_version",),
+        "ProfileChange": ("expected_version",),
+        "RelationshipChange": ("expected_version",),
+        "CoverageChange": ("expected_event_version", "expected_atomic_version"),
+    }.items():
+        value = schema["$defs"][definition]
+        for field in fields:
+            value["properties"].pop(field, None)
+            if field in value.get("required", []):
+                value["required"].remove(field)
+    return schema
+
+
+def _decode_output(raw: str) -> dict[str, Any]:
+    if not isinstance(raw, str):
+        raise ValueError("extraction output must be a JSON string")
+    if len(raw) > MAX_OUTPUT_CHARS:
+        raise ExtractionCapacityError(len(raw), MAX_OUTPUT_CHARS)
+    try:
+        decoded = json.loads(raw, parse_constant=_reject_constant, object_pairs_hook=_unique_object)
+    except RecursionError as exc:
+        raise ValueError("extraction output is nested too deeply") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("extraction output must be a JSON object")
+    return decoded
+
+
+def _context_rows(context: Any, field: str, default=()):
+    if isinstance(context, dict):
+        value = context.get(field)
+        if value is None and field == "profiles":
+            value = context.get("known_profiles")
+        if value is None and field == "relationship":
+            value = context.get("known_relationship")
+        return default if value is None else value
+    return getattr(context, field, default)
+
+
+def _context_aliases(context: Any, field: str, prefix: str) -> dict[str, str]:
+    """Recreate the short aliases used in the model-facing request."""
+    rows = _context_rows(context, field)
+    if field == "profiles" and not rows:
+        rows = _context_rows(context, "known_profiles")
+    if field == "relationship":
+        rows = (rows,) if isinstance(rows, dict) else ()
+    if field == "space":
+        rows = (rows,) if isinstance(rows, dict) else ()
+    values = []
+    if field == "space":
+        values.extend(row.get("logical_user_id") for row in rows if row.get("logical_user_id"))
+    elif field == "known_nodes":
+        values.extend(row.get("node_id") for row in rows if row.get("node_id"))
+    elif field == "sources":
+        for row in rows:
+            for key in ("actor_logical_user_id", "conversation_logical_user_id"):
+                if row.get(key):
+                    values.append(row[key])
+    elif field in {"profiles", "relationship"}:
+        values.extend(row.get("logical_user_id") for row in rows if row.get("logical_user_id"))
+    return {f"{prefix}{index}": value for index, value in enumerate(dict.fromkeys(values), 1)}
+
+
+def _context_user_aliases(context: Any) -> dict[str, str]:
+    rows = []
+    space = _context_rows(context, "space", {})
+    if isinstance(space, dict):
+        rows.append(space)
+    rows.extend(_context_rows(context, "sources"))
+    rows.extend(_context_rows(context, "profiles"))
+    relationship = _context_rows(context, "relationship")
+    if isinstance(relationship, dict):
+        rows.append(relationship)
+    values = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in ("logical_user_id", "actor_logical_user_id", "conversation_logical_user_id"):
+            if row.get(key):
+                values.append(row[key])
+    for row in (*_context_rows(context, "known_nodes"), *_context_rows(context, "profiles")):
+        if isinstance(row, dict):
+            values.extend(user_reference_ids(memory_texts(row)))
+    relationship = _context_rows(context, "relationship")
+    if isinstance(relationship, dict):
+        values.extend(user_reference_ids(memory_texts(relationship)))
+    return {f"u{index}": value for index, value in enumerate(dict.fromkeys(values), 1)}
+
+
+def _normalise_program_versions(decoded: dict[str, Any], context: Any, *, validate_supplied_versions=True) -> dict[str, Any]:
+    """Fill storage preconditions from the prepared snapshot.
+
+    Any model-supplied values are ignored deliberately.  The resulting object
+    is the canonical internal candidate consumed by the transactional writer.
+    """
+    value = deepcopy(decoded)
+    value["schema_version"] = SCHEMA_VERSION
+    nodes = {row["node_id"]: row for row in _context_rows(context, "known_nodes")
+             if isinstance(row, dict) and row.get("node_id")}
+    profiles = {row["logical_user_id"]: row for row in _context_rows(context, "profiles")
+                if isinstance(row, dict) and row.get("logical_user_id")}
+    relationship = _context_rows(context, "relationship")
+    node_aliases = _context_aliases(context, "known_nodes", "n")
+    user_aliases = _context_user_aliases(context)
+    changes = value.get("node_changes", [])
+    resolved: dict[str, str] = {}
+    versions: dict[str, int] = {}
+    for change in changes if isinstance(changes, list) else ():
+        if not isinstance(change, dict):
+            continue
+        operation = change.get("operation")
+        node_id = change.get("node_id")
+        lookup_node_id = node_aliases.get(node_id, node_id) if isinstance(node_id, str) else None
+        if operation == "create":
+            supplied_version = change.get("expected_version")
+            valid_supplied_version = (type(supplied_version) is int and supplied_version >= 0)
+            if ((validate_supplied_versions and valid_supplied_version and supplied_version is not None)
+                    or ("node_id" in change and isinstance(node_id, str) and 1 <= len(node_id) <= 200
+                        and bool(node_id.strip()) and not any(char.isspace() for char in node_id))):
+                raise CandidateValidationError("create_identity_invalid", ("node_changes", changes.index(change)),
+                                               "create identity must be managed by the program")
+            change["expected_version"] = None
+            local_ref = change.get("local_ref")
+            if isinstance(local_ref, str):
+                versions[local_ref] = 1
+        else:
+            old = nodes.get(lookup_node_id)
+            expected = old.get("content_version", 1) if old else 1
+            supplied_version = change.get("expected_version")
+            valid_supplied_version = type(supplied_version) is int and supplied_version >= 1
+            if (validate_supplied_versions and valid_supplied_version
+                    and supplied_version != expected):
+                raise CandidateValidationError("expected_node_version_mismatch", ("node_changes", changes.index(change), "expected_version"),
+                                               "model supplied a stale program-managed version")
+            change["expected_version"] = expected
+            local_ref = change.get("local_ref")
+            if isinstance(local_ref, str):
+                resolved[local_ref] = lookup_node_id
+            changed = bool(old and (
+                change.get("content") != old.get("content_text")
+                or encode_emotion(change.get("emotion")) != encode_emotion(old.get("emotion"))
+            ))
+            if isinstance(local_ref, str):
+                versions[local_ref] = (old.get("content_version", 1) + int(changed)
+                                       if old else 1)
+            if isinstance(lookup_node_id, str):
+                versions[lookup_node_id] = versions.get(local_ref, expected) if isinstance(local_ref, str) else expected
+    for change in changes if isinstance(changes, list) else ():
+        if not isinstance(change, dict):
+            continue
+        local_ref = change.get("local_ref")
+        if change.get("operation") == "create" and isinstance(local_ref, str):
+            resolved[local_ref] = local_ref
+
+    for change in value.get("profile_changes", []) if isinstance(value.get("profile_changes", []), list) else ():
+        if isinstance(change, dict):
+            logical_user_id = change.get("logical_user_id")
+            lookup_user_id = user_aliases.get(logical_user_id, logical_user_id) \
+                if isinstance(logical_user_id, str) else None
+            expected = profiles.get(lookup_user_id, {}).get("content_version", 0) \
+                if isinstance(lookup_user_id, str) else 0
+            supplied_version = change.get("expected_version")
+            valid_supplied_version = type(supplied_version) is int and supplied_version >= 0
+            if (validate_supplied_versions and valid_supplied_version
+                    and supplied_version != expected):
+                raise CandidateValidationError("expected_profile_version_mismatch", ("profile_changes", value["profile_changes"].index(change), "expected_version"),
+                                               "model supplied a stale program-managed version")
+            change["expected_version"] = expected
+    relation_change = value.get("relationship_change")
+    if isinstance(relation_change, dict):
+        relation_user_id = relation_change.get("logical_user_id")
+        lookup_user_id = user_aliases.get(relation_user_id, relation_user_id) \
+            if isinstance(relation_user_id, str) else None
+        expected = relationship.get("content_version", 0) if relationship else 0
+        supplied_version = relation_change.get("expected_version")
+        valid_supplied_version = type(supplied_version) is int and supplied_version >= 0
+        if (validate_supplied_versions and valid_supplied_version
+                and supplied_version != expected):
+            raise CandidateValidationError("expected_relationship_version_mismatch", ("relationship_change", "expected_version"),
+                                           "model supplied a stale program-managed version")
+        relation_change["expected_version"] = expected
+
+    def final_version(reference):
+        if isinstance(reference, str) and reference in versions:
+            return versions[reference]
+        node_id = resolved.get(reference, node_aliases.get(reference, reference)) if isinstance(reference, str) else None
+        if isinstance(node_id, str) and node_id in versions:
+            return versions[node_id]
+        return nodes.get(node_id, {}).get("content_version", 1) if isinstance(node_id, str) else 1
+
+    for change in value.get("coverage_changes", []) if isinstance(value.get("coverage_changes", []), list) else ():
+        if isinstance(change, dict):
+            expected_event = final_version(change.get("event_ref"))
+            expected_atomic = final_version(change.get("atomic_ref"))
+            if (validate_supplied_versions and "expected_event_version" in change and change.get("expected_event_version") is not None
+                    and change.get("expected_event_version") != expected_event):
+                raise CandidateValidationError("coverage_event_version_mismatch", ("coverage_changes", value["coverage_changes"].index(change), "expected_event_version"),
+                                               "model supplied a stale program-managed version")
+            if (validate_supplied_versions and "expected_atomic_version" in change and change.get("expected_atomic_version") is not None
+                    and change.get("expected_atomic_version") != expected_atomic):
+                raise CandidateValidationError("coverage_atomic_version_mismatch", ("coverage_changes", value["coverage_changes"].index(change), "expected_atomic_version"),
+                                               "model supplied a stale program-managed version")
+            change["expected_event_version"] = expected_event
+            change["expected_atomic_version"] = expected_atomic
+    has_changes = bool(
+        value.get("node_changes") or value.get("edges") or value.get("profile_changes")
+        or value.get("relationship_change") or value.get("coverage_changes")
+    )
+    value["result"] = "changes" if has_changes else "no_change"
+    value["reason"] = "changes" if has_changes else "no_meaningful_content"
+    return value
+
+
+def parse_extraction_output_for_context(raw: str, context: Any, *, schema_version: str | None = None,
+                                       validate_supplied_versions: bool = True) -> ExtractionOutput:
+    """Parse model output after deriving internal versions from trusted input."""
+    decoded = _normalise_program_versions(_decode_output(raw), context,
+                                          validate_supplied_versions=validate_supplied_versions)
+    return _output_model(schema_version or decoded.get("schema_version", SCHEMA_VERSION)).model_validate(decoded)

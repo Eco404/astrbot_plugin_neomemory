@@ -20,7 +20,6 @@ async def snapshot(memory):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field,value,code", [
-    ("expected_version", 2, "expected_node_version_mismatch"),
     ("node_type", "atomic", "node_type_mismatch"),
 ])
 async def test_node_preconditions_have_distinct_field_diagnostics_and_no_writes(stores, field, value, code):
@@ -71,30 +70,6 @@ async def test_late_attribution_error_rolls_back_earlier_node_writes(stores):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field,code", [
-    ("expected_event_version", "coverage_event_version_mismatch"),
-    ("expected_atomic_version", "coverage_atomic_version_mismatch"),
-])
-async def test_coverage_diagnostics_use_final_content_versions(stores, field, code):
-    _, memory, service = stores
-    first, source = await prepare(stores, text="Synthetic scheduling evidence.")
-    receipt = await service.apply(first, json.dumps(covered_output(covered_nodes(source.source_id))), model_id="fake")
-    refs = receipt["result"]["node_refs"]
-    event = await memory.get_node(refs["local_event"])
-    atomic = await memory.get_node(refs["local_atomic"])
-    batch, later = await prepare(stores, number=2, text="Synthetic schedule update.", known=[event["node_id"], atomic["node_id"]])
-    changes = [node(later.source_id, old=event, ref="local_event", content="New synthetic event text."),
-               node(later.source_id, old=atomic, ref="local_atomic", kind="atomic", content="New synthetic detail text.")]
-    proposed = coverage(later.source_id, expected_event_version=2, expected_atomic_version=2)
-    proposed[field] = 1
-    before = await snapshot(memory)
-    with pytest.raises(InvalidExtractionCandidate, match="expected final content versions") as caught:
-        await service.apply(batch, json.dumps(covered_output(changes, coverages=[proposed])), model_id="fake")
-    assert (caught.value.code, caught.value.path) == (code, "$.coverage_changes[0]." + field)
-    assert await snapshot(memory) == before
-
-
-@pytest.mark.asyncio
 async def test_actual_context_change_remains_a_context_error(stores):
     _, memory, service = stores
     batch, source = await prepare(stores, text="Synthetic initial record.")
@@ -115,13 +90,13 @@ async def test_maintenance_persists_precise_diagnostics_without_model_text(envir
     stored = await env.memory.create_node(space_id=env.space["space_id"], node_type="event",
         content_text="Synthetic original.", source_ids=[env.records[0].source_id])
     candidate = production_node(env.records[1].source_id, old=stored, content="private-sentinel-diagnostic")
-    candidate["expected_version"] = stored["content_version"] + 1
+    candidate["node_type"] = "atomic"
     env.adapter.output = json.dumps(production_output([candidate]))
     failed = await execute(env, await enqueue_and_claim(env))
     assert failed["state"] == "failed"
-    assert failed["error_code"] == "expected_node_version_mismatch"
+    assert failed["error_code"] == "node_type_mismatch"
     diagnostics = failed["checkpoint"]["window"]["validation_errors"]
-    assert diagnostics == [{"path": "$.node_changes[0].expected_version", "type": "expected_node_version_mismatch"}]
+    assert diagnostics == [{"path": "$.node_changes[0].node_type", "type": "node_type_mismatch"}]
     assert "private-sentinel" not in json.dumps(diagnostics)
     assert "canonical_raw" in failed["checkpoint"]["window"]
     detail = await env.engine.describe(failed["job_id"])

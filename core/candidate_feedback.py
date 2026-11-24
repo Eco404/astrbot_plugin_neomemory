@@ -8,6 +8,11 @@ from .relationship_state import SLOT_OPERATIONS
 
 TOPIC_RECOVERY_VERSION = "topic-regeneration.v2"
 SHORT_TERM_RECOVERY_VERSION = "short-term-regeneration.v1"
+PROGRAM_VERSION_ERRORS = frozenset({
+    "expected_node_version_mismatch", "expected_profile_version_mismatch",
+    "expected_relationship_version_mismatch", "coverage_event_version_mismatch",
+    "coverage_atomic_version_mismatch",
+})
 
 # Schema field rules share error classification and feedback. Limits themselves
 # are read from the same JSON schema supplied in the initial request.
@@ -279,6 +284,11 @@ def enrich_feedback(errors, decoded, schema, *, context=None, pipeline=None):
     """
     if not isinstance(decoded, dict):
         return errors
+    if pipeline in {"extraction", "topic"}:
+        # These are storage preconditions. The active wire contracts omit the
+        # fields, so an old archived diagnostic must not ask the model to edit
+        # them during regeneration.
+        errors = [error for error in errors if error.get("type") not in PROGRAM_VERSION_ERRORS]
     context = context or {}
     known = {row['node_id']: row for row in context.get('known_nodes', context.get('nodes', []))}
     sources = {row['source_id']: row for row in context.get('sources', context.get('new_sources', []))}
@@ -334,16 +344,20 @@ def enrich_feedback(errors, decoded, schema, *, context=None, pipeline=None):
             error.update(constraints={'minItems': minimum}, actual_items=len(decoded['evidence_source_ids']))
         elif code in {'create_identity_invalid', 'topic_create_identity'}:
             field = 'topic_id' if code.startswith('topic_') else 'node_id'
-            error['constraints'] = {field: {'const': None}, 'expected_version': {'const': None}}
+            error['constraints'] = {field: {'const': None}}
+            if pipeline not in {"extraction", "topic"}:
+                error['constraints']['expected_version'] = {'const': None}
         elif code in {'update_identity_required', 'topic_update_identity'}:
             field = 'topic_id' if code.startswith('topic_') else 'node_id'
-            error['constraints'] = {field: {'nullable': False}, 'expected_version': {'nullable': False, 'minimum': 1}}
+            error['constraints'] = {field: {'nullable': False}}
+            if pipeline not in {"extraction", "topic"}:
+                error['constraints']['expected_version'] = {'nullable': False, 'minimum': 1}
             if code == 'topic_update_identity' and context:
                 error['constraints'][field]['enum'] = [key for key, node in known.items()
                     if node['node_type'] == 'topic' and node.get('status') == 'active'
                     and not any(node.get(flag) for flag in ('manual_protected', 'read_only', 'summary_stale'))]
             old = known.get(item.get(field))
-            if old and (field != 'topic_id' or old['node_type'] == 'topic'):
+            if pipeline not in {"extraction", "topic"} and old and (field != 'topic_id' or old['node_type'] == 'topic'):
                 error['constraints']['expected_version'] = {'const': old['content_version']}
                 error['actual_version'] = item.get('expected_version')
         elif code == 'event_time_interval':
@@ -398,11 +412,12 @@ def enrich_feedback(errors, decoded, schema, *, context=None, pipeline=None):
             error['constraints'] = {field: ({'nullable': False} if item['node_type'] == 'event' else {'const': None})
                                     for field in ('event_status', 'event_identity')}
         if context:
-            _fixed_context_feedback(error, item, decoded, known, sources, context)
+            _fixed_context_feedback(error, item, decoded, known, sources, context,
+                                    include_program_versions=pipeline not in {"extraction", "topic"})
     return errors
 
 
-def _fixed_context_feedback(error, item, decoded, known, sources, context):
+def _fixed_context_feedback(error, item, decoded, known, sources, context, *, include_program_versions=True):
     code, path = error['type'], error['path']
     if code == 'readonly_node':
         error['actual_value'] = _value_at(decoded, _location(path))
@@ -429,11 +444,15 @@ def _fixed_context_feedback(error, item, decoded, known, sources, context):
             error['violations'] = [{
                 'path': path + '.topic_id', 'actual_value': item.get('topic_id'),
                 'constraints': {'enum': list(available), 'nullable': False},
-                'allowed_topics': [{'topic_id': node_id, 'expected_version': node['content_version']}
+                'allowed_topics': [{'topic_id': node_id, **({'expected_version': node['content_version']}
+                    if include_program_versions else {})}
                                   for node_id, node in available.items()],
-                'instruction': '该topic_id不属于本次可编辑主题集合。按内容确定目标后，从allowed_topics逐字复制完整topic_id及配套expected_version；不猜测或补写ID。',
+                'instruction': ('该topic_id不属于本次可编辑主题集合。按内容确定目标后，从allowed_topics逐字复制完整topic_id；'
+                                + ('版本由程序自动计算，不输出expected_version。' if not include_program_versions
+                                   else '并配套expected_version；')
+                                + '不猜测或补写ID。'),
             }]
-        elif item.get('expected_version') != available[item['topic_id']]['content_version']:
+        elif include_program_versions and item.get('expected_version') != available[item['topic_id']]['content_version']:
             error['violations'] = [{
                 'path': path + '.expected_version', 'actual_value': item.get('expected_version'),
                 'constraints': {'const': available[item['topic_id']]['content_version']},

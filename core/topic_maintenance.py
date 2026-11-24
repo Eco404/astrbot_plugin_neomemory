@@ -21,7 +21,7 @@ from .jobs import RetryableJobError, ReviewRequired
 from .model_routing import fixed_route
 from .topic_prompt import (PROMPT_VERSION,
                            build_messages, schema_for_prompt_version)
-from .topic_schema import VERSION, output_schema, parse_output
+from .topic_schema import VERSION, model_output_schema, parse_output_for_context
 from .candidate_feedback import compact_json_messages, correction_allowed, recovery_messages, validation_errors
 from .topic_regeneration import EXPLANATIONS, VERSION as RECOVERY_VERSION, refresh_feedback
 from .topic_evidence import collect_topic_evidence
@@ -238,7 +238,7 @@ class TopicMaintenanceMixin:
                     options = {}
                     if self.config.extraction_output_format != "text":
                         options = {"output_format": self.config.extraction_output_format,
-                                   "output_schema": output_schema(schema_version)}
+                                   "output_schema": model_output_schema(schema_version)}
                     diagnostics = {}
                     try:
                         window["raw"] = await self.runtime.adapter.generate(request,
@@ -273,15 +273,17 @@ class TopicMaintenanceMixin:
                     if current_signature != signature:
                         raise ReviewRequired("configuration_changed")
                     prepared = window["prepared"]
-                    output = parse_output(window["raw"], expected_schema_version=schema_version,
-                        window_user_ids=prepared["allowed_user_ids"])
+                    output = parse_output_for_context(window["raw"], prepared,
+                        expected_schema_version=schema_version,
+                        window_user_ids=prepared["allowed_user_ids"],
+                        validate_supplied_versions=False)
                     return await store.apply(job, window["prepared"], output, receipt_key=window["receipt_key"])
                 except PermissionError:
                     raise ReviewRequired("task_write_not_permitted") from None
                 except ValueError as exc:
                     if str(exc) in TOPIC_CONTEXT_ERRORS:
                         raise ReviewRequired("context_changed") from None
-                    errors = validation_errors(exc, window["raw"], output_schema(schema_version), EXPLANATIONS,
+                    errors = validation_errors(exc, window["raw"], model_output_schema(schema_version), EXPLANATIONS,
                         context=json.loads(messages[1]["content"]), pipeline="topic")
                     window["errors"] = errors
                     await self._save(job, checkpoint, "topic_validate", checkpoint["done"], checkpoint["total"])

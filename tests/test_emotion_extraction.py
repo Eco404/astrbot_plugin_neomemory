@@ -51,13 +51,10 @@ def test_emotion_protocol_is_explicit_nullable_and_strict():
             assert set(model["required"]) == set(model["properties"])
 
 
-def test_emotion_repair_feedback_preserves_field_path_and_content_version_contract():
+def test_emotion_repair_feedback_preserves_field_path():
     invalid = candidate("s1", {**emotion(), "tags": [{"tag": "joy", "intensity": 2.0}]})
     feedback = validation_feedback({"window": {"raw": json.dumps(invalid)}, "error_code": "invalid_output"}, schema_version="extraction.v1")
     assert feedback["errors"][0]["path"] == "$.node_changes[0].emotion.tags[0].intensity"
-    for code in ("coverage_event_version_mismatch", "coverage_atomic_version_mismatch"):
-        feedback = validation_feedback({"window": {"raw": json.dumps(candidate("s1", emotion()))}, "error_code": code}, schema_version="extraction.v1")
-        assert "正文或情绪改变" in feedback["errors"][0]["instruction"]
 
 
 @pytest.mark.asyncio

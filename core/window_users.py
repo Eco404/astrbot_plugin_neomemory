@@ -18,5 +18,9 @@ class WindowUsers:
     def encode_text(self, text):
         return map_user_references(text, self.encode)
 
+    def decode(self, alias):
+        """Return the full logical-user ID for a window-local alias."""
+        return self.identities[alias]
+
     def decode_text(self, text):
         return map_user_references(text, self.identities.__getitem__)

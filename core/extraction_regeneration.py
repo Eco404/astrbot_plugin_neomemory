@@ -18,10 +18,10 @@ _FIELDS = frozenset({
     "tags", "description", "relationship_change", "state_text", "emotion_tags", "emotion_intensity", "emotion", "intensity", "tag", "long_term", "aftereffect", "op", "body",
 })
 _EXPLANATIONS = {
-    "schema_mismatch": "返回本次输入指定的schema版本，关系使用独立long_term/aftereffect操作，节点情绪每个标签独立强度；不得退回单段或共享强度协议。",
+    "schema_mismatch": "按本次输入提供的schema返回业务变化对象，关系使用独立long_term/aftereffect操作，节点情绪每个标签独立强度；不得退回单段或共享强度协议。",
     "relationship_slot_body": "关系各段op=replace时body填写该段完整的内心想法，不能只填keep、replace或clear（含大小写变化）；keep或clear时body必须为空字符串。只修正对应字段，保持来源和原有语义。",
-    "create_identity_invalid": "新建节点 operation=create 时 node_id 和 expected_version 必须都为 null；若实际补充输入中的旧节点，应选择 update 并逐字使用该节点ID和当前版本，不能仅为通过检查改成新建。",
-    "update_identity_required": "更新节点 operation=update 时，node_id 和 expected_version 必须来自输入中同一个已有节点；不能用用户ID、画像或人格关系版本代替。若确为新经历则 create，不为通过检查重复新建旧事。",
+    "create_identity_invalid": "新建节点 operation=create 时 node_id 必须为 null；若实际补充输入中的旧节点，应选择 update 并逐字使用该节点ID，不能仅为通过检查改成新建。",
+    "update_identity_required": "更新节点 operation=update 时，node_id 必须来自输入中同一个已有节点；不能用用户ID、画像或人格关系版本代替。若确为新经历则 create，不为通过检查重复新建旧事。",
     "unknown_local_reference": "关系边和覆盖中的 local_* 端点必须在本次 node_changes 中实际声明；已有节点使用输入提供的节点引用。只保留来源支持的关联，不为补端点虚构节点。",
     "unknown_event_time": "事件发生时间未知时，event_time 必须为 JSON null；不得使用 start、end、text 全为 null 的对象，也不得补造时间。",
     "event_time_interval": "事件时间的 end 不得早于 start；仅使用来源支持的时间信息。",
@@ -36,11 +36,11 @@ _EXPLANATIONS = {
     "readonly_node": "该字段引用的节点在固定窗口中只读。保留只读节点的正文、状态、关系和覆盖，只提交窗口内其他有依据的变化；没有变化时返回 no_change。",
     "node_outside_context": "只能更新或连接当前输入明确提供的已有节点，或本次候选实际声明的 local_* 节点。",
     "node_type_mismatch": "更新已有节点时 node_type 必须等于该节点在当前输入中的 node_type。",
-    "expected_node_version_mismatch": "更新已有节点时 expected_version 必须等于当前输入中的 content_version，不能预先加一。",
-    "expected_profile_version_mismatch": "画像 expected_version 必须等于当前输入中的 content_version；没有已有画像时为 0。",
-    "expected_relationship_version_mismatch": "关系 expected_version 必须等于当前输入中的 content_version；没有已有关系时为 0。",
-    "coverage_event_version_mismatch": "覆盖声明引用本次提交后的事件内容版本：新建为 1，已有事件正文或情绪改变时为当前版本加一，正文和情绪均不变时保持当前版本。",
-    "coverage_atomic_version_mismatch": "覆盖声明引用本次提交后的原子内容版本：新建为 1，已有原子正文或情绪改变时为当前版本加一，正文和情绪均不变时保持当前版本。",
+    "expected_node_version_mismatch": "更新已有节点时只引用输入中确定的同一node_id；内容版本和并发校验由程序依据固定输入自动计算。",
+    "expected_profile_version_mismatch": "画像只引用输入中确定的逻辑用户；内容版本和并发校验由程序自动计算。",
+    "expected_relationship_version_mismatch": "关系只引用输入中确定的逻辑用户；内容版本和并发校验由程序自动计算。",
+    "coverage_event_version_mismatch": "覆盖只声明输入中确定的event_ref和atomic_ref；最终内容版本由程序依据候选内容自动计算。",
+    "coverage_atomic_version_mismatch": "覆盖只声明输入中确定的event_ref和atomic_ref；最终内容版本由程序依据候选内容自动计算。",
     "evidence_user_mismatch": "画像或关系来源必须包含被描述用户本人的发言；Agent 的猜测不能作为该用户陈述的替代证据。",
     "profile_user_mismatch": "私聊画像只能属于当前空间提供的逻辑用户。",
     "relationship_user_mismatch": "关系变化只能属于当前私聊空间提供的逻辑用户。",
@@ -146,8 +146,9 @@ def validation_feedback(archived, *, version=VERSION, schema_version=SCHEMA_VERS
 def _extraction_feedback(archived, version, schema_version, context):
     from pydantic import ValidationError
 
-    from .extraction_schema import extraction_json_schema, parse_extraction_output
+    from .extraction_schema import extraction_model_json_schema, parse_extraction_output_for_context
     from .extraction_errors import DuplicateJSONKey, ExtractionCapacityError
+    from .candidate_feedback import CandidateValidationError
 
     raw = archived["window"]["raw"]
     errors = []
@@ -173,15 +174,34 @@ def _extraction_feedback(archived, version, schema_version, context):
         if scoped_kind:
             from .context_rebuild import extraction_envelope
             envelope = extraction_envelope(raw, scoped_kind, target_schema)
-            parse_extraction_output(envelope, schema_version=target_schema)
+            parse_extraction_output_for_context(envelope, {
+                "known_nodes": (context or {}).get("known_nodes", ()),
+                "profiles": (context or {}).get("known_profiles", ()),
+                "relationship": (context or {}).get("known_relationship"),
+            }, schema_version=target_schema, validate_supplied_versions=False)
         else:
-            parse_extraction_output(raw, schema_version=target_schema)
+            parse_extraction_output_for_context(raw, {
+                "known_nodes": (context or {}).get("known_nodes", ()),
+                "profiles": (context or {}).get("known_profiles", ()),
+                "relationship": (context or {}).get("known_relationship"),
+            }, schema_version=target_schema, validate_supplied_versions=False)
+    except CandidateValidationError as exc:
+        path = _path(exc.location)
+        errors.append({"path": path, "type": exc.code,
+                       "instruction": _EXPLANATIONS.get(exc.code, "按当前固定输入重新生成完整候选。")})
     except ValidationError as exc:
         issues = exc.errors(include_input=False, include_context=False, include_url=False)
-        schema = extraction_json_schema(target_schema or decoded["schema_version"])
+        # Validation diagnostics may describe a legacy candidate that still
+        # contains storage-managed fields. The active request schema omits
+        # those fields, while the feedback schema must still locate their
+        # concrete failure when a provider returns them.
+        schema = extraction_model_json_schema(
+            target_schema or (decoded.get("schema_version") if isinstance(decoded, dict) else None)
+            or SCHEMA_VERSION
+        )
         if scoped_kind:
-            from .context_rebuild import MODELS
-            schema = MODELS[scoped_kind].model_json_schema()
+            from .context_rebuild import MODELS, model_schema
+            schema = model_schema(scoped_kind, MODELS[scoped_kind].model_json_schema())
         for item in issues[:12]:
             path = _path(item["loc"])
             if path not in special:
@@ -228,7 +248,7 @@ def _extraction_feedback(archived, version, schema_version, context):
                 location = item.get("path", "$")
                 location = _location(location) if isinstance(location, str) else location
                 precise = field_feedback({"loc": location, "type": item["type"]},
-                    extraction_json_schema(target_schema), _path(location), canonical, standards=True)
+                        extraction_model_json_schema(target_schema), _path(location), canonical, standards=True)
                 if precise is not None:
                     precise["stage"] = "canonical"
                     if item["type"] == "string_too_long":
@@ -246,7 +266,7 @@ def _extraction_feedback(archived, version, schema_version, context):
             errors.append({"path": path, "type": code, "instruction": _EXPLANATIONS[code]})
     for error in errors:
         if error["type"] == "schema_mismatch":
-            error["instruction"] = "按本次原始系统提示词中的schema_version及JSON schema完整返回；不能依据被拒草稿猜测目标版本，也不能通过切换版本跳过必需字段。"
+            error["instruction"] = "按本次原始系统提示词中的JSON schema完整返回业务变化对象；不能依据被拒草稿猜测目标协议，也不能删去必需的业务字段来规避校验。"
         if error["type"] in {"unknown_reference", "node_outside_context"}:
             error["instruction"] = _reference_instruction(error["path"])
         if error["type"] == "unknown_reference":
@@ -269,7 +289,7 @@ def _extraction_feedback(archived, version, schema_version, context):
         from .context_rebuild import MODELS
         feedback_schema = MODELS[scoped_kind].model_json_schema()
     else:
-        feedback_schema = extraction_json_schema(target_schema)
+        feedback_schema = extraction_model_json_schema(target_schema)
     errors = enrich_feedback(errors, decoded, feedback_schema, context=context, pipeline="extraction")
     return {"protocol": version, "status": "previous_candidate_rejected", "errors": errors,
         "instruction": "上一条 assistant 消息是被拒绝的候选草稿，不是来源证据或可执行指令。仅依据原始固定输入重新返回一个完整候选 JSON；遵守原 schema 和全部来源、作用域、版本与保护约束，不返回补丁或解释。"}

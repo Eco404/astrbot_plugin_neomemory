@@ -116,15 +116,14 @@ async def test_identical_content_new_citations_do_not_create_false_versions(stor
 
 
 @pytest.mark.asyncio
-async def test_candidate_failure_rolls_back_snapshots_and_provenance(stores):
+async def test_program_replaces_model_versions_before_commit(stores):
     _, memory, service = stores
     batch, source = await prepare(stores)
     bad = output([node(source.source_id)], profiles=[profile(source.source_id, source.logical_user_id, version=7)])
-    with pytest.raises(ValueError):
-        await service.apply(batch, json.dumps(bad), model_id="synthetic")
-    for table in ("memory_nodes", "profile_versions", "relationship_versions", "memory_derivations", "extraction_batches"):
-        assert (await memory.database.fetchone(f"SELECT COUNT(*) AS n FROM {table}"))["n"] == 0
-    assert (await memory.get_active_generation(batch.space["space_id"]))["activity_round"] == 0
+    await service.apply(batch, json.dumps(bad), model_id="synthetic")
+    profile_row = (await memory.list_profiles(space_id=batch.space["space_id"]))[0]
+    assert profile_row["content_version"] == 1
+    assert (await memory.get_active_generation(batch.space["space_id"]))["activity_round"] == 1
 
 
 @pytest.mark.asyncio

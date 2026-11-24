@@ -777,7 +777,7 @@ async def test_updates_rebuild_coverage_using_both_final_versions(stores):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fault", [
-    "event_version", "atomic_version", "unknown_source", "unknown_node",
+    "unknown_source", "unknown_node",
     "cross_space", "protected", "disabled", "wrong_type", "duplicate_alias",
 ])
 async def test_invalid_coverage_rejected_before_memory_changes(stores, fault):
@@ -847,6 +847,25 @@ async def test_late_failure_rolls_back_coverage_and_valid_retry_commits(stores):
     candidate["profile_changes"] = []
     await service.apply(batch, json.dumps(candidate), model_id="fake")
     assert len(await coverage_rows(memory)) == 1
+
+
+@pytest.mark.asyncio
+async def test_model_candidate_omits_program_fields_and_apply_completes_them(stores):
+    _, memory, service = stores
+    batch, source = await prepare(stores)
+    candidate = covered_output(covered_nodes(source.source_id))
+    candidate.pop("schema_version")
+    candidate.pop("result")
+    candidate.pop("reason")
+    for change in candidate["node_changes"]:
+        change.pop("expected_version")
+    for change in candidate["coverage_changes"]:
+        change.pop("expected_event_version")
+        change.pop("expected_atomic_version")
+    receipt = await service.apply(batch, json.dumps(candidate), model_id="fake")
+    assert receipt["activity_round"] == batch.expected_round + 1
+    nodes = await memory.list_nodes(space_id=batch.space["space_id"])
+    assert all(node["content_version"] == 1 for node in nodes)
 
 
 @pytest.mark.asyncio

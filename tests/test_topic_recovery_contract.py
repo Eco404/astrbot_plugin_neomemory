@@ -13,10 +13,8 @@ from tests.test_topic_maintenance import candidate, seed
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fault,code,path', [
-    ('schema_version', 'literal_error', '$.schema_version'),
     ('single_member', 'topic_create_members', '$.changes[0]'),
     ('unknown_user', 'topic_unknown_user', '$.changes[0]'),
-    ('update_version', 'topic_update_identity', '$.changes[0]'),
     ('update_member_identity', 'topic_update_identity', '$.changes[0]'),
 ])
 async def test_topic_declared_rules_recover_against_same_inputs(environment, fault, code, path):
@@ -37,14 +35,10 @@ async def test_topic_declared_rules_recover_against_same_inputs(environment, fau
         env.adapter.calls.clear()
     bad = deepcopy(valid)
     change = bad['changes'][0]
-    if fault == 'schema_version':
-        bad['schema_version'] = 'topic-consolidation.unknown'
-    elif fault == 'single_member':
+    if fault == 'single_member':
         change['member_ids'] = change['member_ids'][:1]
     elif fault == 'unknown_user':
         change['content'] = '{{user:not_in_input}}参与了计划。'
-    elif fault == 'update_version':
-        change['expected_version'] += 1
     else:
         change['topic_id'] = nodes[0]['node_id']
     env.adapter.output = json.dumps(bad)
@@ -67,12 +61,8 @@ async def test_topic_declared_rules_recover_against_same_inputs(environment, fau
         assert feedback['protocol'] == 'topic-regeneration.v2'
         error = feedback['errors'][0]
         assert error['type'] == code and error['path'] == path
-        initial_rules, initial_schema_text = messages[0]['content'].split('\nJSON schema:\n')
-        initial_schema = json.loads(initial_schema_text)
-        if fault == 'schema_version':
-            assert initial_schema['properties']['schema_version']['const'] == VERSION
-            assert error['constraints']['const'] == VERSION
-        elif fault == 'single_member':
+        initial_rules, _ = messages[0]['content'].split('\nJSON schema:\n')
+        if fault == 'single_member':
             assert '至少两项独立成员' in initial_rules
             assert '至少' in error['instruction'] and '两个' in error['instruction']
             assert '无关成员' in error['instruction']
@@ -81,12 +71,13 @@ async def test_topic_declared_rules_recover_against_same_inputs(environment, fau
             assert '未知逻辑用户' in initial_rules
             assert '不猜测、替换或新增用户ID' in error['instruction']
         else:
-            assert 'update必须复制已有topic_id和content_version' in initial_rules
-            assert '当前content_version' in error['instruction']
+            assert 'update只引用已有topic_id' in initial_rules
+            assert '版本、并发校验' in initial_rules and '由程序依据输入快照保存' in initial_rules
+            assert '版本由程序依据固定输入自动计算' in error['instruction']
             assert '不能使用成员ID' in error['instruction']
             supplied = json.loads(messages[1]['content'])['nodes']
             original = next(node for node in supplied if node['node_id'] == previous['node_id'])
-            assert original['content_version'] == valid['changes'][0]['expected_version']
+            assert 'content_version' not in original
         env.adapter.output = json.dumps(valid)
 
     env.adapter.on_generate = correct

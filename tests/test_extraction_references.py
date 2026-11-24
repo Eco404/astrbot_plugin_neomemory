@@ -185,7 +185,8 @@ def test_no_change_preserves_supported_schema(batch):
     output = {"schema_version": version, "result": "no_change", "reason": "already_known",
               "node_changes": [], "edges": [], "profile_changes": [], "relationship_change": None}
     output["coverage_changes"] = []
-    assert json.loads(refs.decode(json.dumps(output))) == output
+    decoded = json.loads(refs.decode(json.dumps(output)))
+    assert decoded == {**output, "reason": "no_meaningful_content"}
 
 
 def test_encode_fixture_rejects_non_window_canonical_evidence(batch, candidate):
@@ -290,6 +291,8 @@ def test_window_reordering_changes_aliases_without_changing_identity(batch, cand
     reordered = replace(prepared, sources=tuple(reversed(prepared.sources)))
     first = ExtractionReferences(prepared)
     second = ExtractionReferences(reordered)
+    candidate["profile_changes"][0]["expected_version"] = 0
+    candidate["relationship_change"]["expected_version"] = 0
     candidate["node_changes"][0]["content"] = "我与{{user:user_first_long}}和{{user:former_member}}排练。"
     first_wire = first.encode_output(json.dumps(candidate))
     second_wire = second.encode_output(json.dumps(candidate))

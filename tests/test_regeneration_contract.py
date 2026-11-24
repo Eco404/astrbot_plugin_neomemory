@@ -10,7 +10,7 @@ from core.extraction_errors import ExtractionCapacityError
 from core.extraction_regeneration import (
     automatic_correction_allowed, validation_feedback,
 )
-from core.extraction_schema import SCHEMA_VERSION, extraction_json_schema, parse_extraction_output
+from core.extraction_schema import SCHEMA_VERSION, extraction_json_schema, extraction_model_json_schema, parse_extraction_output
 from tests.test_maintenance_engine import node, output
 
 
@@ -34,8 +34,20 @@ def complete_candidate(schema_version=SCHEMA_VERSION):
 
 
 def field_cases(schema=None, baseline=None):
-    schema = extraction_json_schema() if schema is None else schema
-    baseline = complete_candidate() if baseline is None else baseline
+    if schema is None:
+        schema = extraction_model_json_schema()
+        baseline = complete_candidate() if baseline is None else baseline
+        for change in baseline['node_changes']:
+            change.pop('expected_version', None)
+        for change in baseline['profile_changes']:
+            change.pop('expected_version', None)
+        if baseline['relationship_change']:
+            baseline['relationship_change'].pop('expected_version', None)
+        for change in baseline['coverage_changes']:
+            change.pop('expected_event_version', None)
+            change.pop('expected_atomic_version', None)
+    else:
+        baseline = complete_candidate() if baseline is None else baseline
 
     def resolve(field):
         if '$ref' in field:
@@ -82,6 +94,8 @@ def field_cases(schema=None, baseline=None):
                 yield path, key, {**field, key: bound}, wrong
         if isinstance(value, dict):
             for name, item in value.items():
+                if name not in field["properties"]:
+                    continue
                 yield from walk(field['properties'][name], item, (*path, name))
         elif isinstance(value, list) and value:
             yield from walk(field['items'], value[0], (*path, 0))
