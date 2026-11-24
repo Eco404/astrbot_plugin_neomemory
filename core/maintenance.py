@@ -54,7 +54,7 @@ from .candidate_feedback import CandidateValidationError
 from .extraction_window import WindowMessage, WindowPolicy, select_window
 from .forwarded_content import window_text
 from .parallel_rebuild import rebuild_sections
-from .context_rebuild import MODELS as CONTEXT_REBUILD_MODELS, extraction_envelope, scoped_messages
+from .context_rebuild import MODELS as CONTEXT_REBUILD_MODELS, model_schema, scoped_messages
 from .model_routing import ModelRoutingMixin, ModelSelectionRequired, fixed_route, validate_selection
 from .jobs import JobRunner, RetryableJobError, ReviewRequired, deadline_failure, provider_failure
 from .attempts import observe_action, observe_commit, observed_call
@@ -770,7 +770,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             window = {"source_ids": list(source_ids), "source_cursor": source_cursor, "model_route": route,
                 "known_node_ids": list(known), "input_digest": batch.input_digest,
                 "fixed_input_digest": batch.fixed_input_digest, "signature": signature,
-                "index_required": self._index_configured(),
+                "prompt_version": batch.prompt_version, "index_required": self._index_configured(),
                 "reference_protocol": REFERENCE_VERSION,
                 "correction_limit": self.config.extraction_max_regenerations}
             if space["space_type"] == "private":
@@ -789,8 +789,10 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             if scoped_model:
                 schema = scoped_model.model_json_schema()
                 base = scoped_messages(base, job["kind"], schema, prompt_version=batch.prompt_version)
+                schema = model_schema(job["kind"], schema, prompt_version=batch.prompt_version)
             else:
-                schema = extraction_model_json_schema(schema_for_prompt_version(batch.prompt_version))
+                schema = extraction_model_json_schema(schema_for_prompt_version(batch.prompt_version),
+                                                      prompt_version=batch.prompt_version)
             while True:
                 attachments, changed = await load_slots(manifest, self.image_cache)
                 if changed:
@@ -871,9 +873,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             evidence = []
             if collects_evidence(manifest):
                 raw, evidence = split_vision_output(raw, manifest)
-            if scoped_model:
-                raw = extraction_envelope(raw, job["kind"], schema_for_prompt_version(batch.prompt_version), batch)
-            canonical = references.decode(raw)
+            canonical = references.decode(raw, scoped_kind=job["kind"] if scoped_model else None)
         except VisionOutputError as exc:
             window["validation_errors"] = [{"path": exc.path, "type": exc.code, "instruction": exc.instruction}]
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
@@ -891,7 +891,10 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             path = "$" + "".join(
                 f"[{item}]" if isinstance(item, int) else f".{item}" for item in exc.location
             )
-            window["validation_errors"] = [{"path": path, "type": exc.code}]
+            diagnostic = {"path": path, "type": exc.code}
+            if exc.code in {"profile_edit_index", "profile_edit_capacity"}:
+                diagnostic["constraints"] = exc.constraints
+            window["validation_errors"] = [diagnostic]
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
             raise ReviewRequired(exc.code) from None
         except ValueError as exc:

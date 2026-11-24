@@ -9,7 +9,8 @@ from pydantic import Field
 from .extraction_schema import (
     ProfileChange, RelationshipChange, StrictModel, _reject_constant, _unique_object,
 )
-from .profile_memory_prompt import PROFILE_DUTIES_RULES
+from .profile_edits import model_profile_schema
+from .profile_memory_prompt import PROFILE_EDITS_PROMPT_VERSION, profile_rules
 from .prompts import FORWARDED_SOURCE_RULE, PROMPT_VERSION
 from .relationship_slots_prompt import COMPACT_RELATIONSHIP_RULES, RELATIONSHIP_RULES, SLOT_BODY_RULE
 from .window_users import WindowUsers
@@ -31,9 +32,9 @@ MODELS = {"profile_rebuild": ProfileRebuildOutput, "relationship_rebuild": Relat
           "context_rebuild": ContextRebuildOutput}
 
 
-def model_schema(kind, schema):
+def model_schema(kind, schema, *, prompt_version=PROMPT_VERSION):
     """Remove storage-managed content versions from the model wire schema."""
-    result = deepcopy(schema)
+    result = model_profile_schema(schema) if prompt_version == PROFILE_EDITS_PROMPT_VERSION else deepcopy(schema)
     for definition in ("ProfileChange", "RelationshipChange"):
         value = result.get("$defs", {}).get(definition)
         if value is None:
@@ -50,10 +51,10 @@ def scoped_messages(messages, kind, schema, *, prompt_version):
     duties = []
     if kind != "relationship_rebuild":
         fields.append("known_profiles")
-        duties.append(PROFILE_DUTIES_RULES)
+        duties.append(profile_rules(prompt_version))
     if kind != "profile_rebuild":
         fields.append("known_relationship")
-        relationship = RELATIONSHIP_RULES if prompt_version == PROMPT_VERSION else COMPACT_RELATIONSHIP_RULES
+        relationship = RELATIONSHIP_RULES if prompt_version in {"extraction-prompt.v3-dev.1", PROMPT_VERSION} else COMPACT_RELATIONSHIP_RULES
         duties.extend([relationship, SLOT_BODY_RULE])
     if any("forwarded_messages" in source for source in payload["sources"]):
         duties.append(FORWARDED_SOURCE_RULE)
@@ -67,7 +68,7 @@ def scoped_messages(messages, kind, schema, *, prompt_version):
         "没有符合条件的变化时，画像给空列表、关系给null；仅输出schema中列出的字段。"
         "显式提到对方使用{{user:u编号}}（例如{{user:u1}}），保留约定称呼，区分说话者和被谈论者。"
         "返回符合schema的单个JSON对象。\n" + rules + "\nJSON schema:\n"
-        + json.dumps(model_schema(kind, schema), ensure_ascii=False))},
+        + json.dumps(model_schema(kind, schema, prompt_version=prompt_version), ensure_ascii=False))},
         {"role": "user", "content": json.dumps(data, ensure_ascii=False)}]
 
 

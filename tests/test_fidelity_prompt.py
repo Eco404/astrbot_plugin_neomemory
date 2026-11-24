@@ -22,7 +22,7 @@ def test_default_narrative_removes_memory_bookkeeping_from_positive_examples():
     }
     candidate = build_extraction_prompt(**inputs)
     rules = candidate[0]["content"]
-    assert PROMPT_VERSION == "extraction-prompt.v3-dev.1"
+    assert PROMPT_VERSION == "extraction-prompt.v3-dev.2"
     assert candidate == build_extraction_prompt(**inputs, prompt_version=PROMPT_VERSION)
     assert candidate == build_extraction_prompt(**inputs, schema_version="extraction.v1")
     assert "schema_version=extraction.v1" in rules
@@ -51,7 +51,7 @@ def test_current_default_preserves_persona_voice():
     rules = baseline[0]["content"]
     for required in (
         "agent 是当前人格", "不用人格名作第三人称主语", "不泛称“用户”",
-        "事实与状态以 known_nodes/known_profiles 为基线，关系心理以 known_relationship 为基线",
+        "事实与状态以 known_nodes 为基线，关系心理以 known_relationship 为基线",
         "两段都写我脑中自然展开的心里话", "必要引语和专有名词保留原文",
     ):
         assert required in rules
@@ -74,7 +74,7 @@ def test_persona_narrative_contract_preserves_data_schema_and_factual_boundaries
         "记忆管理前缀", "{{user:<logical_user_id>}}", "{{user:u1}}",
         "ID逐字取自输入", "版本、并发校验和最终版本引用由程序根据本次固定输入及候选内容计算",
         "明确约定的昵称、专属称呼、必要引语和专有名词保留原文",
-        "画像是对方当前仍成立、以后相处有用途的轻量资料，不是我的偏好、评价或经历清单",
+        "画像保留对方明确自述、以后相处仍有用的资料",
         "两段都写我脑中自然展开的心里话", "由persona和我的自主判断决定",
         "可以延续、调整或淡出", "本批变化的来源必须来自当前 sources",
         "按 actor_kind、actor_logical_user_id 和原文确定谁说话",
@@ -111,7 +111,7 @@ def test_prepared_version_is_part_of_input_and_survives_snapshot_roundtrip():
     )
     candidate = current
     restored = PreparedExtraction(**asdict(candidate))
-    assert restored.prompt_version == "extraction-prompt.v3-dev.1"
+    assert restored.prompt_version == "extraction-prompt.v3-dev.2"
     assert restored.input_digest == candidate.input_digest
     assert restored.messages() == candidate.messages()
     with pytest.raises(ValueError, match="unsupported"):

@@ -156,7 +156,7 @@ def test_group_profile_prompt_uses_current_storage_and_feedback_limits():
     from core.prompts import build_extraction_prompt
 
     current = build_extraction_prompt(persona="合成人格", sources=[])[0]["content"]
-    assert f"群画像描述最多{GROUP_PROFILE_MAX_DESCRIPTION_CHARS}、tags最多{GROUP_PROFILE_MAX_TAGS}项" in current
+    assert f"群聊最多 {GROUP_PROFILE_MAX_DESCRIPTION_CHARS} 可读字符、{GROUP_PROFILE_MAX_TAGS} 个标签" in current
 
 
 def test_production_recovery_cannot_infer_target_from_a_valid_draft():

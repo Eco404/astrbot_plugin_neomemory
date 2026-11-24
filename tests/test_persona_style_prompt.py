@@ -20,7 +20,7 @@ def test_persona_is_data_and_sources_keep_their_actor_and_text():
 
 def test_prompt_separates_coverage_from_emotion_and_subjective_opinion():
     rules = build_extraction_prompt(persona='', sources=[])[0]['content']
-    for contract in ('对每个有本人自述的逻辑用户', '群画像描述最多240、tags最多8项',
+    for contract in ('画像保留对方明确自述', '群聊最多 240 可读字符、8 个标签',
                      '只有事件最终正文完整表达原子最终正文的全部必要事实',
                      'emotion不能代替正文的必要事实', '不要求对方确认',
                      '不把整理时新产生的心理活动倒写成我当时已有的感受'):

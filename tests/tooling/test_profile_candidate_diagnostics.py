@@ -98,6 +98,36 @@ async def test_reference_recorder_preserves_wire_bytes_and_matches_canonical_rec
 
 
 @pytest.mark.asyncio
+async def test_scoped_profile_candidate_records_edits_and_materialized_content(reference_batch):
+    batch = replace(reference_batch, reference_protocol="reference.v1", job_id="scoped")
+    raw = json.dumps({"profile_changes": [{"logical_user_id": "u2", "tags": [], "description": "Uses a reed.",
+                       "remove_sentences": [1], "remove_tags": [], "source_ids": ["s2"]}]}, indent=2)
+
+    async def generate(messages):
+        assert "known_nodes" not in json.loads(messages[1]["content"])
+        return raw
+
+    async def prepare():
+        return batch
+
+    async def get_job(_):
+        return {"kind": "profile_rebuild", "checkpoint": {}}
+
+    recorder = CandidateRecorder(generate)
+    extraction = SimpleNamespace(prepare=prepare)
+    recorder.observe_preparation(extraction, SimpleNamespace(get=get_job))
+    await extraction.prepare()
+    assert await recorder(recorder.expected_messages) is raw
+    record, = recorder.records
+    assert record["status"] == "valid_output"
+    assert record["wire_raw"] == raw and record["wire_output"] == json.loads(raw)
+    change, = record["output"]["profile_changes"]
+    assert change["tags"] == ["musician"] and change["description"] == "Uses a reed."
+    assert change["logical_user_id"] == "user_second_long" and change["source_ids"] == ["source_second_long"]
+    assert record["output_digest"] == digest(record["output"])
+
+
+@pytest.mark.asyncio
 async def test_reference_recorder_rejects_modified_prompt_before_call(reference_batch):
     refs = ExtractionReferences(replace(reference_batch, reference_protocol="reference.v1"))
 

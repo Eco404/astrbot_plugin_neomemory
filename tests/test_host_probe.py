@@ -145,7 +145,7 @@ async def test_memory_store_lifecycle_and_source_validation(tmp_path, monkeypatc
             await memory_store.add_node_source(node["node_id"], "missing-source")
         health = await plugin.api_health()
         assert health["ready"] is True
-        assert health["maintenance"]["extraction_prompt_version"] == "extraction-prompt.v3-dev.1"
+        assert health["maintenance"]["extraction_prompt_version"] == "extraction-prompt.v3-dev.2"
         assert health["source_count"] == 1
         assert health["memory"]["node_count"] == 1
         assert health["memory"]["schema_version"] == MEMORY_FORMAT

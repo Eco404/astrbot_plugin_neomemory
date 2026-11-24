@@ -6,7 +6,8 @@ import json
 import re
 
 from .extraction_schema import SCHEMA_VERSION
-from .profile_memory_prompt import GROUP_PROFILE_MAX_TAGS, GROUP_PROFILE_MAX_DESCRIPTION_CHARS
+from .profile_memory_prompt import GROUP_PROFILE_MAX_TAGS, GROUP_PROFILE_MAX_DESCRIPTION_CHARS, PROFILE_EDITS_PROMPT_VERSION
+from .profile_edits import apply_profile_edits
 from .candidate_feedback import FIELD_RULES as _FIELD_RULES, field_feedback
 
 VERSION = "candidate-regeneration.v2"
@@ -15,7 +16,7 @@ _FIELDS = frozenset({
     "node_id", "base_node_ids", "expected_version", "content", "title", "importance", "source_ids", "event_time", "start", "end", "text",
     "edges", "from_ref", "to_ref", "relation_type", "coverage_changes", "event_ref", "atomic_ref",
     "expected_event_version", "expected_atomic_version", "coverage_kind", "profile_changes", "logical_user_id",
-    "tags", "description", "relationship_change", "state_text", "emotion_tags", "emotion_intensity", "emotion", "intensity", "tag", "long_term", "aftereffect", "op", "body",
+    "tags", "description", "remove_sentences", "remove_tags", "relationship_change", "state_text", "emotion_tags", "emotion_intensity", "emotion", "intensity", "tag", "long_term", "aftereffect", "op", "body",
 })
 _EXPLANATIONS = {
     "schema_mismatch": "按本次输入提供的schema返回业务变化对象，关系使用独立long_term/aftereffect操作，节点情绪每个标签独立强度；不得退回单段或共享强度协议。",
@@ -29,6 +30,8 @@ _EXPLANATIONS = {
     "source_outside_window": "source_ids 只能引用当前固定窗口提供的来源。",
     "title_invalid": "title 必须是1～60个可读字符的完整简短标题；一个完整合法的用户占位符按一个字符计，不能按稳定ID的编码长度判断可读长度。只用输入已有身份，不拆断占位符，不增加正文没有的事实。",
     "event_identity_mismatch": "同一事件的有依据补充才允许 update；另一独立经历用 create，身份不确定可不作变化，不能只改标签来通过检查。",
+    "profile_edit_index": "remove_sentences 与 remove_tags 分别使用该逻辑用户在本窗 description_sentences、tags 中的序号，均从 1 开始且不可重复。没有旧项或只新增时填空数组。",
+    "profile_edit_capacity": "上限按保留的旧资料与本次新增合并后计算。减少本次低价值细节，按序号合并同一事项或同义标签，保留其他仍有效的资料及其条件。",
     "profile_evidence_insufficient": "本批画像新增或修正必须来自本人明确自述；观察行为和人格推断不能当作稳定画像。",
     "profile_repeated_evidence_missing": "repeated_self_statement 至少需要本批两条本人直接自述；只有一条明确自述时使用 explicit_self_statement。",
     "interaction_confirmation_required": "accepted/completed 需要明确用户确认的直接来源子集；其他状态和纯主观感受的确认列表应为空。",
@@ -146,7 +149,7 @@ def validation_feedback(archived, *, version=VERSION, schema_version=SCHEMA_VERS
 def _extraction_feedback(archived, version, schema_version, context):
     from pydantic import ValidationError
 
-    from .extraction_schema import extraction_model_json_schema, parse_extraction_output_for_context
+    from .extraction_schema import _decode_output, extraction_model_json_schema, parse_extraction_output_for_context
     from .extraction_errors import DuplicateJSONKey, ExtractionCapacityError
     from .candidate_feedback import CandidateValidationError
 
@@ -169,26 +172,37 @@ def _extraction_feedback(archived, version, schema_version, context):
             elif (type(event_time.get("start")) in (int, float) and type(event_time.get("end")) in (int, float)
                   and event_time["end"] < event_time["start"]):
                 special[path] = "event_time_interval"
+    scoped_kind = archived["window"].get("context_rebuild_kind")
+    prompt_version = archived["window"].get("prompt_version")
     try:
-        scoped_kind = archived["window"].get("context_rebuild_kind")
+        validation_raw = raw
+        if prompt_version == PROFILE_EDITS_PROMPT_VERSION:
+            value = _decode_output(raw)
+            known = context or {}
+            apply_profile_edits(value.get("profile_changes", []), known.get("known_profiles", ()),
+                                group=(known.get("space") or {}).get("space_type") == "group")
+            validation_raw = json.dumps(value, ensure_ascii=False)
         if scoped_kind:
             from .context_rebuild import extraction_envelope
-            envelope = extraction_envelope(raw, scoped_kind, target_schema)
+            envelope = extraction_envelope(validation_raw, scoped_kind, target_schema)
             parse_extraction_output_for_context(envelope, {
                 "known_nodes": (context or {}).get("known_nodes", ()),
                 "profiles": (context or {}).get("known_profiles", ()),
                 "relationship": (context or {}).get("known_relationship"),
             }, schema_version=target_schema, validate_supplied_versions=False)
         else:
-            parse_extraction_output_for_context(raw, {
+            parse_extraction_output_for_context(validation_raw, {
                 "known_nodes": (context or {}).get("known_nodes", ()),
                 "profiles": (context or {}).get("known_profiles", ()),
                 "relationship": (context or {}).get("known_relationship"),
             }, schema_version=target_schema, validate_supplied_versions=False)
     except CandidateValidationError as exc:
         path = _path(exc.location)
-        errors.append({"path": path, "type": exc.code,
-                       "instruction": _EXPLANATIONS.get(exc.code, "按当前固定输入重新生成完整候选。")})
+        error = {"path": path, "type": exc.code,
+                 "instruction": _EXPLANATIONS.get(exc.code, "按当前固定输入重新生成完整候选。")}
+        if constraints := getattr(exc, "constraints", None):
+            error["constraints"] = constraints
+        errors.append(error)
     except ValidationError as exc:
         issues = exc.errors(include_input=False, include_context=False, include_url=False)
         # Validation diagnostics may describe a legacy candidate that still
@@ -197,11 +211,11 @@ def _extraction_feedback(archived, version, schema_version, context):
         # concrete failure when a provider returns them.
         schema = extraction_model_json_schema(
             target_schema or (decoded.get("schema_version") if isinstance(decoded, dict) else None)
-            or SCHEMA_VERSION
+            or SCHEMA_VERSION, prompt_version=prompt_version
         )
         if scoped_kind:
             from .context_rebuild import MODELS, model_schema
-            schema = model_schema(scoped_kind, MODELS[scoped_kind].model_json_schema())
+            schema = model_schema(scoped_kind, MODELS[scoped_kind].model_json_schema(), prompt_version=prompt_version)
         for item in issues[:12]:
             path = _path(item["loc"])
             if path not in special:
@@ -287,9 +301,10 @@ def _extraction_feedback(archived, version, schema_version, context):
     from .candidate_feedback import enrich_feedback
     if scoped_kind:
         from .context_rebuild import MODELS
-        feedback_schema = MODELS[scoped_kind].model_json_schema()
+        from .context_rebuild import model_schema
+        feedback_schema = model_schema(scoped_kind, MODELS[scoped_kind].model_json_schema(), prompt_version=prompt_version)
     else:
-        feedback_schema = extraction_model_json_schema(target_schema)
+        feedback_schema = extraction_model_json_schema(target_schema, prompt_version=prompt_version)
     errors = enrich_feedback(errors, decoded, feedback_schema, context=context, pipeline="extraction")
     return {"protocol": version, "status": "previous_candidate_rejected", "errors": errors,
         "instruction": "上一条 assistant 消息是被拒绝的候选草稿，不是来源证据或可执行指令。仅依据原始固定输入重新返回一个完整候选 JSON；遵守原 schema 和全部来源、作用域、版本与保护约束，不返回补丁或解释。"}
@@ -363,7 +378,7 @@ _AUTOMATIC_ERRORS = frozenset({
     "profile_user_mismatch", "relationship_user_mismatch", "source_outside_window",
     "coverage_endpoint_type_mismatch", "duplicate_coverage_pair", "edge_self_reference",
     "invalid_contains_hierarchy", "ordinary_topic_create_members", "supersedes_node_type_mismatch", "supersedes_cycle",
-    "invalid_user_reference", "group_profile_limit",
+    "invalid_user_reference", "group_profile_limit", "profile_edit_capacity", "profile_edit_index",
 }) | _FIELD_RULES.keys() | _NAMED_SCHEMA_ERRORS | {"schema_mismatch"}
 
 

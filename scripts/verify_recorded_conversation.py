@@ -197,14 +197,14 @@ class WindowObserver:
         self.original_prepare = engine.extraction.prepare
         self.windows, self.current = [], None
         self.batch = None
-        self.references = self.expected_messages = self.regeneration = None
+        self.references = self.expected_messages = self.regeneration = self.scoped_kind = None
         engine._window = self.window
         engine.runtime.adapter.generate = self.generate
         engine.extraction.prepare = self.prepare
 
     async def prepare(self, *args, **kwargs):
         self.batch = await self.original_prepare(*args, **kwargs)
-        self.references, self.expected_messages, self.regeneration = await prepared_request(self.batch, self.engine.jobs)
+        self.references, self.expected_messages, self.regeneration, self.scoped_kind = await prepared_request(self.batch, self.engine.jobs)
         return self.batch
 
     async def generate(self, messages, **kwargs):
@@ -240,7 +240,7 @@ class WindowObserver:
             raise
         finally:
             record["finished_at"] = time.time()
-        CandidateRecorder._capture(record, raw, references)
+        CandidateRecorder._capture(record, raw, references, self.scoped_kind)
         return raw
 
     async def window(self, job, checkpoint, space, generation_id, source_ids, source_cursor, *, building=False):

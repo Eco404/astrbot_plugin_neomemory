@@ -20,6 +20,8 @@ from .relationship_state import LONG_TERM_MAX_CHARS, AFTEREFFECT_MAX_CHARS, is_s
 from .extraction_errors import DuplicateJSONKey, ExtractionCapacityError
 from .candidate_feedback import CandidateValidationError
 from .memory_text import memory_texts, user_reference_ids
+from .profile_edits import model_profile_schema
+from .profile_memory_prompt import PROFILE_EDITS_PROMPT_VERSION
 
 SCHEMA_VERSION = "extraction.v1"
 MAX_OUTPUT_CHARS = 120_000
@@ -322,7 +324,7 @@ def extraction_json_schema(schema_version: str = SCHEMA_VERSION) -> dict[str, An
     return _output_model(schema_version).model_json_schema()
 
 
-def extraction_model_json_schema(schema_version: str = SCHEMA_VERSION) -> dict[str, Any]:
+def extraction_model_json_schema(schema_version: str = SCHEMA_VERSION, *, prompt_version=None) -> dict[str, Any]:
     """Return the wire schema shown to the model.
 
     Content versions are storage and concurrency metadata.  They are derived
@@ -345,6 +347,8 @@ def extraction_model_json_schema(schema_version: str = SCHEMA_VERSION) -> dict[s
             value["properties"].pop(field, None)
             if field in value.get("required", []):
                 value["required"].remove(field)
+    if prompt_version is None or prompt_version == PROFILE_EDITS_PROMPT_VERSION:
+        return model_profile_schema(schema)
     return schema
 
 

@@ -272,7 +272,7 @@ def test_known_prose_references_register_absent_members_and_leave_sources_untouc
         "我记得{{user:u3}}与{{user:u2}}排练，小舟和u1是称呼。"
     )
     assert data["known_nodes"][0]["event_time_text"] == "{{user:u3}}提到的去年"
-    assert data["known_profiles"][0]["description"] == "{{user:u2}}是{{user:u3}}的搭档。"
+    assert data["known_profiles"][0]["description_sentences"] == ["{{user:u2}}是{{user:u3}}的搭档。"]
     assert data["known_profiles"][0]["tags"] == ["{{user:u3}}"]
     assert data["known_relationship"]["state"]["long_term"]["body"] == "我期待与{{user:u1}}重逢。"
     assert data["sources"][0]["content_text"] == original.sources[0]["content_text"]

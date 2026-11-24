@@ -9,6 +9,7 @@ import pytest
 from core import candidate_feedback as feedback
 from core import extraction_regeneration as regeneration
 from core import extraction_schema, short_term_prompts, topic_schema, topic_regeneration
+from core.profile_memory_prompt import PROFILE_EDITS_PROMPT_VERSION
 from core.short_term import RECOVERY_EXPLANATIONS
 from storage import extraction_store, topic_store
 from tests.test_regeneration_contract import complete_candidate, field_cases
@@ -21,6 +22,7 @@ def model_extraction_candidate():
         change.pop('expected_version', None)
     for change in value['profile_changes']:
         change.pop('expected_version', None)
+        change.update(remove_tags=[], remove_sentences=[])
     if value['relationship_change']:
         value['relationship_change'].pop('expected_version', None)
     for change in value['coverage_changes']:
@@ -37,7 +39,9 @@ BASES = {'extraction': model_extraction_candidate(), 'topic': TOPIC, 'summary': 
 def errors_for(pipeline, candidate):
     raw = json.dumps(candidate)
     if pipeline == 'extraction':
-        return regeneration.validation_feedback(archive(candidate))['errors']
+        draft = archive(candidate)
+        draft['window']['prompt_version'] = PROFILE_EDITS_PROMPT_VERSION
+        return regeneration.validation_feedback(draft)['errors']
     with pytest.raises(ValueError) as caught:
         if pipeline == 'topic':
             topic_schema.parse_output(raw)
@@ -95,6 +99,13 @@ REQUIRED = [(pipeline, path, key) for pipeline, path, value in OBJECTS
 def test_every_required_field_names_its_nullability_and_public_type(pipeline, path, key):
     candidate = deepcopy(BASES[pipeline])
     del at(candidate, path)[key]
+    if pipeline == 'extraction' and key in {'remove_tags', 'remove_sentences'}:
+        # A strict provider requires the arrays. A text response can omit an edit mask to keep every old item.
+        from core.profile_edits import apply_profile_edits
+        profiles = candidate['profile_changes']
+        apply_profile_edits(profiles, [{'logical_user_id': 'u1', 'description': '旧资料。', 'tags': ['旧标签']}])
+        assert profiles[0]['description'].startswith('旧资料。') and '旧标签' in profiles[0]['tags']
+        return
     errors = errors_for(pipeline, candidate)
     field_path = '$' + ''.join(f'[{part}]' if isinstance(part, int) else '.' + part for part in (*path, key))
     issue = next(error for error in errors if error['type'] == 'missing' and error['path'] == field_path)

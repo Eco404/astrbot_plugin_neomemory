@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from .extraction_schema import parse_extraction_output_for_context
+from .context_rebuild import extraction_envelope
+from .extraction_schema import _decode_output, parse_extraction_output_for_context
+from .profile_edits import apply_profile_edits, profile_parts
+from .profile_memory_prompt import PROFILE_EDITS_PROMPT_VERSION
+from .prompts import schema_for_prompt_version
 from .group_addressing import address_snapshot_users
 from .memory_text import map_user_references, memory_texts, user_reference_ids
 
@@ -135,9 +139,26 @@ class ExtractionReferences:
         if item.get("emotion") is not None:
             item["emotion"]["description"] = map_user_references(item["emotion"]["description"],
                 lambda value: self._reference(value, "user", path + ".emotion.description", decode=decode))
+        if "description_sentences" in item:
+            item["description_sentences"] = [map_user_references(sentence, lambda value: self._reference(
+                value, "user", f"{path}.description_sentences[{index}]", decode=decode))
+                for index, sentence in enumerate(item["description_sentences"])]
         if "tags" in item:
             item["tags"] = [map_user_references(tag, lambda value: self._reference(
                 value, "user", f"{path}.tags[{index}]", decode=decode)) for index, tag in enumerate(item["tags"])]
+
+    def _wire_profiles(self):
+        """Restore the model's exact sentence and tag positions from the frozen snapshot."""
+        profiles = []
+        for index, old in enumerate(self.batch.profiles):
+            path = f"$.known_profiles[{index}]"
+            profile = {
+                "logical_user_id": self._reference(old["logical_user_id"], "user", path + ".logical_user_id", decode=False),
+                "tags": old["tags"], "description_sentences": profile_parts(old["description"]),
+            }
+            self._prose(profile, path, decode=False)
+            profiles.append(profile)
+        return profiles
 
     def _output(self, raw: str, *, decode: bool) -> str:
         output = parse_extraction_output_for_context(
@@ -190,10 +211,28 @@ class ExtractionReferences:
             item["logical_user_id"] = self._reference(
                 item["logical_user_id"], "user", path + ".logical_user_id", decode=decode,
             )
+        if not decode and getattr(self.batch, "prompt_version", None) == PROFILE_EDITS_PROMPT_VERSION and output["profile_changes"]:
+            # Fixtures describe a complete target profile, including deliberate removals.
+            profiles = {profile["logical_user_id"]: profile for profile in self._wire_profiles()}
+            for item in output["profile_changes"]:
+                old = profiles.get(item["logical_user_id"], {})
+                item["remove_sentences"] = list(range(1, len(old.get("description_sentences", ())) + 1))
+                item["remove_tags"] = list(range(1, len(old.get("tags", ())) + 1))
         return json.dumps(output, ensure_ascii=False)
 
-    def decode(self, raw: str) -> str:
-        """Return a canonical candidate; an unknown alias is never repaired."""
+    def decode(self, raw: str, *, scoped_kind=None) -> str:
+        """Materialize the model's updates and restore canonical references."""
+        if getattr(self.batch, "prompt_version", None) == PROFILE_EDITS_PROMPT_VERSION:
+            value = _decode_output(raw)
+            changes = value.get("profile_changes")
+            if isinstance(changes, list) and changes:
+                for index, change in enumerate(changes):
+                    if isinstance(change, dict) and isinstance(user := change.get("logical_user_id"), str):
+                        self._reference(user, "user", f"$.profile_changes[{index}].logical_user_id", decode=True)
+                apply_profile_edits(changes, self._wire_profiles(), group=self.batch.space["space_type"] == "group")
+                raw = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if scoped_kind:
+            raw = extraction_envelope(raw, scoped_kind, schema_for_prompt_version(self.batch.prompt_version), self.batch)
         return self._output(raw, decode=True)
 
     def encode_output(self, raw: str) -> str:

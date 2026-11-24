@@ -117,7 +117,7 @@ async def test_bounded_prefix_uses_background_rebuild_and_retains_private_eviden
         assert max(row["sequence_no"] for row in payload["sources"]) == index * 40
         assert all(row["sequence_no"] <= index * 40 for row in payload["sources"])
     assert calls[0]["known_profiles"] == []
-    assert calls[1]["known_profiles"][0]["description"] == "PRIVATE_PROFILE_1"
+    assert calls[1]["known_profiles"][0]["description_sentences"] == ["PRIVATE_PROFILE_1"]
     assert "content_version" not in calls[1]["known_profiles"][0]
     with sqlite3.connect(output / "memory.db") as db:
         assert db.execute("SELECT COUNT(*) FROM extraction_batches").fetchone()[0] == 2

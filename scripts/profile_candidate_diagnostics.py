@@ -14,10 +14,13 @@ import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+from core.context_rebuild import MODELS, extraction_envelope, scoped_messages
 from core.extraction_apply import digest
 from core.extraction_references import ExtractionReferences, ReferenceValidationError
 from core.extraction_regeneration import build_messages
 from core.extraction_schema import MAX_OUTPUT_CHARS, parse_extraction_output, parse_extraction_output_for_context
+from core.profile_memory_prompt import PROFILE_EDITS_PROMPT_VERSION
+from core.prompts import schema_for_prompt_version
 
 MAX_RECORDS = 8
 # These maintenance errors follow a rejected apply operation. Transport errors,
@@ -34,21 +37,25 @@ COMMIT_REJECTION_REASONS = frozenset({
 })
 
 
-async def prepared_request(batch: Any, jobs: Any) -> tuple[Any, list[dict[str, str]], Any]:
+async def prepared_request(batch: Any, jobs: Any) -> tuple[Any, list[dict[str, str]], Any, str | None]:
     """Reconstruct the complete request from prepared input and durable history."""
     references = ExtractionReferences(batch) if batch.reference_protocol else None
     messages = references.messages() if references is not None else batch.messages()
     regeneration = None
+    scoped_kind = None
     if batch.job_id is not None:
         job = await jobs.get(batch.job_id)
+        if job.get("kind") in MODELS:
+            scoped_kind = job["kind"]
+            messages = scoped_messages(messages, scoped_kind, MODELS[scoped_kind].model_json_schema(),
+                                       prompt_version=batch.prompt_version)
         window = job["checkpoint"].get("window", {})
         regeneration = window.get("regeneration")
         if regeneration is not None:
             archived = await jobs.get_candidate(batch.job_id, regeneration.get("candidate_id"))
-            from core.prompts import schema_for_prompt_version
             messages = build_messages(messages, window, archived,
                 schema_version=schema_for_prompt_version(batch.prompt_version))
-    return references, messages, regeneration
+    return references, messages, regeneration, scoped_kind
 
 
 class CandidateRecorder:
@@ -66,6 +73,7 @@ class CandidateRecorder:
         self.references: ExtractionReferences | None = None
         self.expected_messages: list[dict[str, str]] | None = None
         self.regeneration: dict[str, str] | None = None
+        self.scoped_kind: str | None = None
 
     def observe_preparation(self, extraction: Any, jobs: Any) -> None:
         """Bind this isolated sequential evaluator to the actual input snapshot."""
@@ -73,7 +81,7 @@ class CandidateRecorder:
 
         async def prepare(*args: Any, **kwargs: Any) -> Any:
             batch = await original(*args, **kwargs)
-            self.references, self.expected_messages, self.regeneration = await prepared_request(batch, jobs)
+            self.references, self.expected_messages, self.regeneration, self.scoped_kind = await prepared_request(batch, jobs)
             return batch
 
         extraction.prepare = prepare
@@ -82,6 +90,7 @@ class CandidateRecorder:
         references = self.references
         expected_messages = self.expected_messages
         regeneration = self.regeneration
+        scoped_kind = self.scoped_kind
         record: dict[str, Any] | None = None
         if len(self.records) < MAX_RECORDS:
             record = {"status": "pending"}
@@ -109,14 +118,15 @@ class CandidateRecorder:
             # Diagnostics must not replace a provider return with an unrelated
             # parser/encoding exception. Production still validates the result.
             try:
-                self._capture(record, raw, references)
+                self._capture(record, raw, references, scoped_kind)
             except Exception as exc:
                 record.clear()
                 record.update(status="diagnostic_error", exception_type=type(exc).__name__)
         return raw
 
     @staticmethod
-    def _capture(record: dict[str, Any], raw: Any, references: ExtractionReferences | None = None) -> None:
+    def _capture(record: dict[str, Any], raw: Any, references: ExtractionReferences | None = None,
+                 scoped_kind: str | None = None) -> None:
         if not isinstance(raw, str):
             record.update(status="invalid_output", invalid_kind="not_text")
             return
@@ -128,23 +138,38 @@ class CandidateRecorder:
             record.update(status="invalid_output", invalid_kind="oversize")
             return
         try:
-            if references is None:
-                candidate = parse_extraction_output(raw)
-            else:
-                candidate = parse_extraction_output_for_context(raw, references.batch, validate_supplied_versions=False)
-            output = candidate.model_dump(mode="json")
+            canonical = references.decode(raw, scoped_kind=scoped_kind) if references else raw
+            output = parse_extraction_output(canonical).model_dump(mode="json")
+        except ReferenceValidationError as exc:
+            record.update(status="reference_invalid", validation_errors=[{"path": exc.path, "type": exc.code}])
+            # Only retain a rejected body when its model fields can be validated.
+            try:
+                shape = json.loads(raw)
+                changes = shape.get("profile_changes", [])
+                if references.batch.prompt_version == PROFILE_EDITS_PROMPT_VERSION and isinstance(changes, list):
+                    for item in changes:
+                        if isinstance(item, dict):
+                            for field in ("remove_sentences", "remove_tags"):
+                                indexes = item.pop(field, [])
+                                if not isinstance(indexes, list) or any(type(i) is not int or i < 1 for i in indexes):
+                                    return
+                text = json.dumps(shape, ensure_ascii=False)
+                if scoped_kind:
+                    extraction_envelope(text, scoped_kind, schema_for_prompt_version(references.batch.prompt_version),
+                                        references.batch)
+                else:
+                    parse_extraction_output_for_context(text, references.batch, validate_supplied_versions=False)
+            except ValueError:
+                return
         except ValueError:
             record.update(status="invalid_output", invalid_kind="schema")
             return
         if references is not None:
-            record.update(wire_raw=raw, wire_output=output, wire_output_digest=digest(output),
+            wire = json.loads(raw)
+            record.update(wire_raw=raw, wire_output=wire, wire_output_digest=digest(wire),
                           reference_protocol=references.batch.reference_protocol)
-            try:
-                canonical = references.decode(raw)
-            except ReferenceValidationError as exc:
-                record.update(status="reference_invalid", validation_errors=[{"path": exc.path, "type": exc.code}])
-                return
-            output = parse_extraction_output(canonical).model_dump(mode="json")
+        if record.get("status") == "reference_invalid":
+            return
         canonical_digest = digest(output)
         record.update(status="valid_output", output=output, output_digest=canonical_digest)
 

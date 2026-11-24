@@ -7,13 +7,14 @@ from collections.abc import Mapping, Sequence
 from string import Template
 from typing import Any
 
-from .profile_memory_prompt import PROFILE_DUTIES_RULES
+from .profile_edits import profile_parts
+from .profile_memory_prompt import PROFILE_EDITS_PROMPT_VERSION, profile_rules
 from .relationship_slots_prompt import COMPACT_RELATIONSHIP_RULES, RELATIONSHIP_RULES, SLOT_BODY_RULE
 from .relationship_state import relationship_slots
 from .extraction_observations import TEMPORAL_SEMANTICS, source_observation_fields
 from .extraction_schema import MAX_OUTPUT_CHARS, SCHEMA_VERSION, extraction_model_json_schema
 
-PROMPT_VERSION = "extraction-prompt.v3-dev.1"
+PROMPT_VERSION = PROFILE_EDITS_PROMPT_VERSION
 
 FORWARDED_SOURCE_RULE = (
     "【转发消息】有 forwarded_messages 的来源中，外层 actor 只负责转发及 content_text 里的附言。"
@@ -47,7 +48,7 @@ _RULES = Template("""你是 persona 所描述的记忆主人，正在整理这�
 保留有持续意义的互动，不只登记对方的事情：我在交流中的回应、提议、行动和已经表达的感受，也是经历的一部分。选择记录这段互动时，把这些有意义的内容与对方的事情自然讲在一起，不只把它们移到情绪字段或人格关系里。没有我的参与时，不人为安排我出场；日常事实也可以平淡简洁。
 atomic 简短表达一项信息或有意义的变化；event 连贯讲述具体经历与互动；topic 按有持续意义的关联组织多项记忆，不堆目录或泛泛的感想。各类只生成一份完整、可独立阅读和直接注入的正文，标题和元信息不能代替正文中的必要主体、条件或状态。
 风格是表达方式，不是新增经历的理由。保留来源中事实的程度、范围、条件、否定、不确定性及时间；不虚构行为、承诺、因果、对方动机或情绪，不把整理时新产生的心理活动倒写成我当时已有的感受。已有情绪可自然进入正文，emotion 同时保持正确主体。${subjective}
-更新时把仍有效的旧内容与实际新进展写成连贯的一段或数段，不机械拼接旧文。人格语气可以调整，事实与状态以 known_nodes/known_profiles 为基线，关系心理以 known_relationship 为基线；不能只为润色反复创建变化。
+更新时把仍有效的旧内容与实际新进展写成连贯的一段或数段，不机械拼接旧文。人格语气可以调整，事实与状态以 ${known_baseline} 为基线，关系心理以 known_relationship 为基线；不能只为润色反复创建变化。
 
 【表达方式示意】
 正文写成我的自然叙述，不把自己的每句发言都转述成“我表示了……”“我提出了……”“我表达了某种情绪”。真实说过的意愿仍是意愿，提议仍是提议；改变句式不把它们写成已执行的动作。原话的语气可以自然承接，不必把鲜活的话语全部翻译成抽象概念。
@@ -101,7 +102,7 @@ ${slot_body}""")
 
 
 def schema_for_prompt_version(prompt_version: str) -> str:
-    if prompt_version not in {"extraction-prompt.v1", "extraction-prompt.v2", PROMPT_VERSION}:
+    if prompt_version not in {"extraction-prompt.v1", "extraction-prompt.v2", "extraction-prompt.v3-dev.1", PROMPT_VERSION}:
         raise ValueError(f"unsupported prompt version {prompt_version!r}")
     return SCHEMA_VERSION
 
@@ -149,7 +150,10 @@ def build_extraction_prompt(
     }
     if known_edges:
         payload["known_edges"] = [dict(edge) for edge in known_edges]
-    schema_text = json.dumps(extraction_model_json_schema(effective_schema), ensure_ascii=False, separators=(",", ":"))
+    if selected_version == PROFILE_EDITS_PROMPT_VERSION:
+        for profile in payload["known_profiles"]:
+            profile["description_sentences"] = profile_parts(profile.pop("description", ""))
+    schema_text = json.dumps(extraction_model_json_schema(effective_schema, prompt_version=selected_version), ensure_ascii=False, separators=(",", ":"))
     is_group = bool(space and space.get("space_type") == "group")
     subjective = _PRIVATE_SUBJECTIVE
     identity_scope = _IDENTITY_SCOPE
@@ -157,7 +161,7 @@ def build_extraction_prompt(
     basis = _PREVIOUS_BASIS_RULES
     extra_budget = _PREVIOUS_BUDGET_RULE
     slot_body = SLOT_BODY_RULE
-    if selected_version == PROMPT_VERSION:
+    if selected_version in {"extraction-prompt.v3-dev.1", PROMPT_VERSION}:
         relationship = "群聊的relationship_change固定为null。\n" if is_group else RELATIONSHIP_RULES
         if is_group:
             subjective = "对群成员的猜测不能升级成节点或画像中的客观事实。"
@@ -167,7 +171,8 @@ def build_extraction_prompt(
         basis = _BASIS_RULES if known_nodes else _EMPTY_BASIS_RULE
         extra_budget = ""
         subjective += "原话只并列提到的事分别写，只有交代了原因才写成因果。"
-    rules = _RULES.substitute(profile=PROFILE_DUTIES_RULES, relationship=relationship,
+    rules = _RULES.substitute(known_baseline="known_nodes" if selected_version == PROFILE_EDITS_PROMPT_VERSION else "known_nodes/known_profiles",
+                              profile=profile_rules(selected_version), relationship=relationship,
                               subjective=subjective, identity_scope=identity_scope, basis_rules=basis,
                               slot_body=slot_body, extra_budget=extra_budget,
                               max_chars=MAX_OUTPUT_CHARS)
