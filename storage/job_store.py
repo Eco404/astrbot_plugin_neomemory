@@ -121,6 +121,17 @@ def _draft_action(kind, window, code, job):
     return "resume"
 
 
+async def _recovery_drafts(connection, job):
+    drafts = []
+    committed = False
+    for kind, window, code, receipt in _drafts(job):
+        if await (await connection.execute(*receipt)).fetchone():
+            committed = True
+        else:
+            drafts.append((kind, window, code, _draft_action(kind, window, code, job)))
+    return drafts, committed
+
+
 def _restart_required(job):
     return bool(job["payload"].get("topic_inputs_replaced")) or job["error_code"] in {
         "context_changed", "configuration_changed", "model_required", "model_request_changed",
@@ -507,32 +518,27 @@ class JobStore:
     async def recovery_actions(self, job):
         if job["state"] not in {"failed", "cancelled"}:
             return {"regenerate_window_available": False, "restart_required": False, "recovery_action": None}
-        regenerate = False
-        action = "resume"
         async with self.database.transaction(write=False) as connection:
-            for kind, window, code, receipt in _drafts(job):
-                if not await (await connection.execute(*receipt)).fetchone():
-                    regenerate = True
-                    candidate_action = _draft_action(kind, window, code, job)
-                    if candidate_action != "resume":
-                        action = candidate_action
+            drafts, _ = await _recovery_drafts(connection, job)
+        action = next((action for _, _, _, action in drafts if action != "resume"), "resume")
         fresh = _restart_required(job)
         if fresh:
             action = "reprepare"
         if job["error_code"] in {"note_revision_changed", "identity_confirmation_changed"}:
             action = "review"
-        return {"regenerate_window_available": regenerate and not fresh, "restart_required": fresh,
+        return {"regenerate_window_available": bool(drafts) and not fresh, "restart_required": fresh,
                 "recovery_action": action}
 
     async def _prepare_retry(self, connection, job, *, regenerate=False):
         checkpoint = job["checkpoint"]
-        replaced = committed = False
-        for kind, window, code, receipt in _drafts(job):
-            if await (await connection.execute(*receipt)).fetchone():
-                committed = True
-                continue
-            if not regenerate and _draft_action(kind, window, code, job) != "regenerate":
-                continue
+        drafts, committed = await _recovery_drafts(connection, job)
+        selected = [draft for draft in drafts if draft[3] == "regenerate" or regenerate and draft[3] == "resize"]
+        if regenerate and not selected:
+            current = inspection_checkpoint(job)
+            candidates = (current, current.get("window"), current.get("topic_window"),
+                          current.get("topic_synthesis", {}).get("topic_window"))
+            selected = [draft for draft in drafts if any(draft[1] is window for window in candidates)]
+        for kind, window, code, _ in selected:
             candidate_id = await self._archive_candidate(connection, job["job_id"], window, code or "manual_regeneration")
             for field in ("raw", "canonical_raw", "validation_errors", "response_diagnostics", "model_request_digest"):
                 window.pop(field, None)
@@ -541,8 +547,7 @@ class JobStore:
             window["regeneration"] = {"version": versions[kind], "candidate_id": candidate_id}
             if kind == "topic":
                 window["regeneration"]["refresh_feedback"] = True
-            replaced = True
-        if regenerate and not replaced:
+        if regenerate and not selected:
             if committed:
                 raise ValueError("candidate already committed; resume its receipt or indexing instead")
             raise ValueError("task has no saved candidate")

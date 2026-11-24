@@ -217,3 +217,26 @@ async def test_waiting_sections_free_worker_and_keep_scope_until_due(environment
     now[0] += 600
     result = await execute(env, await env.engine.jobs.claim("resumed"))
     assert result["state"] == "succeeded" and calls == {"context": 2, "topics": 2}
+
+
+@pytest.mark.asyncio
+async def test_regeneration_keeps_valid_sibling_draft_on_storage_failure(environment):
+    env = environment
+    job = await enqueue_and_claim(env, "profile_rebuild", include_topics=True)
+    valid = {"raw": '{"profile_changes":[]}', "source_ids": [env.records[0].source_id]}
+    invalid = {"raw": "invalid json", "receipt_key": "synthetic-key", "errors": [{"type": "json_invalid"}]}
+    checkpoint = {
+        "sections": {"context": {"window": valid}, "topics": {"topic_window": invalid}},
+        "section_progress": {"context": {"state": "failed", "error_code": "storage_full"},
+                             "topics": {"state": "failed", "error_code": "invalid_topic_output"}},
+        "failed_section": "context",
+    }
+    await env.engine.jobs.save_checkpoint(job["job_id"], job["lease_token"], checkpoint=checkpoint,
+                                          step="parallel_rebuild", progress_done=0, progress_total=2)
+    await env.engine.jobs.fail(job["job_id"], job["lease_token"], error_type="ReviewRequired", error_code="storage_full")
+    current = await env.engine.retry(job["job_id"], regenerate_window=True)
+    sections = current["checkpoint"]["sections"]
+    assert sections["context"]["window"] == valid
+    assert "raw" not in sections["topics"]["topic_window"]
+    saved, = await env.engine.jobs.list_candidates(job["job_id"])
+    assert saved["window"] == invalid
