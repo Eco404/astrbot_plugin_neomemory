@@ -156,7 +156,7 @@ async def test_group_profile_uses_readable_lightweight_boundary(stores, over):
 
 
 @pytest.mark.asyncio
-async def test_wrong_schema_rejected_before_storage(stores):
+async def test_storage_records_prepared_schema_when_model_supplies_another(stores):
     sources, memory, _ = stores
     source = await capture(sources, text="独立协议版本来源")
     space = await memory.get_or_create_space(private_space("p", source.logical_user_id))
@@ -165,10 +165,13 @@ async def test_wrong_schema_rejected_before_storage(stores):
     value = candidate("event", "独立事件正文")
     value["schema_version"] = "extraction.v99"
     value["node_changes"][0]["source_ids"] = [source.source_id]
-    with pytest.raises(ValueError):
-        await service.apply(batch, json.dumps(value, ensure_ascii=False), model_id="controlled-validation")
-    assert await memory.list_nodes(space_id=space["space_id"]) == []
-    assert (await memory.get_active_generation(space["space_id"]))["activity_round"] == 0
+    receipt = await service.apply(batch, json.dumps(value, ensure_ascii=False), model_id="controlled-validation")
+    stored = await memory.database.fetchone(
+        "SELECT schema_version FROM extraction_batches WHERE batch_id=?", (receipt["batch_id"],))
+    assert stored["schema_version"] == "extraction.v1"
+    saved, = await memory.list_nodes(space_id=space["space_id"])
+    assert saved["content_text"] == "独立事件正文"
+    assert (await memory.get_active_generation(space["space_id"]))["activity_round"] == 1
 
 
 @pytest.mark.asyncio

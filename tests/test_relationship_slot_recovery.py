@@ -63,32 +63,16 @@ async def test_slot_body_failure_corrects_without_exposing_failed_task(environme
 
 
 @pytest.mark.asyncio
-async def test_unrecognized_schema_is_automatically_corrected(environment):
+async def test_model_version_does_not_consume_a_correction(environment):
     env = environment
     enable(env)
-    valid = output()
-    old = {**valid, 'schema_version': 'unknown.schema'}
-    env.adapter.output = json.dumps(old)
-    feedbacks = []
-
-    async def correct(messages):
-        if len(env.adapter.calls) == 2:
-            feedback = json.loads(messages[-1]['content'])
-            feedbacks.append(feedback)
-            assert messages[:2] == env.adapter.calls[0]
-            env.adapter.output = json.dumps(valid)
-
-    env.adapter.on_generate = correct
+    env.adapter.output = json.dumps({**output(), 'schema_version': 'unknown.schema'})
     completed = await execute(env, await enqueue_and_claim(env))
     assert completed['state'] == 'succeeded'
-    assert len(env.adapter.calls) == 2
-    assert len(await env.memory.database.fetchall('SELECT * FROM extraction_batches')) == 1
-    issue = feedbacks[0]['errors'][0]
-    assert issue['type'] == 'literal_error'
-    assert issue['path'] == '$.schema_version'
-    assert issue['constraints']['const'] == 'extraction.v1'
-    history = await env.engine.jobs.list_candidates(completed['job_id'])
-    assert history[0]['error_code'] == 'invalid_output'
+    assert len(env.adapter.calls) == 1
+    receipt, = await env.memory.database.fetchall('SELECT schema_version FROM extraction_batches')
+    assert receipt['schema_version'] == 'extraction.v1'
+    assert await env.engine.jobs.list_candidates(completed['job_id']) == []
 
 
 @pytest.mark.asyncio

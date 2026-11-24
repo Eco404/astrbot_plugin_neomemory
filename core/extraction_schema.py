@@ -472,10 +472,14 @@ def _normalise_program_versions(decoded: dict[str, Any], context: Any, *, valida
             local_ref = change.get("local_ref")
             if isinstance(local_ref, str):
                 resolved[local_ref] = lookup_node_id
-            changed = bool(old and (
-                change.get("content") != old.get("content_text")
-                or encode_emotion(change.get("emotion")) != encode_emotion(old.get("emotion"))
-            ))
+            changed = bool(old and change.get("content") != old.get("content_text"))
+            if old and not changed:
+                previous_emotion = encode_emotion(old.get("emotion"))
+                try:
+                    changed = encode_emotion(change.get("emotion")) != previous_emotion
+                except ValueError:
+                    # NodeChange validates the draft below and reports its exact emotion field.
+                    changed = True
             if isinstance(local_ref, str):
                 versions[local_ref] = (old.get("content_version", 1) + int(changed)
                                        if old else 1)

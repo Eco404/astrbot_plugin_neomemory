@@ -7,7 +7,7 @@ import pytest
 
 from core.extraction_regeneration import validation_feedback
 from core.extraction_references import ExtractionReferences, ReferenceValidationError
-from core.extraction_schema import MAX_OUTPUT_CHARS, parse_extraction_output
+from core.extraction_schema import MAX_OUTPUT_CHARS, parse_extraction_output_for_context
 from tests.test_regeneration_contract import complete_candidate
 
 candidate_for = complete_candidate
@@ -19,22 +19,18 @@ def archive(candidate, *, path='$', code='invalid_output'):
         'validation_errors': [{'path': path, 'type': code}]}}
 
 
-@pytest.mark.parametrize('wrong_version', ['extraction.v3', 'extraction.v4', 'extraction.v5',
-    'extraction.v6', 'extraction.v7', 'extraction.v8', 'extraction.v9', 'extraction.v99', None, 7, 'missing'])
-def test_version_and_fields_validated_against_fixed_target(wrong_version):
+@pytest.mark.parametrize('model_version', ['extraction.v99', None, 7, 'missing'])
+def test_prepared_schema_supplies_version_for_complete_business_candidate(model_version):
     schema = 'extraction.v1'
-    candidate = candidate_for(schema)
-    parse_extraction_output(json.dumps(candidate), schema_version=schema)
-    candidate['schema_version'] = wrong_version
-    if wrong_version == 'missing':
+    expected = candidate_for(schema)
+    candidate = deepcopy(expected)
+    if model_version == 'missing':
         del candidate['schema_version']
-    before = deepcopy(candidate)
-    errors = validation_feedback(archive(candidate), schema_version=schema)['errors']
-    assert candidate == before
-    assert len(errors) == 1
-    assert errors[0]['path'] == '$.schema_version'
-    assert errors[0]['type'] == ('missing' if wrong_version == 'missing' else 'literal_error')
-    assert errors[0]['constraints']['const'] == schema
+    else:
+        candidate['schema_version'] = model_version
+    parsed = parse_extraction_output_for_context(json.dumps(candidate), {}, schema_version=schema,
+                                                 validate_supplied_versions=False)
+    assert parsed.model_dump(mode='json') == expected
 
 
 def test_wrong_version_does_not_hide_independent_field_constraint():
@@ -43,8 +39,20 @@ def test_wrong_version_does_not_hide_independent_field_constraint():
     candidate['schema_version'] = 'extraction.v99'
     candidate['node_changes'][0]['importance'] = 2
     errors = validation_feedback(archive(candidate), schema_version=schema)['errors']
-    assert {error['path'] for error in errors} == {'$.schema_version', '$.node_changes[0].importance'}
-    assert next(error for error in errors if error['path'].endswith('importance'))['constraints']['maximum'] == 1
+    error, = errors
+    assert error['path'] == '$.node_changes[0].importance'
+    assert error['constraints']['maximum'] == 1
+
+
+def test_emotion_only_update_reports_precise_tag_constraint():
+    candidate = complete_candidate()
+    change = candidate['node_changes'][0]
+    change.update(operation='update', node_id='n1')
+    change['emotion']['tags'][0]['intensity'] = 2
+    context = {'known_nodes': [{'node_id': 'n1', 'content_text': change['content'], 'emotion': None}]}
+    issue, = validation_feedback(archive(candidate), context=context)['errors']
+    assert issue['path'] == '$.node_changes[0].emotion.tags[0].intensity'
+    assert issue['constraints']['maximum'] == 1
 
 
 @pytest.mark.parametrize('raw,kind', [('{"schema_version":', 'json_invalid'),
@@ -123,16 +131,16 @@ async def test_automatic_correction_uses_prepared_target_and_commits_once(enviro
     good['node_changes'] = good['node_changes'][:1]
     bad = deepcopy(good)
     bad['schema_version'] = 'extraction.v99'
+    bad['node_changes'][0]['importance'] = 2
     env.adapter.output = json.dumps(bad)
 
     async def respond(messages):
         if len(env.adapter.calls) == 2:
             assert messages[:2] == env.adapter.calls[0]
             assert f'schema_version={schema}\n' in messages[0]['content']
-            error = json.loads(messages[-1]['content'])['errors'][0]
-            assert error['path'] == '$.schema_version' and error['constraints']['const'] == schema
-            assert not any(item['type'] == 'extra_forbidden'
-                for item in json.loads(messages[-1]['content'])['errors'])
+            error, = json.loads(messages[-1]['content'])['errors']
+            assert error['path'] == '$.node_changes[0].importance'
+            assert error['constraints']['maximum'] == 1
             env.adapter.output = json.dumps(good)
     env.adapter.on_generate = respond
     completed = await execute(env, await enqueue_and_claim(env))
