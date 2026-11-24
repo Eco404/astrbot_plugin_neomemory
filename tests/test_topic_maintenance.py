@@ -479,3 +479,32 @@ async def test_truncated_topics_shrink_seeds_and_review_the_remainder(environmen
     assert sizes[:2] == [6, 3]
     assert completed["result"]["reviewed_count"] == 6
     assert len(await env.memory.database.fetchall("SELECT * FROM topic_reviews")) == 6
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recover", [True, False])
+async def test_oversize_topic_response_checked_before_checkpoint_or_archive(environment, recover):
+    from core.topic_schema import MAX_OUTPUT_CHARS
+
+    env = environment
+    await seed(env, count=6 if recover else 2)
+    call_sizes = []
+    oversized = "界" * 400_000
+
+    async def generate(messages, **kwargs):
+        call_sizes.append(len(json.loads(messages[1]["content"])["nodes"]))
+        return oversized if len(call_sizes) == 1 else '{"changes":[]}'
+
+    env.adapter.generate = generate
+    job = await execute(env, await enqueue_and_claim(env, "topic_consolidate"))
+    if recover:
+        assert job["state"] == "succeeded" and job["result"]["reviewed_count"] == 6
+        assert call_sizes[:2] == [6, 3]
+    else:
+        detail = await env.engine.describe(job["job_id"])
+        assert job["state"] == "failed" and detail["error_code"] == "output_budget_exceeded"
+        assert detail["validation_errors"] == [{"path": "$", "type": "output_capacity_exceeded",
+                                               "actual_chars": len(oversized), "limit_chars": MAX_OUTPUT_CHARS}]
+        assert call_sizes == [2]
+    assert "raw" not in job["checkpoint"].get("topic_window", {})
+    assert not await env.engine.jobs.list_candidates(job["job_id"])

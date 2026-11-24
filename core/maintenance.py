@@ -54,8 +54,8 @@ from .forwarded_content import window_text
 from .parallel_rebuild import rebuild_sections
 from .context_rebuild import MODELS as CONTEXT_REBUILD_MODELS, extraction_envelope, scoped_messages
 from .model_routing import ModelRoutingMixin, ModelSelectionRequired, fixed_route, validate_selection
-from .jobs import JobRunner, ModelNetworkError, RetryableJobError, ReviewRequired
-from .provider_errors import is_transient_provider_error
+from .jobs import JobRunner, RetryableJobError, ReviewRequired, deadline_failure, provider_failure
+from .attempts import observe_action, observe_commit, observed_call
 from .memory_spaces import RetiredIdentity
 from .persona_policy import is_supported_persona
 from .prompts import schema_for_prompt_version
@@ -347,7 +347,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         if kind == "extract":
             records, decision = await self.live_plan(space, generation["generation_id"], manual=True)
             if decision.status == "waiting":
-                if replaces:
+                if replaces and replaces.get("lease_token"):
                     return None
                 raise ValueError("pending messages are below the extraction minimum")
             return await self._submit_extract(space, generation, records, decision, idempotency_key, request=request, replaces=replaces)
@@ -400,6 +400,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             "expected_generation_id": generation["generation_id"], "source_ids": list(ids),
             "source_cursor": max(by_id[source_id]["scan_cursor"] for source_id in ids),
             "blocked": decision.status == "oversized"}
+        if payload["blocked"]:
+            payload["source_errors"] = decision.budget_errors(self.policy(space))
         policy = await self.memory.get_space_policy(space["space_id"])
         route = self.resolve_window_route(policy, [by_id[i] for i in ids], request.get("model_selection", {}))
         if not route and not request.get("automatic"):
@@ -493,18 +495,16 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         request = job["payload"].get("request", {})
         # A new task starts with current inputs and no old model output. Keep the
         # old error record until successful submission, then resolve its blocker.
-        created = await self.enqueue(kind, space, "restart:" + uuid.uuid4().hex,
+        return await self.snapshot()._enqueue(kind, space, "restart:" + uuid.uuid4().hex, replaces=job,
             operation=job["payload"].get("operation"), reason=request.get("reason", ""),
             failed_job_id=job["payload"].get("failed_job_id"), include_topics=bool(job["payload"].get("include_topics")),
             model_selection=model_selection)
-        await self.jobs.cancel(job_id)
-        return created
 
     async def describe(self, job_id):
         job = await self.jobs.get(job_id)
         if job is None:
             raise KeyError("unknown task")
-        fields = ("job_id", "kind", "scope_key", "state", "step", "progress_done", "progress_total",
+        fields = ("job_id", "kind", "scope_key", "state", "step", "progress_done", "progress_total", "attempts",
                   "attempt", "max_attempts", "automatic_origin", "error_type", "error_code", "created_at", "updated_at",
                   "available_at", "result")
         result = {key: job[key] for key in fields}
@@ -517,7 +517,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         history = await self.jobs.list_candidates(job_id, limit=11)
         result["candidate_history"] = history[:10]
         result["candidate_history_has_more"] = len(history) > 10
-        result["validation_errors"] = window.get("validation_errors", [])
+        result["validation_errors"] = window.get("validation_errors", checkpoint.get("source_errors", job["payload"].get("source_errors", [])))
         result["automatic_corrections"] = window.get("correction_attempt", 0)
         result["automatic_correction_limit"] = window.get("correction_limit", 1) if window else None
         result["response_diagnostics"] = window.get("response_diagnostics", {})
@@ -574,6 +574,14 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                         window_user_ids=prepared["allowed_user_ids"])
                 except ValueError:
                     result["candidate_format_invalid"] = True
+        if job["error_code"] == "prompt_budget_exceeded":
+            budget = topic_window.get("request_budget") or topic_budget or window.get("budget")
+            if budget and not any(item.get("type") == "prompt_budget_exceeded" for item in result["validation_errors"]):
+                result["validation_errors"] = [*result["validation_errors"], {
+                    "path": "$", "type": "prompt_budget_exceeded",
+                    "actual_bytes": budget.get("prompt_bytes", budget.get("base_prompt_bytes")),
+                    "limit_bytes": budget["max_prompt_bytes"], "reserved_feedback_bytes": budget.get("reserved_feedback_bytes", 0),
+                }]
         return result
 
     async def _save(self, job, checkpoint, step, done=0, total=None):
@@ -606,9 +614,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         if isinstance(exc, IndexCacheUnavailable):
             return RetryableJobError("index_cache_unavailable")
         prefix = "context_embedding" if context else "window_index"
-        if is_transient_provider_error(exc):
-            return ModelNetworkError(prefix + "_temporary_failure")
-        return ReviewRequired(prefix + "_unavailable")
+        return provider_failure(exc, temporary=prefix + "_temporary_failure", unavailable=prefix + "_unavailable")
 
     async def _context_ids(self, space, generation_id, sources, *, timeout_seconds=None, progress=None):
         embeddings = self.runtime.recall.embeddings if self.runtime.recall is not None else None
@@ -647,6 +653,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             return False
         if "raw" in window:
             await self.jobs.archive_candidate(job["job_id"], job["lease_token"], window, code)
+        observe_action("resize")
         checkpoint["window"] = {"planned": True, "source_ids": list(source_ids), "source_cursor": source_cursor,
                                 "known_node_ids": known, "model_route": window["model_route"]}
         await self._save(job, checkpoint, "prepared", checkpoint.get("done", 0), checkpoint.get("total"))
@@ -686,8 +693,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                             window.pop(key, None)
                         window["regeneration"] = {"version": REGENERATION_VERSION, "candidate_id": candidate_id}
                         await self._save(job, checkpoint, "correcting", checkpoint.get("done", 0), checkpoint.get("total"))
-        except TimeoutError:
-            raise RetryableJobError("extraction_timeout") from None
+        except TimeoutError as exc:
+            raise deadline_failure(exc, "extraction_timeout") from None
 
     async def _window_in_budget(self, job, checkpoint, space, generation_id, source_ids, source_cursor, *, building, deadline):
         # A commit can outlive cancellation of its awaiting coroutine. Receipt
@@ -695,6 +702,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         batch_id = "batch_" + digest([space["space_id"], generation_id, tuple(source_ids)])
         receipt = await self.memory.get_extraction_batch(batch_id)
         if receipt:
+            observe_action("resume_committed")
             await self.extraction.flush_image_evidence(batch_id)
             await self._discard_images(job, space, source_ids)
             return receipt
@@ -763,6 +771,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                 messages = base
                 output_schema = schema
                 if "regeneration" in window:
+                    observe_action("regenerate")
                     archived = await self.jobs.get_candidate(job["job_id"], window["regeneration"].get("candidate_id"))
                     try:
                         messages = regeneration_messages(messages, window, archived,
@@ -797,7 +806,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                     if self.config.extraction_output_format != "text":
                         options = {"output_format": self.config.extraction_output_format,
                                    "output_schema": output_schema}
-                    raw = await self.runtime.adapter.generate(messages, provider_id=route["provider_id"],
+                    raw = await observed_call(self.runtime.adapter.generate, messages, provider_id=route["provider_id"],
                         **({"model": route["model_override"]} if route.get("model_override") else {}),
                         timeout_seconds=max(0.001, deadline - time.monotonic()), diagnostics=diagnostics, **options)
                     break
@@ -812,9 +821,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                 except Exception as exc:
                     window["response_diagnostics"] = diagnostics
                     await self._save(job, checkpoint, "model", checkpoint.get("done", 0), checkpoint.get("total"))
-                    if is_transient_provider_error(exc):
-                        raise ModelNetworkError("provider_temporary_failure") from None
-                    raise ReviewRequired("provider_unavailable") from None
+                    raise provider_failure(exc) from None
             if "regeneration" in window:
                 diagnostics["repeated_candidate"] = raw == archived["window"]["raw"]
             window["response_diagnostics"] = diagnostics
@@ -875,6 +882,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         try:
             options = {"image_evidence": evidence} if evidence else {}
             receipt = await self.extraction.apply(batch, canonical, model_id=route["provider_id"], **options)
+            observe_commit()
             await self._discard_images(job, space, source_ids)
             return receipt
         except PermissionError:
@@ -982,7 +990,12 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                         chosen = set(decision.source_ids)
                         cursor = max((r["scan_cursor"] for r in records if r["source_id"] in chosen), default=0)
                     if decision.status == "oversized":
+                        checkpoint["source_ids"] = [decision.blocked_source_id]
+                        checkpoint["source_errors"] = decision.budget_errors(self.policy(space))
+                        await self._save(job, checkpoint, "replay", checkpoint["done"], checkpoint["total"])
                         raise ReviewRequired("oversized_source")
+                    checkpoint.pop("source_errors", None)
+                    checkpoint.pop("source_ids", None)
                     source_ids = decision.source_ids
                 window_receipt = await self._window(job, checkpoint, space, generation["generation_id"], source_ids, cursor, building=True)
                 window = checkpoint.get("window", {})
@@ -1003,8 +1016,10 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             if scoped:
                 await self._save(job, checkpoint, "switch", checkpoint["done"], checkpoint["total"])
                 try:
-                    return await self.pipeline.publish_context(job, generation["generation_id"], {
+                    result = await self.pipeline.publish_context(job, generation["generation_id"], {
                         "source_count": checkpoint["done"], "pending_source_count": checkpoint.get("pending", 0)})
+                    observe_commit()
+                    return result
                 except ValueError as exc:
                     if str(exc) == "context rebuild target changed":
                         raise ReviewRequired("context_changed") from None
@@ -1027,6 +1042,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         switched = await self.pipeline.activate_rebuild(job, space["space_id"], generation["generation_id"],
             payload["expected_generation_id"], result=result,
             invalidate_nodes=self.runtime.cache.invalidate_nodes if self.runtime.cache else None)
+        if not switched["replayed"]:
+            observe_commit()
         self._pending_reads.pop(payload["expected_generation_id"], None)
         self._read_hints.pop(payload["expected_generation_id"], None)
         return switched["result"]
@@ -1116,6 +1133,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                 # Version/state validation already prevents stale recall. Cache
                 # cleanup is expendable and cannot undo a committed correction.
                 self.last_error_type = type(exc).__name__
+        if not result.get("replayed"):
+            observe_commit()
         return result
 
     async def _reject(self, job):
@@ -1138,6 +1157,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                 "coverage_changes": []}
             raw = json.dumps(candidate)
             receipt = await self.extraction.apply(batch, raw, model_id="manual-rejection")
+            observe_commit()
         await self._discard_images(job, space, payload["source_ids"])
         await self.jobs.cancel(payload["failed_job_id"])
         return {"batch_id": receipt["batch_id"], "source_count": len(payload["source_ids"]), "review": "rejected"}

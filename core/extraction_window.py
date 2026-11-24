@@ -77,6 +77,15 @@ class WindowDecision:
     estimated_tokens: int = 0
     blocked_source_id: str | None = None
 
+    def budget_errors(self, policy: WindowPolicy) -> list[dict]:
+        errors = []
+        for unit, actual, limit in (("chars", self.char_count, policy.max_chars),
+                                    ("tokens", self.estimated_tokens, policy.max_tokens)):
+            if actual > limit:
+                errors.append({"path": "$", "type": "source_budget_exceeded",
+                               f"actual_{unit}": actual, f"limit_{unit}": limit})
+        return errors
+
 
 def estimate_tokens(content_text: str) -> int:
     """Conservative local budget estimate; excludes the rest of the prompt."""

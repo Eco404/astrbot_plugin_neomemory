@@ -17,12 +17,12 @@ except ImportError:
 
 from .extraction_apply import digest
 from .extraction_context import node_vectors, _rank_page_with_query_coverage
-from .jobs import ModelNetworkError, RetryableJobError, ReviewRequired
+from .jobs import ReviewRequired, deadline_failure, provider_failure
 from .model_routing import fixed_route
-from .provider_errors import is_transient_provider_error
+from .attempts import observe_action, observe_commit, observed_call
 from .topic_prompt import (PROMPT_VERSION,
                            build_messages, schema_for_prompt_version)
-from .topic_schema import TOPIC_CREATE_MIN_MEMBERS, VERSION, model_output_schema, parse_output_for_context
+from .topic_schema import MAX_OUTPUT_CHARS, TOPIC_CREATE_MIN_MEMBERS, VERSION, model_output_schema, parse_output_for_context
 from .candidate_feedback import compact_json_messages, correction_allowed, recovery_messages, validation_errors
 from .topic_regeneration import EXPLANATIONS, VERSION as RECOVERY_VERSION, refresh_feedback
 from .topic_evidence import collect_topic_evidence
@@ -153,6 +153,7 @@ class TopicMaintenanceMixin:
             optional = [node_id for node_id in candidates if node_id not in seed_ids][:optional_limit]
             prepared, diagnostics = await fit(seed_ids, optional)
             if prepared is None and optional:
+                observe_action("resize")
                 prepared, diagnostics = await fit(seed_ids, [])
                 if prepared is not None:
                     # An optional parent can expand to many members. Try later roots even if it cannot fit.
@@ -169,6 +170,7 @@ class TopicMaintenanceMixin:
                 failure = ReviewRequired("prompt_budget_exceeded")
                 failure.budget = diagnostics
                 raise failure
+            observe_action("resize")
             seed_batch = seed_batch[:max(1, len(seed_batch) // 2)]
 
     async def _topic_window(self, job, checkpoint, store, space, generation_id):
@@ -184,8 +186,11 @@ class TopicMaintenanceMixin:
             raise ReviewRequired("configuration_changed")
         if not store.can_propose_changes(window["prepared"]):
             try:
-                return await store.apply(job, window["prepared"], {"schema_version": VERSION, "changes": []},
+                result = await store.apply(job, window["prepared"], {"schema_version": VERSION, "changes": []},
                                          receipt_key=window["receipt_key"])
+                if not result["replayed"]:
+                    observe_commit()
+                return result
             except ValueError as exc:
                 if str(exc) in TOPIC_CONTEXT_ERRORS:
                     raise ReviewRequired("context_changed") from None
@@ -197,8 +202,6 @@ class TopicMaintenanceMixin:
                                   prompt_version=window["prepared"]["prompt_version"])
         if digest(messages) != window["request_digest"]:
             raise ReviewRequired("configuration_changed")
-        if sum(len(message["content"].encode()) for message in messages) > self.config.extraction_max_prompt_bytes:
-            raise ReviewRequired("prompt_budget_exceeded")
         schema_version = schema_for_prompt_version(window["prepared"]["prompt_version"])
         deadline = time.monotonic() + self.config.extraction_timeout_seconds
         async with asyncio.timeout_at(deadline) as window_timeout:
@@ -206,6 +209,7 @@ class TopicMaintenanceMixin:
                 if "raw" not in window:
                     request = list(messages)
                     if window.get("regeneration"):
+                        observe_action("regenerate")
                         archived = await self.jobs.get_candidate(job["job_id"], window["regeneration"]["candidate_id"])
                         if archived["window"]["prepared"]["input_digest"] != window["prepared"]["input_digest"]:
                             raise ReviewRequired("context_changed")
@@ -226,8 +230,13 @@ class TopicMaintenanceMixin:
                         await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
                     else:
                         window.pop("request_transport", None)
-                    if message_bytes(request) > self.config.extraction_max_prompt_bytes:
+                    transport_bytes = message_bytes(request)
+                    if transport_bytes > self.config.extraction_max_prompt_bytes:
+                        window["request_budget"] = {"prompt_bytes": transport_bytes,
+                                                    "max_prompt_bytes": self.config.extraction_max_prompt_bytes}
+                        await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
                         raise ReviewRequired("prompt_budget_exceeded")
+                    window.pop("request_budget", None)
                     window.pop("response_diagnostics", None)
                     await self._save(job, checkpoint, "topic_model", checkpoint["done"], checkpoint["total"])
                     options = {}
@@ -236,7 +245,7 @@ class TopicMaintenanceMixin:
                                    "output_schema": model_output_schema(schema_version)}
                     diagnostics = {}
                     try:
-                        window["raw"] = await self.runtime.adapter.generate(request,
+                        window["raw"] = await observed_call(self.runtime.adapter.generate, request,
                             provider_id=route["provider_id"],
                             **({"model": route["model_override"]} if route.get("model_override") else {}),
                             timeout_seconds=max(.001, deadline - time.monotonic()),
@@ -249,11 +258,16 @@ class TopicMaintenanceMixin:
                     except Exception as exc:
                         window["response_diagnostics"] = diagnostics
                         await self._save(job, checkpoint, "topic_model", checkpoint["done"], checkpoint["total"])
-                        if is_transient_provider_error(exc):
-                            raise ModelNetworkError("provider_temporary_failure") from None
-                        raise ReviewRequired("provider_unavailable") from None
+                        raise provider_failure(exc) from None
                     window["response_diagnostics"] = diagnostics
+                raw = window["raw"]
+                if isinstance(raw, str) and len(raw) > MAX_OUTPUT_CHARS:
+                    window.pop("raw")
+                    window["errors"] = [{"path": "$", "type": "output_capacity_exceeded",
+                                         "actual_chars": len(raw), "limit_chars": MAX_OUTPUT_CHARS}]
                     await self._save(job, checkpoint, "topic_validate", checkpoint["done"], checkpoint["total"])
+                    raise ReviewRequired("output_budget_exceeded")
+                await self._save(job, checkpoint, "topic_validate", checkpoint["done"], checkpoint["total"])
                 try:
                     diagnostics = window.get("response_diagnostics", {})
                     if diagnostics.get("finish_reason") == "length" or diagnostics.get("response_status") == "incomplete":
@@ -268,7 +282,10 @@ class TopicMaintenanceMixin:
                         expected_schema_version=schema_version,
                         window_user_ids=prepared["allowed_user_ids"],
                         validate_supplied_versions=False)
-                    return await store.apply(job, window["prepared"], output, receipt_key=window["receipt_key"])
+                    result = await store.apply(job, window["prepared"], output, receipt_key=window["receipt_key"])
+                    if not result["replayed"]:
+                        observe_commit()
+                    return result
                 except PermissionError:
                     raise ReviewRequired("task_write_not_permitted") from None
                 except ValueError as exc:
@@ -320,8 +337,8 @@ class TopicMaintenanceMixin:
                         prepared, persona, budget = await self._prepare_topic_window(
                             store, space, generation["generation_id"], seeds, evidence_memory=stage_for,
                             optional_limit=shrink.get("optional_limit"))
-                except TimeoutError:
-                    raise RetryableJobError("context_embedding_timeout") from None
+                except TimeoutError as exc:
+                    raise deadline_failure(exc, "context_embedding_timeout") from None
                 except ReviewRequired as exc:
                     if hasattr(exc, "budget"):
                         checkpoint["topic_budget"] = exc.budget
@@ -354,14 +371,14 @@ class TopicMaintenanceMixin:
                 await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
             try:
                 receipt = await self._topic_window(job, checkpoint, store, space, generation["generation_id"])
-            except TimeoutError:
-                raise RetryableJobError("topic_timeout") from None
+            except TimeoutError as exc:
+                raise deadline_failure(exc, "topic_timeout") from None
             except ReviewRequired as exc:
                 window = checkpoint["topic_window"]
                 diagnostics = window.get("response_diagnostics", {})
                 capacity = any(error.get("type") == "output_capacity_exceeded" for error in window.get("errors", []))
                 truncated = diagnostics.get("finish_reason") == "length" or diagnostics.get("incomplete_reason") == "max_output_tokens"
-                if exc.code != "invalid_topic_output" or not (truncated or capacity):
+                if exc.code not in {"invalid_topic_output", "output_budget_exceeded"} or not (truncated or capacity):
                     raise
                 seed_count = len(window["prepared"]["seed_ids"])
                 optional_count = window.get("budget", {}).get("optional_roots_retained", 0)
@@ -373,7 +390,9 @@ class TopicMaintenanceMixin:
                     optional_limit = 0
                 else:
                     raise
-                await self.jobs.archive_candidate(job["job_id"], job["lease_token"], window, exc.code)
+                if "raw" in window:
+                    await self.jobs.archive_candidate(job["job_id"], job["lease_token"], window, exc.code)
+                observe_action("resize")
                 checkpoint["topic_shrink"] = {"seed_limit": seed_count, "optional_limit": optional_limit}
                 checkpoint.pop("topic_window")
                 await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
@@ -437,6 +456,7 @@ class TopicMaintenanceMixin:
             try:
                 result = await publish_topics(self.memory, job, generation_id, drafts, reviewed, basis,
                     invalidate_nodes=invalidate_nodes if self.runtime.cache is not None else None)
+                observe_commit()
             except ValueError as exc:
                 if str(exc) == "topic context changed":
                     raise ReviewRequired("context_changed") from None

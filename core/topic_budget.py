@@ -35,6 +35,7 @@ def fit_topic_evidence(persona, nodes, edges, evidence, max_bytes, *, related_to
     by_node = {}
     retained = 0
     shortened = 0
+    minimum_with_evidence = None
 
     def append(row, source):
         node_id = row["node_id"]
@@ -68,12 +69,18 @@ def fit_topic_evidence(persona, nodes, edges, evidence, max_bytes, *, related_to
                     else:
                         high = length - 1
                 if low == 0:
+                    if not retained:
+                        source.update(clip_topic_excerpt(original, 1)[0])
+                        needed = message_bytes(build_messages(persona, nodes, edges, evidence=selected, **options))
+                        minimum_with_evidence = needed if minimum_with_evidence is None else min(needed, minimum_with_evidence)
                     remove(row)
                     continue
                 source.update(clip_topic_excerpt(original, low)[0])
                 shortened += 1
             retained += 1
     actual = message_bytes(build_messages(persona, nodes, edges, evidence=selected, **options))
+    if not retained and minimum_with_evidence is not None:
+        actual = minimum_with_evidence
     diagnostics = {"base_prompt_bytes": base, "prompt_bytes": actual,
         "source_excerpts_available": available, "source_excerpts_retained": retained,
         "source_excerpts_omitted": available - retained, "source_excerpts_shortened": shortened}

@@ -19,9 +19,9 @@ except ImportError:
     from storage.short_term_store import ShortTermStore
     from storage.source_scan import SourceScanner
 
-from .jobs import ModelNetworkError, RetryableJobError, ReviewRequired
+from .jobs import ReviewRequired, deadline_failure, provider_failure
 from .model_routing import validate_selection, window_route
-from .provider_errors import is_transient_provider_error
+from .attempts import observe_action, observe_commit, observed_call
 from .persona_policy import is_supported_persona
 from .memory_text import user_reference_ids
 from .forwarded_content import window_text
@@ -281,10 +281,8 @@ class ShortTermService:
         payload["model_route"] = await self._route(job["scope_key"], records, selection)
         if not payload["model_route"]:
             raise ValueError("model_required: select a short-term summary model")
-        result = await self.jobs.submit("short_term", job["scope_key"], payload,
-            "short_term_fresh:" + job_id, max_attempts=getattr(self.config, "job_max_attempts", 2))
-        await self.jobs.cancel(job_id)
-        return result
+        return await self.jobs.submit("short_term", job["scope_key"], payload,
+            "short_term_fresh:" + job_id, max_attempts=getattr(self.config, "job_max_attempts", 2), replaces=job)
 
     async def _execution(self, space, prompt_version=PROMPT_VERSION, route=None):
         persona = self.persona_loader(space["persona_id"])
@@ -311,8 +309,8 @@ class ShortTermService:
         try:
             async with asyncio.timeout(timeout):
                 return await copy.copy(self)._run(job, deadline=time.monotonic() + timeout)
-        except TimeoutError:
-            raise RetryableJobError("short_term_timeout") from None
+        except TimeoutError as exc:
+            raise deadline_failure(exc, "short_term_timeout") from None
 
     async def _run(self, job, *, deadline):
         receipt = await self.store.receipt(job["job_id"])
@@ -353,6 +351,7 @@ class ShortTermService:
         prefix = self._source_prefix(records, policy["max_chars"])
         if len(prefix) < len(records):
             records, checkpoint = prefix, {}
+            observe_action("resize")
         while True:
             source_ids = [row["source_id"] for row in records]
             effective = {**payload, "source_ids": source_ids, "previous_version": current_version}
@@ -367,6 +366,7 @@ class ShortTermService:
                     raise
                 if "raw" in checkpoint:
                     await self.jobs.archive_candidate(job["job_id"], job["lease_token"], checkpoint, exc.code)
+                observe_action("resize")
                 records = records[:len(records) // 2]
                 checkpoint = {"source_ids": [row["source_id"] for row in records], "previous_version": current_version}
                 await self._save(job, checkpoint, "short_term_prepared")
@@ -406,9 +406,11 @@ class ShortTermService:
         candidate = await self._candidate({**job, "payload": payload}, checkpoint, prompt, schema,
                                           space, policy, old_text, deadline)
         try:
-            return await self.store.apply(job, input_digest=input_digest,
+            result = await self.store.apply(job, input_digest=input_digest,
                 summary_text=candidate["summary_text"], records=records,
                 evidence_source_ids=candidate["evidence_source_ids"])
+            observe_commit()
+            return result
         except ValueError:
             raise ReviewRequired("summary_context_changed") from None
 
@@ -417,6 +419,7 @@ class ShortTermService:
         while True:
             request = prompt
             if checkpoint.get("regeneration"):
+                observe_action("regenerate")
                 archived = await self.jobs.get_candidate(job["job_id"], checkpoint["regeneration"]["candidate_id"])
                 if archived["window"]["input_digest"] != checkpoint["input_digest"]:
                     raise ReviewRequired("configuration_or_context_changed")
@@ -454,7 +457,8 @@ class ShortTermService:
     async def _generate(self, job, checkpoint, prompt, schema, deadline):
         prompt_bytes = sum(len(message["content"].encode()) for message in prompt)
         limit = getattr(self.config, "extraction_max_prompt_bytes", 256000)
-        reserve = min(8192, limit // 10) if (len(job["payload"]["source_ids"]) > 1
+        window_sources = checkpoint.get("source_ids", job["payload"]["source_ids"])
+        reserve = min(8192, limit // 10) if (len(window_sources) > 1
             and getattr(self.config, "extraction_auto_regeneration", True) and "regeneration" not in checkpoint) else 0
         if prompt_bytes > limit - reserve:
             checkpoint["errors"] = [{"path": "$", "type": "prompt_budget_exceeded", "actual_bytes": prompt_bytes,
@@ -468,15 +472,13 @@ class ShortTermService:
             if route is None:
                 route = {"provider_id": self._provider_id()}
             output_format = checkpoint.get("output_format", "text")
-            raw = await self.adapter.generate(prompt, provider_id=route["provider_id"],
+            raw = await observed_call(self.adapter.generate, prompt, provider_id=route["provider_id"],
                 output_format=output_format,
                 output_schema=provider_schema(schema) if output_format == "json_schema" else None,
                 **({"model": route["model_override"]} if route.get("model_override") else {}),
                 timeout_seconds=max(.001, deadline - time.monotonic()), diagnostics=diagnostics)
         except Exception as exc:
-            if is_transient_provider_error(exc):
-                raise ModelNetworkError("provider_temporary_failure") from None
-            raise ReviewRequired("provider_unavailable") from None
+            raise provider_failure(exc) from None
         if not isinstance(raw, str) or len(raw.encode()) > MAX_OUTPUT_BYTES:
             checkpoint["response_diagnostics"] = diagnostics
             checkpoint["errors"] = [{"path": "$", "type": "output_capacity_exceeded", "limit_bytes": MAX_OUTPUT_BYTES,

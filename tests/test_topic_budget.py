@@ -48,6 +48,7 @@ def test_attribution_evidence_is_not_silently_replaced_with_empty_context():
     base = message_bytes(build_messages("人格", nodes, []))
     fitted, diagnostics = fit_topic_evidence("人格", nodes, [], evidence_rows(1), base + 10)
     assert fitted is None and diagnostics["source_excerpts_retained"] == 0
+    assert diagnostics["prompt_bytes"] > base + 10
     fitted, _ = fit_topic_evidence("人格", nodes, [], [], base)
     assert fitted == []
 
@@ -179,6 +180,9 @@ async def test_single_required_closure_overflow_stays_visible_without_model_call
     assert env.adapter.calls == []
     assert failed["checkpoint"]["topic_budget"]["seed_count"] == 1
     assert failed["checkpoint"]["topic_budget"]["base_prompt_bytes"] > 20000
+    detail = await env.engine.describe(failed["job_id"])
+    issue, = detail["validation_errors"]
+    assert issue["actual_bytes"] > issue["limit_bytes"] == 20000 and issue["reserved_feedback_bytes"] > 0
     assert not await env.memory.database.fetchall("SELECT * FROM topic_reviews")
 
 

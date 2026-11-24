@@ -461,12 +461,40 @@ async def test_oversized_source_has_explicit_rejection_path_without_provider_cal
     failed = await execute(env, await enqueue_and_claim(env))
     assert failed["state"] == "failed"
     assert failed["error_code"] == "oversized_source"
+    issue, = (await env.engine.describe(failed["job_id"]))["validation_errors"]
+    assert issue["type"] == "source_budget_exceeded" and issue["actual_chars"] > issue["limit_chars"] == 2
     assert env.adapter.calls == []
     rejection = await enqueue_and_claim(env, "reject", key="reject-long", failed_job_id=failed["job_id"])
     result = await execute(env, rejection)
     assert result["state"] == "succeeded"
     assert result["result"]["source_count"] == 1
     assert env.adapter.calls == []
+
+
+@pytest.mark.asyncio
+async def test_rebuild_reports_first_source_token_overflow_with_source_reference(environment):
+    env = environment
+    restart(env, config=replace(env.config, extraction_max_tokens=1))
+    failed = await execute(env, await enqueue_and_claim(env, "rebuild"))
+    detail = await env.engine.describe(failed["job_id"])
+    assert detail["error_code"] == "oversized_source"
+    assert detail["source_ids"] == [env.records[0].source_id]
+    issue, = detail["validation_errors"]
+    assert issue["actual_tokens"] > issue["limit_tokens"] == 1
+    assert not env.adapter.calls
+
+
+@pytest.mark.asyncio
+async def test_irreducible_extraction_prompt_reports_bytes_without_calling_provider(environment):
+    env = environment
+    restart(env, config=replace(env.config, extraction_max_prompt_bytes=100))
+    failed = await execute(env, await enqueue_and_claim(env))
+    detail = await env.engine.describe(failed["job_id"])
+    assert detail["error_code"] == "prompt_budget_exceeded"
+    issue, = detail["validation_errors"]
+    assert issue["actual_bytes"] > issue["limit_bytes"] == 100
+    assert issue["reserved_feedback_bytes"] == 0 and len(detail["source_ids"]) == 1
+    assert not env.adapter.calls
 
 
 @pytest.mark.asyncio
