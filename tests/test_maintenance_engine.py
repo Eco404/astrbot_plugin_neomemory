@@ -704,6 +704,35 @@ async def test_governance_request_keeps_command_body_only_once(environment):
 
 
 @pytest.mark.asyncio
+async def test_cancelled_failures_release_same_extraction_window_across_scans(environment):
+    env = environment
+    jobs = env.engine.jobs
+    ids = [r.source_id for r in env.records]
+    for _ in range(2):
+        restart(env)
+        await env.engine.scan_once()
+        job = await jobs.claim("extract")
+        assert job["payload"]["source_ids"] == ids
+        env.adapter.output = "invalid JSON"
+        assert (await execute(env, job))["state"] == "failed"
+        await jobs.cancel(job["job_id"])
+        assert await env.engine.pending_source_count(env.space) == 2
+    restart(env)
+    await asyncio.gather(env.engine.scan_once(), env.engine.scan_once())
+    pending, = await jobs.list(states=["queued"])
+    assert pending["payload"]["source_ids"] == ids
+    env.adapter.output = json.dumps(output([node(ids[0])]))
+    assert (await execute(env, await jobs.claim("catch-up")))["state"] == "succeeded"
+    for _ in range(2):
+        await env.engine.scan_once()
+    assert await jobs.claim("duplicate") is None
+    assert len(await jobs.list(states=["cancelled"])) == 2
+    assert len(await env.memory.database.fetchall("SELECT 1 FROM extraction_batches")) == 1
+    assert len(await env.memory.database.fetchall("SELECT 1 FROM extraction_batch_sources")) == 2
+    assert await env.engine.pending_source_count(env.space) == 0
+
+
+@pytest.mark.asyncio
 async def test_auto_recovery_reprepares_stale_checkpoint_once_and_keeps_origin(environment):
     env = environment
     job = await enqueue_and_claim(env, automatic=True)

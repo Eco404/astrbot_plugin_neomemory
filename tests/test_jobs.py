@@ -233,6 +233,27 @@ async def test_retry_rechecks_global_admission(stores):
 
 
 @pytest.mark.asyncio
+async def test_normal_trigger_distinguishes_cancelled_failure_from_cancelled_backoff(stores):
+    store, reopened, _ = stores
+    key = "short_term:window"
+    failure = dict(error_type="TimeoutError", error_code="provider_temporary_failure")
+    await submit(store, key=key)
+    job = await store.claim("owner")
+    await store.fail(job["job_id"], job["lease_token"], retryable=True, **failure)
+    await store.cancel(job["job_id"])
+    assert await reopened.next_window_key(key) is None
+    await store.retry(job["job_id"])
+    resumed = await store.claim("owner")
+    await store.fail(job["job_id"], resumed["lease_token"], **failure)
+    await store.cancel(job["job_id"])
+    next_key = await reopened.next_window_key(key)
+    assert next_key == key + ":" + job["job_id"]
+    # Cancellations written before the state was recorded retain the diagnostic.
+    await store.database.execute("UPDATE memory_jobs SET result_json=NULL WHERE job_id=?", (job["job_id"],))
+    assert await reopened.next_window_key(key) == next_key
+
+
+@pytest.mark.asyncio
 async def test_explicit_cancel_resolves_failed_job_without_erasing_diagnostics(stores):
     first, _, _ = stores
     await submit(first)

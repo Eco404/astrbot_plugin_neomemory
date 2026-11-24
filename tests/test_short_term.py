@@ -434,6 +434,35 @@ async def test_legacy_default_summary_task_succeeds_with_skip_result(env, person
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("extra", [0, 6])
+async def test_cancel_failed_summary_replans_from_last_covered_source(env, extra):
+    first = await claim(env)
+    assert (await execute(env, first))["state"] == "succeeded"
+    await add(env, start=9, count=2)
+    env.config.short_term_max_messages = 8
+    failed = await claim(env)
+    env.adapter.output = "invalid JSON"
+    assert (await execute(env, failed))["state"] == "failed"
+    await env.jobs.cancel(failed["job_id"])
+    if extra:
+        await add(env, start=11, count=extra)
+    restart(env)
+    env.adapter.output = None
+    await asyncio.gather(*(env.service.maybe_enqueue(env.space["space_id"], "chat", stream_id=env.stream_id)
+                           for _ in range(2)))
+    pending, = await env.jobs.list(states=["queued"])
+    ids = pending["payload"]["source_ids"]
+    assert ids[:4] == failed["payload"]["source_ids"]
+    assert len(ids) == (8 if extra else 4)
+    result = await execute(env, await env.jobs.claim("catch-up"))
+    summary = await current(env)
+    assert result["state"] == "succeeded" and summary["content_version"] == 2
+    assert summary["coverage"]["source_count"] == 4 + len(ids)
+    assert await env.service.maybe_enqueue(env.space["space_id"], "chat", stream_id=env.stream_id) is None
+    assert (await env.jobs.get(failed["job_id"]))["state"] == "cancelled"
+
+
+@pytest.mark.asyncio
 async def test_cancelled_window_waits_for_explicit_retry_even_when_more_sources_arrive(env):
     env.config.short_term_max_messages = 10
     queued = await env.service.maybe_enqueue(env.space["space_id"], "chat", stream_id=env.stream_id)

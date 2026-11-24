@@ -229,7 +229,9 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                     continue
                 key = "auto:" + digest([space["space_id"], generation["generation_id"],
                                         decision.source_ids or [decision.blocked_source_id]])
-                await self._submit_extract(space, generation, pending, decision, key, request={"automatic": True})
+                key = await self.jobs.next_window_key(key)
+                if key is not None:
+                    await self._submit_extract(space, generation, pending, decision, key, request={"automatic": True})
             except JobConflict:
                 continue
             except Exception as exc:

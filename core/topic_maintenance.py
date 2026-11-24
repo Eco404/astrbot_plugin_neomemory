@@ -58,15 +58,10 @@ class TopicMaintenanceMixin:
             return False
         key = "topics:auto:" + digest([generation["generation_id"],
             [(node["node_id"], node["content_version"]) for node in seeds]])
-        # Let the job runner schedule recovery of an existing failed task.
-        previous = await self.memory.database.fetchone(
-            "SELECT job_id,state FROM memory_jobs WHERE idempotency_key=? OR idempotency_key GLOB ? "
-            "ORDER BY created_at DESC,rowid DESC LIMIT 1", (key, key + ":*"))
-        if previous:
-            if previous["state"] != "succeeded":
-                return False
-            # The same body versions can need review again after an explicit unlock.
-            key += ":" + previous["job_id"]
+        # The same body versions can need review again after an explicit unlock.
+        key = await self.jobs.next_window_key(key, reviewed_again=True)
+        if key is None:
+            return False
         await self.jobs.submit("topic_consolidate", space["space_id"], {
             "space_id": space["space_id"], "expected_generation_id": generation["generation_id"],
             "before": time.time(), "request": {"automatic": True}}, key,

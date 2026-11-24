@@ -417,6 +417,30 @@ async def test_topic_corrects_protected_members_before_commit(environment):
 
 
 @pytest.mark.asyncio
+async def test_cancelled_topic_failure_catches_up_unchanged_seeds_once(environment):
+    env = environment
+    nodes = await seed(env)
+    space_id = env.space["space_id"]
+    env.engine.config = replace(env.config, topic_min_changes=2)
+    jobs = env.engine.jobs
+    generation = await env.memory.get_active_generation(space_id)
+    env.adapter.output = "invalid JSON"
+    assert await env.engine._maybe_enqueue_topics(env.space, generation)
+    failed = await execute(env, await jobs.claim("initial"))
+    assert failed["state"] == "failed"
+    await jobs.cancel(failed["job_id"])
+    assert await env.engine._maybe_enqueue_topics(env.space, generation)
+    assert not await env.engine._maybe_enqueue_topics(env.space, generation)
+    env.adapter.output = candidate(nodes)
+    job = await jobs.claim("catch-up")
+    assert job["job_id"] != failed["job_id"]
+    result = await execute(env, job)
+    assert result["state"] == "succeeded" and len(result["result"]["topic_ids"]) == 1
+    assert not await env.engine._maybe_enqueue_topics(env.space, generation)
+    assert len(await env.memory.database.fetchall("SELECT 1 FROM topic_receipts")) == 1
+
+
+@pytest.mark.asyncio
 async def test_unlock_requeues_same_seed_after_automatic_success(environment):
     env = environment
     only, = await seed(env, count=1)

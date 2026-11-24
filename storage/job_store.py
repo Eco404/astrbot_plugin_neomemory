@@ -32,6 +32,12 @@ NETWORK_RETRY_SECONDS = 10 * 60
 NETWORK_RETRIES = 3
 MAX_JSON_BYTES = 1024 * 1024
 
+# Older cancellations only retained the last error. New ones record the exact state.
+CANCELLED_WINDOW_RELEASED = """(
+    json_extract(result_json,'$.replacement_job_id') IS NOT NULL OR
+    COALESCE(json_extract(result_json,'$.cancelled_from')='failed', error_code IS NOT NULL)
+)"""
+
 
 class JobConflict(RuntimeError):
     """Another durable operation owns the requested scope."""
@@ -256,6 +262,19 @@ class JobStore:
         self.database = database
         self.clock = clock
 
+    async def next_window_key(self, base_key: str, *, reviewed_again: bool = False) -> str | None:
+        """Identify one new automatic attempt for this still-pending window."""
+        previous = await self.database.fetchone(
+            f"SELECT job_id,state,{CANCELLED_WINDOW_RELEASED} AS released FROM memory_jobs "
+            "WHERE idempotency_key=? OR idempotency_key GLOB ? ORDER BY rowid DESC LIMIT 1",
+            (base_key, base_key + ":*"))
+        if previous is None:
+            return base_key
+        if ((previous["state"] == "cancelled" and previous["released"])
+                or (previous["state"] == "succeeded" and reviewed_again)):
+            return base_key + ":" + previous["job_id"]
+        return None
+
     async def submit(
         self, kind: str, scope_key: str, payload: Mapping[str, Any], idempotency_key: str,
         *, max_attempts: int = 2, hide_on_success: bool = False, replaces=None,
@@ -457,7 +476,8 @@ class JobStore:
             if job["state"] in (*ACTIVE_STATES, "failed"):
                 await connection.execute(
                     "UPDATE memory_jobs SET state='cancelled',recovery_mode=NULL,lease_token=NULL,lease_until=NULL,"
-                    "owner=NULL,updated_at=? WHERE job_id=?", (self.clock(), job_id),
+                    "owner=NULL,result_json=json_set(COALESCE(result_json,'{}'),'$.cancelled_from',state),"
+                    "updated_at=? WHERE job_id=?", (self.clock(), job_id),
                 )
             return await _get(connection, job_id)
 

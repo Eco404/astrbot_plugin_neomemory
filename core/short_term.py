@@ -11,11 +11,11 @@ import time
 from typing import Any
 
 try:
-    from ..storage.job_store import JobConflict
+    from ..storage.job_store import CANCELLED_WINDOW_RELEASED, JobConflict
     from ..storage.short_term_store import ShortTermStore
     from ..storage.source_scan import SourceScanner
 except ImportError:
-    from storage.job_store import JobConflict
+    from storage.job_store import CANCELLED_WINDOW_RELEASED, JobConflict
     from storage.short_term_store import ShortTermStore
     from storage.source_scan import SourceScanner
 
@@ -152,14 +152,11 @@ class ShortTermService:
         previous = await self.store.get(space_id, key, generation_id=generation["generation_id"])
         if previous and previous["status"] != "active":
             return None
-        # Recovery owns the existing failed window. New
-        # messages must not automatically recreate an overlapping cancelled
-        # window. A successful replacement advances the summary version, so
-        # old cancelled attempts no longer block the following increment.
+        # An explicit stop during active work pauses this summary version.
+        # Cancelling a terminal failure releases its uncovered prefix for planning.
         stopped = await self.memory.database.fetchone(
             "SELECT job_id FROM memory_jobs WHERE scope_key=? AND kind='short_term' "
-            "AND state IN ('failed','cancelled') "
-            "AND COALESCE(json_extract(result_json,'$.replacement_job_id'),'')='' "
+            f"AND (state='failed' OR (state='cancelled' AND NOT {CANCELLED_WINDOW_RELEASED})) "
             "AND json_extract(payload_json,'$.generation_id')=? "
             "AND json_extract(payload_json,'$.conversation_key')=? "
             "AND json_extract(payload_json,'$.previous_version')=? LIMIT 1",
@@ -201,7 +198,12 @@ class ShortTermService:
                    "previous_version": previous["content_version"] if previous else 0,
                    "source_ids": [row["source_id"] for row in chosen], "keep_messages": policy["keep_messages"],
                    "model_route": await self._route(space_id, chosen)}
-        request_key = "auto-restart:" + replaces["job_id"] if replaces else "short_term:" + _digest([space_id, payload])
+        if replaces:
+            request_key = "auto-restart:" + replaces["job_id"]
+        else:
+            request_key = await self.jobs.next_window_key("short_term:" + _digest([space_id, payload]))
+            if request_key is None:
+                return None
         try:
             return await self.jobs.submit("short_term", space_id, payload, request_key,
                                           max_attempts=getattr(self.config, "job_max_attempts", 2), hide_on_success=True, replaces=replaces)
