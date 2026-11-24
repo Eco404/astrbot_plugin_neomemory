@@ -24,7 +24,19 @@ window.testJobs=['running','retry_wait','failed','succeeded'].map(state=>({
 const originalGet=window.AstrBotPluginView.apiGet;
 window.AstrBotPluginView.apiGet=async(endpoint,args={})=>{
  if(endpoint==='availability')return {available:false,blocking_jobs:[testJobs[0]],automatic:{state:'enabled'}};
- return originalGet(endpoint,args);
+ const result=await originalGet(endpoint,args);
+ const stamp=Date.now()/1000;
+ if(endpoint==='task' && args.job_id==='clock-failed') result.attempts=[
+   {ended_at:stamp-30,action:'execute',step:'validate',state:'failed',model_calls:2,commits:1,remaining:4,http_status:503},
+   {ended_at:stamp-10,action:'resume',step:'validate',state:'failed',model_calls:0,commits:0,remaining:4,queued_without_call:true}
+ ];
+ if(endpoint==='ingress') result.health.oldest_pending_at=stamp-65;
+ if(endpoint==='health'){
+   result.last_source_write_at=stamp-20;
+   result.ingress.oldest_unpersisted_at=stamp-120;
+   result.companion_delivery_progress={blocked_receipt:'delivery-42',retry_at:stamp+10};
+ }
+ return result;
 };
 """
 
@@ -121,6 +133,23 @@ async def verify_progress(page):
     await expect(cards['retry_wait'].locator('.task-recovery')).to_have_count(0)
     await expect(cards['retry_wait']).to_contain_text('执行中')
     await expect(cards['retry_wait'].locator('.error')).to_have_count(0)
+    await cards['failed'].get_by_role('radio').check()
+    await page.locator('#task-detail-panel > summary').click()
+    await page.locator('#task-attempts > summary').click()
+    rows = page.locator('#task-attempt-list li')
+    await expect(rows).to_have_count(2)
+    for message in ('从断点继续', '模型调用 0 次', '曾等待模型名额超时', '新增提交 0 次', '剩余 4'):
+        await expect(rows.first).to_contain_text(message)
+    for message in ('模型调用 2 次', '新增提交 1 次', 'HTTP 503'):
+        await expect(rows.last).to_contain_text(message)
+    await cards['succeeded'].get_by_role('radio').check()
+    await expect(rows).to_have_count(0)
+    await expect(page.locator('#task-attempts')).to_be_hidden()
+    await expect(page.locator('#ingress-summary')).to_contain_text('最久待写 2:00')
+    await expect(page.locator('#ingress-summary')).to_contain_text('最近写入')
+    await expect(page.locator('#ingress-unpersisted')).to_contain_text('自动按序写入')
+    await page.locator('[data-maintenance-tab=status]').click()
+    await expect(page.locator('#companion-delivery-issue')).to_contain_text('等待重试陪伴回执 delivery-42')
     await expect(page.locator('#status')).to_have_text('已连接')
 
 
@@ -154,7 +183,7 @@ async def main():
                     assert not errors, errors
                     await page.close()
             await browser.close()
-            print('notifications/progress: 4 viewport/theme cases passed; connection isolation, auto-close, hover/focus pause, close, dedup, safe text, local timing, terminal freeze and retry recovery')
+            print('notifications/progress: 4 viewport/theme cases passed; notifications, clocks, retry recovery, attempt history, queue age, last write and blocked delivery')
     finally:
         server.shutdown()
         server.server_close()
