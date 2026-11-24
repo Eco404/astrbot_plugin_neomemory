@@ -350,6 +350,19 @@ async def test_timeout_uses_job_retry_without_inline_provider_retry(env):
     assert "secret" not in json.dumps(result)
 
 
+@pytest.mark.asyncio
+async def test_fresh_retry_trims_legacy_window_to_complete_source_budget(env):
+    job = await claim(env)
+    env.config.short_term_max_chars = 25
+    failed = await execute(env, job)
+    assert failed["state"] == "failed"
+    assert failed["error_code"] == "source_budget_exceeded"
+
+    fresh = await env.service.retry(job["job_id"], fresh=True)
+    assert len(fresh["payload"]["source_ids"]) < len(job["payload"]["source_ids"])
+    assert fresh["payload"]["source_ids"] == job["payload"]["source_ids"][:3]
+
+
 @pytest.mark.parametrize("change", [
     {"schema_version": "wrong"}, {"summary_text": "x" * 401},
     {"evidence_source_ids": ["outside"]}, {"evidence_source_ids": ["s1", "s1"]},

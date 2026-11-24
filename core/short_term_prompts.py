@@ -12,6 +12,7 @@ from .group_addressing import address_snapshot_users, group_source_addresses
 from .window_users import WindowUsers
 from .memory_text import user_reference_ids
 from .candidate_feedback import CandidateValidationError
+from .source_fragments import fragment_info
 from .extraction_errors import DuplicateJSONKey
 
 SCHEMA_VERSION = "short-term.v1"
@@ -122,11 +123,16 @@ def messages(*, persona: str, previous_summary: str, records: Sequence[Mapping[s
         system = _SUMMARY_RULES + schema_text
     user = {
         "persona": persona, "previous_summary": previous_summary,
-        "new_sources": [{"source_id": row["source_id"], "speaker": row["actor_kind"],
-                         "speaker_account_id": row.get("actor_account_id"),
-                         "logical_user_id": row.get("actor_logical_user_id"),
-                         "text": row["content_text"], "observed_at": row["observed_at"]} for row in records],
+        "new_sources": [],
     }
+    for row in records:
+        source = {"source_id": row["source_id"], "speaker": row["actor_kind"],
+                  "speaker_account_id": row.get("actor_account_id"),
+                  "logical_user_id": row.get("actor_logical_user_id"),
+                  "text": row["content_text"], "observed_at": row["observed_at"]}
+        if info := fragment_info(dict(row)):
+            source["source_fragment"] = info
+        user["new_sources"].append(source)
     user["known_user_ids"] = sorted(set(user_ids) | {
         row["actor_logical_user_id"] for row in records if row.get("actor_logical_user_id")
     } | set(user_reference_ids([previous_summary])))
@@ -172,6 +178,9 @@ def messages(*, persona: str, previous_summary: str, records: Sequence[Mapping[s
     system += (f"\n整份候选JSON最多{MAX_OUTPUT_BYTES}个UTF-8字节。"
                "summary_text按输出字符串中的Unicode字符数计量，空格、标点和每个窗口代号逐字符计数。"
                "例如{{user:u1}}占11个字符。")
+    if any("source_fragment" in source for source in user["new_sources"]):
+        system += ("\nsource_fragment表示同一条原始消息的程序分段。相同parent_source_id的分段按index顺序阅读，"
+                   "不要把分段边界当成新的发言或事实。")
     return [{"role": "system", "content": system},
             {"role": "user", "content": json.dumps(user, ensure_ascii=False, separators=(",", ":"))}]
 

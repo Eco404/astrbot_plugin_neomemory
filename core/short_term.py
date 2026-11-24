@@ -91,6 +91,19 @@ class ShortTermService:
                 "summary_chars": getattr(self.config, "short_term_summary_chars", 400)}
 
     def _query(self, space, *, stream_id, conversation_id):
+    @staticmethod
+    def _source_prefix(records, max_chars):
+        """Return the longest complete source prefix within the summary budget."""
+        chosen = []
+        chars = 0
+        for record in records:
+            size = len(window_text(record))
+            if chosen and chars + size > max_chars:
+                break
+            chosen.append(record)
+            chars += size
+        return chosen
+
         query, args = self.scanner._scope_query(space)
         query += ", matching AS (SELECT r.* FROM eligible e JOIN source_records r USING(source_id) " \
                  "WHERE e.replay_only=0 AND r.stream_id=? AND json_extract(r.metadata_json,'$.host_conversation_id')=?) "
@@ -214,6 +227,12 @@ class ShortTermService:
         payload = dict(job["payload"])
         records = await self.sources.get_records(tuple(payload["source_ids"]))
         payload["model_route"] = await self._route(job["scope_key"], records, selection)
+        policy = self._policy()
+        if sum(len(window_text(row)) for row in records) > policy["max_chars"]:
+            records = self._source_prefix(records, policy["max_chars"])
+            payload["source_ids"] = [row["source_id"] for row in records]
+            if not records:
+                raise ValueError("short-term source window cannot fit its first source")
         if not payload["model_route"]:
             raise ValueError("model_required: select a short-term summary model")
         result = await self.jobs.submit("short_term", job["scope_key"], payload,

@@ -41,6 +41,7 @@ try:
     from .core.short_term import ShortTermService
     from .core.image_cache import PrivateImageCache
     from .core.image_capture import kind as component_kind, unambiguous_caption
+    from .core.source_fragments import fragment_source
     from .core.source_ingest import normalize_agent_response, normalize_event, normalize_sent_images
     from .storage.console_store import ConsoleStore, NoteService
     from .storage.ingress_store import IngressStore
@@ -70,6 +71,7 @@ except ImportError:  # pragma: no cover - supports direct local loading in probe
     from core.short_term import ShortTermService
     from core.image_cache import PrivateImageCache
     from core.image_capture import kind as component_kind, unambiguous_caption
+    from core.source_fragments import fragment_source
     from core.source_ingest import normalize_agent_response, normalize_event, normalize_sent_images
     from storage.console_store import ConsoleStore, NoteService
     from storage.ingress_store import IngressStore
@@ -587,22 +589,32 @@ class NeoMemoryPlugin(Star):
     async def _persist_source(self, source) -> None:
         if self.ingress is None or is_unsupported_persona(source.persona_id):
             return
+        max_chars = getattr(self.config, "extraction_max_chars", 24000)
+        if getattr(self.config, "short_term_enabled", True):
+            max_chars = min(max_chars, getattr(self.config, "short_term_max_chars", max_chars))
+        fragments = fragment_source(
+            source,
+            max_chars=max_chars,
+            max_tokens=getattr(self.config, "extraction_max_tokens", max_chars),
+        )
         async with self._admission_lock:
             # A previously unpersisted record must not be overtaken when queue
             # space recovers. The queue itself orders only admitted records.
             predecessors = [item for item in self._failed_sources.values()
                             if item.identity.stream_id == source.identity.stream_id]
-            candidates = predecessors + ([source] if source.source_id not in self._failed_sources else [])
-            for candidate in candidates:
+            predecessor_ids = {item.source_id for item in predecessors}
+            candidates = predecessors + [item for item in fragments
+                                         if item.source_id not in self._failed_sources
+                                         and item.source_id not in predecessor_ids]
+            for index, candidate in enumerate(candidates):
                 try:
                     await self.ingress.submit(candidate)
                     self._failed_sources.pop(candidate.source_id, None)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    self._remember_unpersisted(candidate, exc)
-                    if candidate.source_id != source.source_id:
-                        self._remember_unpersisted(source, exc)
+                    for pending in candidates[index:]:
+                        self._remember_unpersisted(pending, exc)
                     return
 
     async def retry_failed_sources(self, limit: int | None = None) -> int:

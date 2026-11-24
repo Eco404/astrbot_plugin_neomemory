@@ -12,6 +12,7 @@ from .forwarded_content import project_forward
 from .group_addressing import group_source_addresses
 from .extraction_observations import build_observation_anchors
 from .extraction_schema import parse_extraction_output
+from .source_fragments import fragment_info
 from .prompts import (
     PROMPT_VERSION,
     build_extraction_prompt,
@@ -108,7 +109,19 @@ class PreparedExtraction:
         group_sources = {}
         if self.space.get("space_type") == "group":
             group_sources = group_source_addresses(sources, use_snapshots=True)
-        return build_extraction_prompt(
+        prepared_sources = []
+        for source in sources:
+            payload = select(source, (
+                "source_id", "actor_kind", "actor_logical_user_id",
+                *(("conversation_logical_user_id",) if not group_sources else ()),
+                "content_text", "forwarded_messages", "observed_at",
+                "event_time_start", "event_time_end", "event_time_text",
+                "stream_id", "sequence_no",
+            )) | group_sources.get(source["source_id"], {})
+            if info := fragment_info(source):
+                payload["source_fragment"] = info
+            prepared_sources.append(payload)
+        messages = build_extraction_prompt(
             prompt_version=self.prompt_version,
             schema_version=schema_for_prompt_version(self.prompt_version),
             persona=self.persona,
@@ -123,27 +136,7 @@ class PreparedExtraction:
                     "group_id",
                 ),
             ),
-            sources=[
-                select(
-                    source,
-                    (
-                        "source_id",
-                        "actor_kind",
-                        "actor_logical_user_id",
-                        *(("conversation_logical_user_id",) if not group_sources else ()),
-                        "content_text",
-                        "forwarded_messages",
-                        "observed_at",
-                        "event_time_start",
-                        "event_time_end",
-                        "event_time_text",
-                        "stream_id",
-                        "sequence_no",
-                    ),
-                )
-                | group_sources.get(source["source_id"], {})
-                for source in sources
-            ],
+            sources=prepared_sources,
             known_nodes=[
                 select(
                     node,
@@ -185,6 +178,12 @@ class PreparedExtraction:
             else None,
         )
 
+        if any("source_fragment" in source for source in prepared_sources):
+            messages[0]["content"] += (
+                "\nsource_fragment表示同一条原始消息的程序分段。相同parent_source_id的分段按index顺序阅读，"
+                "不要把分段边界当成新的发言、事件或事实；每段仍可作为evidence_source_ids中的独立来源。"
+            )
+        return messages
 
 class ExtractionService:
     """An explicit-call service: no network provider, scheduler, or hidden retry."""
