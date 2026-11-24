@@ -143,9 +143,12 @@ async def test_regeneration_budget_checks_entire_request_without_truncating(envi
     restart(env)
     failed = await failed_time(env)
     await env.engine.retry(failed["job_id"], regenerate_window=True)
+    env.adapter.output = json.dumps(output())
     result = await execute(env, await env.engine.jobs.claim("budget"))
-    assert result["state"] == "failed" and result["error_code"] == "prompt_budget_exceeded"
-    assert len(env.adapter.calls) == 1
+    assert result["state"] == "succeeded"
+    assert result["result"]["source_count"] == 1 and result["result"]["deferred_source_count"] == 1
+    assert [len(json.loads(call[1]["content"])["sources"]) for call in env.adapter.calls] == [2, 1]
+    assert all(sum(len(message["content"].encode()) for message in call) <= budget for call in env.adapter.calls)
     history = await env.engine.jobs.list_candidates(failed["job_id"])
     assert history[0]["window"] == failed["checkpoint"]["window"]
 

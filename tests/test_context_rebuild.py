@@ -34,16 +34,15 @@ async def test_scoped_rebuild_restart_publishes_only_target(environment, kind):
         observed.append(data["sources"][0]["content_text"])
         if len(observed) == 2:
             raise ConnectionError("synthetic timeout")
-        known = (data.get("known_profiles") or [data.get("known_relationship")])[0]
-        version = known["content_version"] if known else 0
-        change = {"logical_user_id": "u1", "expected_version": version, "source_ids": ["s1"]}
+        version = len(observed) - int(len(observed) > 2)
+        change = {"logical_user_id": "u1", "source_ids": ["s1"]}
         if field == "profile_changes":
             assert "known_relationship" not in data
-            change.update(tags=["早班"], description=f"习惯早班，版本{version + 1}。")
+            change.update(tags=["早班"], description=f"习惯早班，版本{version}。")
             env.adapter.output = json.dumps({field: [change]})
         else:
             assert "known_profiles" not in data
-            change.update(long_term={"op": "replace", "body": f"我更愿意理解这种选择。{version + 1}"},
+            change.update(long_term={"op": "replace", "body": f"我更愿意理解这种选择。{version}"},
                           aftereffect={"op": "keep", "body": ""})
             env.adapter.output = json.dumps({field: change})
 

@@ -250,7 +250,7 @@ async def test_summary_incomplete_and_capacity_do_not_correct_or_commit(env, fau
     e.adapter.generate = generate
     result = await execute_summary(e, job)
     assert result['state'] == 'failed'
-    assert len(e.adapter.calls) == 1
+    assert [len(json.loads(call[1]["content"])["new_sources"]) for call in e.adapter.calls] == [4, 2, 1]
     assert result['checkpoint']['corrections'] == 0
     assert not await e.memory.database.fetchall('SELECT * FROM short_term_receipts')
 

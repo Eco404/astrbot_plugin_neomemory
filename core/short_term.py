@@ -212,8 +212,35 @@ class ShortTermService:
                 raise
             return None
 
+    async def _uncovered(self, payload, previous):
+        ids = payload["source_ids"]
+        if previous is None:
+            if payload["previous_version"]:
+                raise ReviewRequired("summary_changed")
+            return ids
+        if previous["content_version"] == payload["previous_version"]:
+            return ids
+        covered = await self.store.covered(previous["state_id"], ids)
+        prefix = len(covered)
+        if any(source_id not in covered for source_id in ids[:prefix]):
+            raise ReviewRequired("source_range_changed")
+        return ids[prefix:]
+
+    @staticmethod
+    def _covered_result(previous):
+        return {"skipped": True, "reason": "already_covered", "state_id": previous["state_id"],
+                "generation_id": previous["generation_id"], "content_version": previous["content_version"],
+                "covered_count": previous["coverage"]["source_count"]}
+
     async def auto_reprepare(self, job):
         payload = job["payload"]
+        receipt = await self.store.receipt(job["job_id"])
+        if receipt:
+            return await self.jobs.finish(job["job_id"], job["lease_token"], result=receipt)
+        current = await self.store.get(job["scope_key"], payload["conversation_key"],
+                                       generation_id=payload["generation_id"])
+        if current and not await self._uncovered(payload, current):
+            return await self.jobs.finish(job["job_id"], job["lease_token"], result=self._covered_result(current))
         return await self._maybe_enqueue(job["scope_key"], payload["conversation_id"],
                                          stream_id=payload["stream_id"], replaces=job)
 
@@ -228,6 +255,8 @@ class ShortTermService:
             return await self.jobs.retry(job_id)
         if job["state"] not in {"failed", "cancelled"}:
             raise JobConflict("only failed or cancelled summaries can be reprepared")
+        if await self.store.receipt(job_id):
+            return await self.jobs.retry(job_id)
         generation = await self.memory.get_active_generation(job["scope_key"])
         if not generation or generation["generation_id"] != job["payload"]["generation_id"]:
             raise ValueError("summary generation changed; use the current conversation")
@@ -236,7 +265,13 @@ class ShortTermService:
         if selection.keys() - {"window_provider_id"}:
             raise ValueError("select a short-term summary provider")
         payload = dict(job["payload"])
-        records = await self.sources.get_records(tuple(payload["source_ids"]))
+        current = await self.store.get(job["scope_key"], payload["conversation_key"],
+                                       generation_id=payload["generation_id"])
+        source_ids = await self._uncovered(payload, current)
+        if not source_ids:
+            return await self.jobs.retry(job_id)
+        payload.update(source_ids=source_ids, previous_version=current["content_version"] if current else 0)
+        records = await self.sources.get_records(tuple(source_ids))
         policy = self._policy()
         if sum(len(window_text(row)) for row in records) > policy["max_chars"]:
             records = self._source_prefix(records, policy["max_chars"])
@@ -294,42 +329,73 @@ class ShortTermService:
             raise ReviewRequired("generation_changed")
         previous = await self.store.get(job["scope_key"], payload["conversation_key"],
                                         generation_id=payload["generation_id"])
-        if (previous["content_version"] if previous else 0) != payload["previous_version"]:
-            raise ReviewRequired("summary_changed")
         if previous and previous["status"] != "active":
             raise ReviewRequired("summary_disabled")
+        current_version = previous["content_version"] if previous else 0
+        remaining = await self._uncovered(payload, previous)
+        if not remaining:
+            return self._covered_result(previous)
+        checkpoint = dict(job.get("checkpoint") or {})
+        if current_version != checkpoint.get("previous_version", payload["previous_version"]):
+            checkpoint = {}
+        selected = checkpoint.get("source_ids", remaining)
         policy = self._policy()
         # Verify the exact eligible prefix still exists. Source records removed
         # between admission and execution must never be silently jumped over.
         query, args = self._query(space, stream_id=payload["stream_id"], conversation_id=payload["conversation_id"])
         rows = await self.sources.database.fetchall(
             query + "SELECT source_id FROM matching WHERE sequence_no>? ORDER BY sequence_no LIMIT ?",
-            (*args, previous["coverage"].get("to_sequence", 0) if previous else 0, len(payload["source_ids"])),
+            (*args, previous["coverage"].get("to_sequence", 0) if previous else 0, len(selected)),
         )
-        if [row["source_id"] for row in rows] != payload["source_ids"]:
+        if [row["source_id"] for row in rows] != selected:
             raise ReviewRequired("source_range_changed")
-        records = await self.sources.get_records(tuple(payload["source_ids"]))
-        checkpoint = dict(job.get("checkpoint") or {})
-        prompt_version = checkpoint["prompt_version"] if checkpoint else PROMPT_VERSION
+        records = await self.sources.get_records(tuple(selected))
+        prefix = self._source_prefix(records, policy["max_chars"])
+        if len(prefix) < len(records):
+            records, checkpoint = prefix, {}
+        while True:
+            source_ids = [row["source_id"] for row in records]
+            effective = {**payload, "source_ids": source_ids, "previous_version": current_version}
+            try:
+                return await self._summarize(job, effective, records, checkpoint, space, previous, policy, deadline)
+            except ReviewRequired as exc:
+                diagnostics = checkpoint.get("response_diagnostics", {})
+                truncated = (diagnostics.get("finish_reason") == "length"
+                             or diagnostics.get("incomplete_reason") == "max_output_tokens")
+                if (len(records) == 1 or (exc.code not in {"prompt_budget_exceeded", "output_budget_exceeded"}
+                                          and not (exc.code == "invalid_short_term_output" and truncated))):
+                    raise
+                if "raw" in checkpoint:
+                    await self.jobs.archive_candidate(job["job_id"], job["lease_token"], checkpoint, exc.code)
+                records = records[:len(records) // 2]
+                checkpoint = {"source_ids": [row["source_id"] for row in records], "previous_version": current_version}
+                await self._save(job, checkpoint, "short_term_prepared")
+
+    async def _summarize(self, job, payload, records, checkpoint, space, previous, policy, deadline):
+        prompt_version = checkpoint.get("prompt_version", PROMPT_VERSION)
         source_texts = [window_text(row) for row in records]
         if sum(map(len, source_texts)) > policy["max_chars"]:
+            checkpoint["errors"] = [{"path": "$", "type": "source_budget_exceeded",
+                                     "actual_chars": sum(map(len, source_texts)), "limit_chars": policy["max_chars"]}]
+            await self._save(job, checkpoint, "short_term_validate")
             raise ReviewRequired("source_budget_exceeded")
-        persona, signature = await self._execution(space, prompt_version, job["payload"].get("model_route"))
+        persona, signature = await self._execution(space, prompt_version, payload.get("model_route"))
         # A forward's quoted words can exist only in the component JSON.
         sources = [(row["source_id"], text)
                    for row, text in zip(records, source_texts)]
         input_digest = _digest([payload, previous["summary_text"] if previous else "", sources, signature])
-        if checkpoint and checkpoint.get("input_digest") != input_digest:
+        if "input_digest" in checkpoint and checkpoint["input_digest"] != input_digest:
             raise ReviewRequired("configuration_or_context_changed")
-        if not checkpoint:
+        if "input_digest" not in checkpoint:
             user_ids = {row["actor_logical_user_id"] for row in records if row.get("actor_logical_user_id")}
             user_ids.update(address_snapshot_users(records))
             user_ids.update(user_reference_ids([previous["summary_text"] if previous else ""]))
             if space.get("logical_user_id"):
                 user_ids.add(space["logical_user_id"])
-            checkpoint = {"input_digest": input_digest, "signature": signature, "prompt_version": prompt_version,
-                          "user_ids": sorted(user_ids),
-                          "corrections": 0, "correction_limit": getattr(self.config, "extraction_max_regenerations", 3)}
+            checkpoint.update(input_digest=input_digest, signature=signature, prompt_version=prompt_version,
+                              user_ids=sorted(user_ids), source_ids=payload["source_ids"],
+                              previous_version=payload["previous_version"], corrections=0,
+                              correction_limit=getattr(self.config, "extraction_max_regenerations", 3))
             checkpoint["output_format"] = getattr(self.config, "extraction_output_format", "json_schema")
             await self._save(job, checkpoint, "short_term_prepared")
         old_text = previous["summary_text"] if previous else ""
@@ -337,7 +403,8 @@ class ShortTermService:
                           summary_chars=policy["summary_chars"], user_ids=checkpoint["user_ids"], prompt_version=prompt_version)
         schema = output_schema(source_ids=payload["source_ids"], summary_chars=policy["summary_chars"],
                                previous_summary=old_text, prompt_version=prompt_version)
-        candidate = await self._candidate(job, checkpoint, prompt, schema, space, policy, old_text, deadline)
+        candidate = await self._candidate({**job, "payload": payload}, checkpoint, prompt, schema,
+                                          space, policy, old_text, deadline)
         try:
             return await self.store.apply(job, input_digest=input_digest,
                 summary_text=candidate["summary_text"], records=records,
@@ -385,9 +452,14 @@ class ShortTermService:
                 await self._save(job, checkpoint, "short_term_correcting")
 
     async def _generate(self, job, checkpoint, prompt, schema, deadline):
-        if sum(len(message["content"].encode()) for message in prompt) > getattr(
-            self.config, "extraction_max_prompt_bytes", 256000
-        ):
+        prompt_bytes = sum(len(message["content"].encode()) for message in prompt)
+        limit = getattr(self.config, "extraction_max_prompt_bytes", 256000)
+        reserve = min(8192, limit // 10) if (len(job["payload"]["source_ids"]) > 1
+            and getattr(self.config, "extraction_auto_regeneration", True) and "regeneration" not in checkpoint) else 0
+        if prompt_bytes > limit - reserve:
+            checkpoint["errors"] = [{"path": "$", "type": "prompt_budget_exceeded", "actual_bytes": prompt_bytes,
+                                     "limit_bytes": limit, "reserved_feedback_bytes": reserve}]
+            await self._save(job, checkpoint, "short_term_validate")
             raise ReviewRequired("prompt_budget_exceeded")
         await self._save(job, checkpoint, "short_term_model")
         diagnostics = {}

@@ -521,7 +521,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         result["automatic_corrections"] = window.get("correction_attempt", 0)
         result["automatic_correction_limit"] = window.get("correction_limit", 1) if window else None
         result["response_diagnostics"] = window.get("response_diagnostics", {})
-        result["source_ids"] = window.get("source_ids", job["payload"].get("source_ids", []))
+        result["source_ids"] = window.get("source_ids", checkpoint.get("source_ids", job["payload"].get("source_ids", [])))
         result["model_route"] = (window.get("model_route") or checkpoint.get("topic_window", {}).get("model_route")
                                  or job["payload"].get("model_route"))
         result["candidate"] = None
@@ -622,12 +622,46 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         except Exception as exc:
             raise self._embedding_failure(exc, context=True) from None
 
+    async def _reduce_window(self, job, checkpoint, source_ids, source_cursor, space, code):
+        window = checkpoint["window"]
+        truncated = window.get("response_diagnostics", {})
+        if code == "output_incomplete" and not (
+            truncated.get("finish_reason") == "length" or truncated.get("incomplete_reason") == "max_output_tokens"
+        ):
+            return False
+        known = window["known_node_ids"]
+        if code == "prompt_budget_exceeded" and known:
+            known = known[:len(known) // 2]
+        elif len(source_ids) > 1:
+            source_ids = list(source_ids[:len(source_ids) // 2])
+            if source_cursor:
+                if job["payload"].get("replay_deliveries"):
+                    page = await self.scanner.replay_page(
+                        space, job["payload"]["highwater"], checkpoint["done"], limit=len(source_ids))
+                    source_cursor = page.next_cursor
+                else:
+                    row = await self.sources.database.fetchone(
+                        "SELECT rowid AS scan_cursor FROM source_records WHERE source_id=?", (source_ids[-1],))
+                    source_cursor = row["scan_cursor"]
+        else:
+            return False
+        if "raw" in window:
+            await self.jobs.archive_candidate(job["job_id"], job["lease_token"], window, code)
+        checkpoint["window"] = {"planned": True, "source_ids": list(source_ids), "source_cursor": source_cursor,
+                                "known_node_ids": known, "model_route": window["model_route"]}
+        await self._save(job, checkpoint, "prepared", checkpoint.get("done", 0), checkpoint.get("total"))
+        return True
+
     async def _window(self, job, checkpoint, space, generation_id, source_ids, source_cursor, *, building=False):
         # 候选准备与生成共用窗口期限，后台补向量不能在模型调用前无限等待。
         deadline = time.monotonic() + self.config.extraction_timeout_seconds
         try:
             async with asyncio.timeout(self.config.extraction_timeout_seconds):
                 while True:
+                    if frozen := checkpoint.get("window"):
+                        if list(source_ids[:len(frozen["source_ids"])]) != frozen["source_ids"]:
+                            raise ReviewRequired("context_changed")
+                        source_ids, source_cursor = frozen["source_ids"], frozen["source_cursor"]
                     try:
                         return await self._window_in_budget(
                             job, checkpoint, space, generation_id, source_ids, source_cursor,
@@ -635,6 +669,9 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                         )
                     except ReviewRequired as exc:
                         window = checkpoint.get("window", {})
+                        if exc.code in {"output_incomplete", "output_budget_exceeded", "prompt_budget_exceeded"} and window:
+                            if await self._reduce_window(job, checkpoint, source_ids, source_cursor, space, exc.code):
+                                continue
                         if (not self.config.extraction_auto_regeneration
                                 or not automatic_correction_allowed(exc.code, window)
                                 or window.get("correction_attempt", 0) >= window.get("correction_limit", 1)
@@ -673,7 +710,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         if not self.provider_available(route.get("provider_id")):
             raise ReviewRequired("model_required")
         persona, signature = await self._execution(space, route)
-        if window and window["signature"] != signature:
+        if window and not window.get("planned") and window["signature"] != signature:
             raise ReviewRequired("configuration_changed")
         scoped_model = CONTEXT_REBUILD_MODELS.get(job["kind"])
         if window:
@@ -693,9 +730,9 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             persona=persona, known_node_ids=known, generation_id=generation_id,
             job_id=job["job_id"], lease_token=job["lease_token"], allow_building=building,
             source_cursor=source_cursor, reference_protocol=REFERENCE_VERSION)
-        if window and batch.input_digest != window["input_digest"]:
+        if window and not window.get("planned") and batch.input_digest != window["input_digest"]:
             raise ReviewRequired("context_changed")
-        if not window:
+        if not window or window.get("planned"):
             window = {"source_ids": list(source_ids), "source_cursor": source_cursor, "model_route": route,
                 "known_node_ids": list(known), "input_digest": batch.input_digest, "signature": signature,
                 "reference_protocol": REFERENCE_VERSION,
@@ -737,7 +774,16 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                     messages = vision_messages(messages, attachments, collect_evidence=collect)
                     if collect:
                         output_schema = vision_schema(schema)
-                if text_budget(messages) > self.config.extraction_max_prompt_bytes:
+                prompt_bytes = text_budget(messages)
+                limit = self.config.extraction_max_prompt_bytes
+                reserve = min(8192, limit // 10) if (
+                    self.config.extraction_auto_regeneration and "regeneration" not in window
+                    and "model_request_digest" not in window and (known or len(source_ids) > 1)
+                ) else 0
+                if prompt_bytes > limit - reserve:
+                    window["budget"] = {"prompt_bytes": prompt_bytes, "max_prompt_bytes": limit,
+                                        "reserved_feedback_bytes": reserve}
+                    await self._save(job, checkpoint, "prepared", checkpoint.get("done", 0), checkpoint.get("total"))
                     raise ReviewRequired("prompt_budget_exceeded")
                 # Bytes are bound by their pinned hashes. Never put a data URL in a checkpoint.
                 request_digest = digest(messages)
@@ -773,6 +819,9 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                 diagnostics["repeated_candidate"] = raw == archived["window"]["raw"]
             window["response_diagnostics"] = diagnostics
             if len(raw) > 120_000:
+                window["validation_errors"] = [{"path": "$", "type": "output_capacity_exceeded",
+                                                "actual_chars": len(raw), "limit_chars": 120_000}]
+                await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
                 raise ReviewRequired("output_budget_exceeded")
             window["raw"] = raw
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
@@ -870,10 +919,13 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         checkpoint.setdefault("total", len(payload["source_ids"]))
         receipt = await self._window(job, checkpoint, space, generation["generation_id"],
                                      payload["source_ids"], payload["source_cursor"])
-        counts = image_counts(checkpoint.get("window", {}))
+        window = checkpoint.get("window", {})
+        counts = image_counts(window)
+        source_count = len(window.get("source_ids", payload["source_ids"]))
+        deferred = len(payload["source_ids"]) - source_count
         index_result = await self._index_committed_window(job, checkpoint, receipt)
-        return {**({"image_inputs": counts} if counts else {}), "batch_id": receipt["batch_id"], "source_count": len(payload["source_ids"]),
-                "generation_id": generation["generation_id"], "index": index_result}
+        return {**({"image_inputs": counts} if counts else {}), "batch_id": receipt["batch_id"], "source_count": source_count,
+                **({"deferred_source_count": deferred} if deferred else {}), "generation_id": generation["generation_id"], "index": index_result}
 
     async def _rebuild(self, job):
         if job["payload"].get("include_topics") and job["kind"] in CONTEXT_REBUILD_MODELS:
@@ -933,6 +985,9 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                         raise ReviewRequired("oversized_source")
                     source_ids = decision.source_ids
                 window_receipt = await self._window(job, checkpoint, space, generation["generation_id"], source_ids, cursor, building=True)
+                window = checkpoint.get("window", {})
+                source_ids = window.get("source_ids", source_ids)
+                cursor = window.get("source_cursor", cursor)
                 if not scoped:
                     await self._index_committed_window(job, checkpoint, window_receipt)
                 for kind, count in image_counts(checkpoint.get("window", {})).items():

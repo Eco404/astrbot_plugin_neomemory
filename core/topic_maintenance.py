@@ -22,7 +22,7 @@ from .model_routing import fixed_route
 from .provider_errors import is_transient_provider_error
 from .topic_prompt import (PROMPT_VERSION,
                            build_messages, schema_for_prompt_version)
-from .topic_schema import VERSION, model_output_schema, parse_output_for_context
+from .topic_schema import TOPIC_CREATE_MIN_MEMBERS, VERSION, model_output_schema, parse_output_for_context
 from .candidate_feedback import compact_json_messages, correction_allowed, recovery_messages, validation_errors
 from .topic_regeneration import EXPLANATIONS, VERSION as RECOVERY_VERSION, refresh_feedback
 from .topic_evidence import collect_topic_evidence
@@ -114,7 +114,7 @@ class TopicMaintenanceMixin:
         except Exception as exc:
             raise self._embedding_failure(exc) from None
 
-    async def _prepare_topic_window(self, store, space, generation_id, seeds, *, evidence_memory=None):
+    async def _prepare_topic_window(self, store, space, generation_id, seeds, *, evidence_memory=None, optional_limit=None):
         """Shrink optional roots and then seed batches without truncating member closures."""
         deadline = time.monotonic() + self.config.extraction_timeout_seconds
         persona = await self._persona_text(space)
@@ -150,7 +150,7 @@ class TopicMaintenanceMixin:
         while seed_batch:
             seed_ids = [node["node_id"] for node in seed_batch]
             candidates = await self._topic_context(space, generation_id, seed_batch, deadline)
-            optional = [node_id for node_id in candidates if node_id not in seed_ids]
+            optional = [node_id for node_id in candidates if node_id not in seed_ids][:optional_limit]
             prepared, diagnostics = await fit(seed_ids, optional)
             if prepared is None and optional:
                 prepared, diagnostics = await fit(seed_ids, [])
@@ -309,15 +309,17 @@ class TopicMaintenanceMixin:
                                                          before=payload.get("before"), review_before=payload.get("review_before"))
         while True:
             if "topic_window" not in checkpoint:
+                shrink = checkpoint.get("topic_shrink", {})
                 seeds = await store.dirty_nodes(space["space_id"], generation["generation_id"],
-                                                limit=8, before=payload.get("before"), review_before=payload.get("review_before"))
+                                                limit=shrink.get("seed_limit", 8), before=payload.get("before"), review_before=payload.get("review_before"))
                 if not seeds:
                     break
                 await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
                 try:
                     async with asyncio.timeout(self.config.extraction_timeout_seconds):
                         prepared, persona, budget = await self._prepare_topic_window(
-                            store, space, generation["generation_id"], seeds, evidence_memory=stage_for)
+                            store, space, generation["generation_id"], seeds, evidence_memory=stage_for,
+                            optional_limit=shrink.get("optional_limit"))
                 except TimeoutError:
                     raise RetryableJobError("context_embedding_timeout") from None
                 except ReviewRequired as exc:
@@ -328,6 +330,8 @@ class TopicMaintenanceMixin:
                 except Exception as exc:
                     raise self._embedding_failure(exc, context=True) from None
                 checkpoint["topic_budget"] = budget
+                if shrink and not store.can_propose_changes(prepared):
+                    raise ReviewRequired("invalid_topic_output")
                 policy = payload.get("model_policy")
                 if policy is None:
                     policy = await (stage_for or self.memory).get_space_policy(space["space_id"])
@@ -352,6 +356,29 @@ class TopicMaintenanceMixin:
                 receipt = await self._topic_window(job, checkpoint, store, space, generation["generation_id"])
             except TimeoutError:
                 raise RetryableJobError("topic_timeout") from None
+            except ReviewRequired as exc:
+                window = checkpoint["topic_window"]
+                diagnostics = window.get("response_diagnostics", {})
+                capacity = any(error.get("type") == "output_capacity_exceeded" for error in window.get("errors", []))
+                truncated = diagnostics.get("finish_reason") == "length" or diagnostics.get("incomplete_reason") == "max_output_tokens"
+                if exc.code != "invalid_topic_output" or not (truncated or capacity):
+                    raise
+                seed_count = len(window["prepared"]["seed_ids"])
+                optional_count = window.get("budget", {}).get("optional_roots_retained", 0)
+                required_neighbors = max(0, TOPIC_CREATE_MIN_MEMBERS - seed_count)
+                if optional_count > required_neighbors:
+                    optional_limit = max(required_neighbors, optional_count // 2)
+                elif seed_count > TOPIC_CREATE_MIN_MEMBERS:
+                    seed_count = max(TOPIC_CREATE_MIN_MEMBERS, seed_count // 2)
+                    optional_limit = 0
+                else:
+                    raise
+                await self.jobs.archive_candidate(job["job_id"], job["lease_token"], window, exc.code)
+                checkpoint["topic_shrink"] = {"seed_limit": seed_count, "optional_limit": optional_limit}
+                checkpoint.pop("topic_window")
+                await self._save(job, checkpoint, "topic_prepare", checkpoint["done"], checkpoint["total"])
+                continue
+            checkpoint.pop("topic_shrink", None)
             version = checkpoint["topic_window"]["prepared"]["prompt_version"]
             checkpoint["prompt_versions"] = sorted(set(checkpoint.get("prompt_versions", [])) | {version})
             if stage_for is None:

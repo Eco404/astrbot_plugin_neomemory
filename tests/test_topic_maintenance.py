@@ -457,3 +457,25 @@ async def test_unlock_requeues_same_seed_after_automatic_success(environment):
         assert result["state"] == "succeeded" and result["result"]["reviewed_count"] == 1
         assert not await env.engine._maybe_enqueue_topics(env.space, generation)
     assert not env.adapter.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["topic_consolidate", "topic_rebuild"])
+async def test_truncated_topics_shrink_seeds_and_review_the_remainder(environment, kind):
+    env = environment
+    await seed(env, count=6)
+    sizes = []
+
+    async def model(messages, **options):
+        nodes = json.loads(messages[1]["content"])["nodes"]
+        sizes.append(len(nodes))
+        if len(sizes) == 1:
+            options["diagnostics"]["finish_reason"] = "length"
+        return json.dumps({"schema_version": "topic-consolidation.v1", "changes": []})
+
+    env.adapter.generate = model
+    completed = await execute(env, await enqueue_and_claim(env, kind))
+    assert completed["state"] == "succeeded", completed.get("error_code")
+    assert sizes[:2] == [6, 3]
+    assert completed["result"]["reviewed_count"] == 6
+    assert len(await env.memory.database.fetchall("SELECT * FROM topic_reviews")) == 6

@@ -368,16 +368,13 @@ async def test_http_503_uses_job_retry_without_inline_provider_retry(env):
 
 
 @pytest.mark.asyncio
-async def test_fresh_retry_trims_legacy_window_to_complete_source_budget(env):
+async def test_execute_trims_legacy_window_to_complete_source_budget(env):
     job = await claim(env)
     env.config.short_term_max_chars = 25
-    failed = await execute(env, job)
-    assert failed["state"] == "failed"
-    assert failed["error_code"] == "source_budget_exceeded"
-
-    fresh = await env.service.retry(job["job_id"], fresh=True)
-    assert len(fresh["payload"]["source_ids"]) < len(job["payload"]["source_ids"])
-    assert fresh["payload"]["source_ids"] == job["payload"]["source_ids"][:3]
+    result = await execute(env, job)
+    assert result["state"] == "succeeded"
+    assert result["result"]["covered_count"] == 3
+    assert (await current(env))["coverage"]["to_sequence"] == 3
 
 
 @pytest.mark.parametrize("change", [
@@ -566,12 +563,13 @@ async def test_output_mode_and_window_schema_apply_to_first_call_and_correction(
 @pytest.mark.asyncio
 async def test_automatic_reprepare_replans_the_eligible_short_term_prefix(env):
     job = await claim(env)
-    env.config.short_term_max_chars = 25
+    env.config.short_term_max_chars = 1
     failed = await execute(env, job)
     env.jobs.clock = lambda: failed["available_at"]
     resume = await env.jobs.claim("resume")
     pending = await execute(env, resume)
     assert pending["recovery_mode"] == "fresh"
+    env.config.short_term_max_chars = 25
     env.runner.reprepare = env.service.auto_reprepare
     old = await execute(env, await env.jobs.claim("reprepare"))
     current = await env.jobs.claim("fresh")
@@ -579,3 +577,48 @@ async def test_automatic_reprepare_replans_the_eligible_short_term_prefix(env):
     assert current["payload"]["source_ids"] == job["payload"]["source_ids"][:3]
     assert current["automatic_origin"]
     assert (await execute(env, current))["state"] == "succeeded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("covered_count", [2, 4])
+@pytest.mark.parametrize("fresh", [False, True])
+async def test_stale_summary_resumes_only_sources_without_coverage(env, covered_count, fresh):
+    original = await claim(env)
+    await env.jobs.fail(original["job_id"], original["lease_token"], error_type="ReviewRequired",
+                        error_code="summary_changed")
+    await env.jobs.cancel(original["job_id"])
+    env.config.short_term_max_chars = 16 if covered_count == 2 else 1000
+    replacement = await claim(env)
+    assert (await execute(env, replacement))["result"]["covered_count"] == covered_count
+    initial_calls = len(env.adapter.calls)
+    restarted = await env.service.retry(original["job_id"], fresh=fresh)
+    job = await env.jobs.claim("resume")
+    assert job["job_id"] == restarted["job_id"]
+    finished = await execute(env, job)
+    assert finished["state"] == "succeeded"
+    assert (await current(env))["coverage"]["source_count"] == 4
+    if covered_count == 4:
+        assert finished["result"]["reason"] == "already_covered" and len(env.adapter.calls) == initial_calls
+    else:
+        assert len(env.adapter.calls) == initial_calls + 1
+        rows = json.loads(env.adapter.calls[-1][1]["content"])["new_sources"]
+        assert [row["source_id"] for row in rows] == original["payload"]["source_ids"][2:]
+
+
+@pytest.mark.asyncio
+async def test_summary_truncation_commits_only_shortened_complete_prefix(env):
+    original = env.adapter.generate
+    env.config.short_term_max_messages = 6
+    job = await claim(env)
+
+    async def generate(messages, **kwargs):
+        if not env.adapter.calls:
+            kwargs["diagnostics"]["finish_reason"] = "length"
+        return await original(messages, **kwargs)
+
+    env.adapter.generate = generate
+    result = await execute(env, job)
+    assert result["state"] == "succeeded" and result["result"]["covered_count"] == 3
+    follow = await claim(env)
+    assert follow["payload"]["source_ids"] == job["payload"]["source_ids"][3:]
+    assert (await execute(env, follow))["result"]["covered_count"] == 6

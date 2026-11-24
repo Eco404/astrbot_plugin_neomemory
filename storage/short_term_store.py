@@ -21,6 +21,13 @@ class ShortTermStore:
         )
         return json.loads(row["result_json"]) if row else None
 
+    async def covered(self, state_id, source_ids):
+        placeholders = ",".join("?" for _ in source_ids)
+        rows = await self.database.fetchall(
+            f"SELECT source_id FROM short_term_sources WHERE state_id=? AND source_id IN ({placeholders})",
+            (state_id, *source_ids))
+        return {row["source_id"] for row in rows}
+
     async def get(self, space_id: str, conversation_key: str, *, generation_id: str | None = None):
         return await self.memory.get_short_term(
             space_id=space_id, conversation_id=conversation_key, generation_id=generation_id,
@@ -55,12 +62,14 @@ class ShortTermStore:
                 (payload["generation_id"], job["scope_key"], payload["conversation_key"]),
             )
             prior = await cursor.fetchone()
-            if (int(prior["content_version"]) if prior else 0) != payload["previous_version"]:
+            window = current_job["checkpoint"]
+            previous_version = window.get("previous_version", payload["previous_version"])
+            if (int(prior["content_version"]) if prior else 0) != previous_version:
                 raise ValueError("summary version changed")
             if prior and prior["status"] != "active":
                 raise ValueError("summary disabled")
             old_coverage = json.loads(prior["coverage_json"]) if prior else {}
-            if not records or [row["source_id"] for row in records] != payload["source_ids"]:
+            if not records or [row["source_id"] for row in records] != window.get("source_ids", payload["source_ids"]):
                 raise ValueError("summary sources changed")
             if records[0]["sequence_no"] <= old_coverage.get("to_sequence", 0):
                 raise ValueError("summary source range overlaps")
@@ -76,7 +85,7 @@ class ShortTermStore:
                 "keep_messages": payload["keep_messages"],
             }
             state_id = prior["state_id"] if prior else f"short_{uuid.uuid4().hex}"
-            version = payload["previous_version"] + 1
+            version = previous_version + 1
             if prior:
                 await connection.execute(
                     "UPDATE short_term_states SET summary_text=?,covered_to_source_id=?,coverage_json=?,"

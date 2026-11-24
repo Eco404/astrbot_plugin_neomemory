@@ -113,7 +113,7 @@ async def test_incomplete_response_is_retained_without_format_retry(environment,
     env.adapter.generate = generate
     failed = await execute(env, await enqueue_and_claim(env))
     assert failed['state'] == 'failed' and failed['error_code'] == 'output_incomplete'
-    assert len(env.adapter.calls) == 1
+    assert [len(json.loads(call[1]["content"])["sources"]) for call in env.adapter.calls] == [2, 1]
     assert failed['checkpoint']['window']['response_diagnostics'] == diagnostic
     assert not await env.memory.database.fetchall('SELECT * FROM extraction_batches')
     assert (await env.engine.describe(failed['job_id']))['regenerate_window_available']
@@ -186,3 +186,40 @@ async def test_correction_uses_remaining_window_deadline(environment):
     assert len(remaining) == 2 and remaining[1] < remaining[0] - .02
     assert time.monotonic() - start < 1.8
     assert waiting['checkpoint']['window']['correction_attempt'] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["extract", "rebuild"])
+async def test_truncated_window_resumes_its_prefix_without_skipping_a_tail(environment, kind):
+    from tests.test_extraction_apply import capture
+    env = environment
+    env.records.extend([await capture(env.sources, number=i) for i in [3, 4]])
+    env.engine.config = replace(env.config, private_idle_seconds=10000, private_max_messages=4)
+    generate = env.adapter.generate
+    calls = []
+
+    async def model(messages, **options):
+        count = len(json.loads(messages[1]["content"])["sources"])
+        calls.append(count)
+        if len(calls) == 1:
+            options["diagnostics"]["finish_reason"] = "length"
+        if len(calls) == 2:
+            raise ConnectionError("synthetic interruption after shrinking")
+        return await generate(messages, **options)
+
+    env.adapter.generate = model
+    failed = await execute(env, await enqueue_and_claim(env, kind))
+    assert failed["state"] == "retry_wait" and calls == [4, 2]
+    await env.memory.database.execute("UPDATE memory_jobs SET available_at=0 WHERE job_id=?", (failed["job_id"],))
+    completed = await execute(env, await env.engine.jobs.claim("after-interruption"))
+    assert completed["state"] == "succeeded", completed.get("error_code")
+    if kind == "extract":
+        assert completed["result"]["deferred_source_count"] == 2 and calls == [4, 2, 2]
+        tail = await enqueue_and_claim(env, key="tail")
+        assert tail["payload"]["source_ids"] == [row.source_id for row in env.records[2:]]
+        assert (await execute(env, tail))["state"] == "succeeded"
+    else:
+        assert completed["result"]["source_count"] == 4 and calls == [4, 2, 2, 2]
+    generation = await env.memory.get_active_generation(env.space["space_id"])
+    all_ids = [row.source_id for row in env.records]
+    assert await env.engine.pipeline.consumed(generation["generation_id"], all_ids) == set(all_ids)

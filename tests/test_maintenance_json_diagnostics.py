@@ -43,6 +43,9 @@ async def test_invalid_json_persists_numeric_location_without_content_or_retry(e
     assert failed["attempt"] == 1 and len(env.adapter.calls) == 1
     window = failed["checkpoint"]["window"]
     expected = [{"path": "$", "type": "duplicate_json_key" if raw.count("private-key-sentinel") > 1 else "json_invalid", **position}]
+    if "unsupported-sentinel" in raw:
+        expected = [{"path": [field], "type": "missing"} for field in (
+            "node_changes", "edges", "profile_changes", "relationship_change", "coverage_changes")]
     assert window["validation_errors"] == expected
     assert window["raw"] == raw and "canonical_raw" not in window
     assert "sentinel" not in json.dumps(expected)
