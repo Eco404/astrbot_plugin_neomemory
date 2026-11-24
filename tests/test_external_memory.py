@@ -12,7 +12,6 @@ from tests.test_recall_runtime import plugin_factory
 from core.memory_spaces import private_space
 from core.retrieval import RecallResult
 
-from adapters.proactive_sync import ProactiveSync, ReceiptsUnavailable
 from adapters.external_memory import (
     PROVIDER_API_VERSION,
     PROVIDER_ID,
@@ -162,51 +161,20 @@ def test_connect_refreshes_a_reloaded_companion_api():
     assert plugin.api.calls[0][0] == PROVIDER_ID
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("reject_legacy", [False, True])
-async def test_receipt_registration_mismatch_preserves_cursor_until_compatible_api_returns(reject_legacy):
-    class MixedAPI(FakeAPI):
-        def register_memory_provider(self, provider_id, **options):
-            self.calls.append((provider_id, options))
-            if "delivered_proactive" in options or reject_legacy:
-                raise TypeError("register() got an unexpected keyword argument 'delivered_proactive'")
-            return "legacy-registration"
+def test_only_standard_registration_arguments_are_used_even_with_other_host_capabilities():
+    class CompanionAPI(FakeAPI):
+        def register_memory_provider(self, provider_id, *, plugin, read, write, summary, display_name,
+                                     priority, handles_model_memory, is_active, timeout_seconds):
+            assert callable(read) and callable(write) and callable(summary)
+            return "standard-registration"
 
-        async def list_delivered_proactive_messages(self, *_args, **_kwargs):
-            pytest.fail("receipts require a successful opt-in")
-
-    class CurrentAPI(FakeAPI):
-        async def list_delivered_proactive_messages(self, token, **options):
-            assert token == "registration-1"
-            assert self.calls[0][1]["delivered_proactive"] is True
-            assert options["after"] == 19 and options["since"] == 42
-            return {"installation_id": "test", "next_cursor": 21, "items": [], "has_more": False}
-
-    state = {"since": 42, "after": 19}
-    async def load(_key):
-        return state.copy()
-    async def save(_key, value):
-        state.update(value)
+        async def list_delivered_proactive_messages(self):
+            pytest.fail("the writer does not poll for platform receipts")
 
     plugin = FakePlugin()
-    plugin.maintenance = SimpleNamespace(pipeline=SimpleNamespace(get_state=load, set_state=save))
-    plugin.external_memory = adapter = ExternalMemoryAdapter(plugin)
-    sync = ProactiveSync(plugin)
-    mixed = plugin.context.api = MixedAPI()
-
-    with pytest.raises(ReceiptsUnavailable) as failure:
-        await sync.sync_page()
-    assert "重启 AstrBot" in failure.value.message
-    assert len(mixed.calls) == 2
-    assert "delivered_proactive" not in mixed.calls[1][1]
-    assert adapter.registration_id == (None if reject_legacy else "legacy-registration")
-    assert state == {"since": 42, "after": 19}
-
-    plugin.context.api = CurrentAPI()
-    assert not await sync.sync_page()
-    assert adapter.delivery_issue is None
-    assert mixed.unregistered == ([] if reject_legacy else ["legacy-registration"])
-    assert state["after"] == 21
+    plugin.context.api = CompanionAPI()
+    adapter = ExternalMemoryAdapter(plugin)
+    assert adapter.connect() and adapter.registration_id == "standard-registration"
 
 
 def test_unrelated_registration_type_error_is_not_retried_as_legacy():
@@ -223,7 +191,7 @@ def test_unrelated_registration_type_error_is_not_retried_as_legacy():
     adapter = ExternalMemoryAdapter(plugin)
     assert not adapter.connect()
     assert len(api.calls) == 1
-    assert "TypeError" in adapter.delivery_issue
+    assert "TypeError" in adapter.registration_issue
 
 
 @pytest.mark.asyncio

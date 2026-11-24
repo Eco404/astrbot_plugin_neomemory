@@ -95,10 +95,19 @@ class ExternalMemoryScope:
     group_id: str = ""
     session_id: str = ""
     scope_kind: str = "private"
+    conversation_ref: str = ""
 
     @property
     def is_private(self) -> bool:
         return self.scope_kind == "private"
+
+    @property
+    def message_type(self) -> str:
+        return "FriendMessage" if self.is_private else "GroupMessage"
+
+    @property
+    def umo(self) -> str:
+        return f"{self.platform_instance_id}:{self.message_type}:{self.session_id}"
 
 
 def parse_external_scope(context: Any, *, require_private: bool = False, delivered: bool = False) -> ExternalMemoryScope:
@@ -160,6 +169,7 @@ def parse_external_scope(context: Any, *, require_private: bool = False, deliver
         group_id=native_scope if kind == "group" else "",
         session_id=_text(scope.get("session_id")) or native_scope,
         scope_kind=kind,
+        conversation_ref=_text(scope.get("conversation_id")),
     )
 
 
@@ -192,7 +202,7 @@ class ExternalMemoryAdapter:
         self.plugin = plugin
         self.api: Any | None = None
         self.registration_id: str | None = None
-        self.delivery_issue: str | None = None
+        self.registration_issue: str | None = None
 
     @property
     def mode(self) -> str:
@@ -229,26 +239,15 @@ class ExternalMemoryAdapter:
             priority=int(getattr(self.plugin.config, "external_memory_priority", 0)),
             handles_model_memory=self.handles_model_memory(),
             timeout_seconds=float(getattr(self.plugin.config, "external_memory_timeout_seconds", 5.0)))
-        has_receipts = callable(getattr(api, "list_delivered_proactive_messages", None))
-        if has_receipts:
-            options["delivered_proactive"] = True
-        issue = None
         try:
-            try:
-                registration = api.register_memory_provider(PROVIDER_ID, **options)
-            except TypeError as exc:
-                if not has_receipts or "unexpected keyword argument 'delivered_proactive'" not in str(exc):
-                    raise
-                issue = "陪伴插件的回执接口与注册接口版本不一致。请在方便时重启 AstrBot 以重新加载接口。"
-                del options["delivered_proactive"]
-                registration = api.register_memory_provider(PROVIDER_ID, **options)
+            registration = api.register_memory_provider(PROVIDER_ID, **options)
         except Exception as exc:
-            issue = issue or f"陪伴插件注册记忆提供方失败（{type(exc).__name__}）。"
-            if self.delivery_issue != issue:
+            issue = f"陪伴插件注册记忆提供方失败（{type(exc).__name__}）。"
+            if self.registration_issue != issue:
                 logger.info("NeoMemory companion memory provider unavailable: %s", issue)
-            self.delivery_issue = issue
+            self.registration_issue = issue
             return False
-        self.delivery_issue = f"基础记忆联动已连接。{issue}" if issue else None
+        self.registration_issue = None
         self.api = api
         self.registration_id = registration
         return True
@@ -257,12 +256,34 @@ class ExternalMemoryAdapter:
         api, registration = self.api, self.registration_id
         self.api = None
         self.registration_id = None
-        self.delivery_issue = None
+        self.registration_issue = None
         if api is not None and registration is not None:
             try:
                 api.unregister_memory_provider(registration)
             except Exception:
                 logger.debug("NeoMemory companion provider unregister failed", exc_info=True)
+
+    async def _host_persona(self, scope):
+        """Resolve the persona of the AstrBot window named by the provider."""
+        context = self.plugin.context
+        ref = scope.conversation_ref.partition(":v2-role:")[0]
+        cid = ref.removeprefix("astrbot-conversation:")
+        manager = getattr(context, "conversation_manager", None)
+        conversation = None
+        if not ref.startswith("astrbot-conversation:"):
+            cid = await manager.get_curr_conversation_id(scope.umo) if manager else None
+        elif cid.startswith("unopened-"):
+            cid = None
+        if cid:
+            conversation = await manager.get_conversation(scope.umo, cid) if manager else None
+            if conversation is None or conversation.user_id != scope.umo:
+                return None, None
+        persona = getattr(conversation, "persona_id", None)
+        resolver = getattr(getattr(context, "persona_manager", None), "resolve_selected_persona", None)
+        if resolver:
+            persona, _, _, _ = await resolver(umo=scope.umo, conversation_persona_id=persona,
+                platform_name=platform_name(context, scope.platform_instance_id) or "")
+        return persona, cid
 
     async def _private_space(self, context: Any) -> tuple[dict[str, Any] | None, ExternalMemoryScope]:
         scope = parse_external_scope(context, require_private=True)
@@ -271,7 +292,12 @@ class ExternalMemoryAdapter:
         )
         if logical_user_id is None:
             return None, scope
-        spec = private_space(scope.persona_id, logical_user_id)
+        persona = scope.persona_id
+        if scope.conversation_ref.startswith("astrbot-conversation:"):
+            persona, _ = await self._host_persona(scope)
+            if not is_supported_persona(persona):
+                return None, scope
+        spec = private_space(persona, logical_user_id)
         return await self.plugin.memory_store.get_space(spec.scope_key), scope
 
     async def read(self, request: Any) -> dict[str, list[dict[str, str]]]:
@@ -362,8 +388,7 @@ class ExternalMemoryAdapter:
             "external record fields",
             max_bytes=16_384,
         )
-        # A source_event is deliberately kept out of the conversation extractor
-        # until that pipeline gains an explicit autonomous-activity contract.
+        # Role-life records and unresolved events retain their external scope.
         platform = "companion:" + scope.platform_instance_id
         identity = EventIdentity(
             platform_instance_id=platform,
@@ -482,15 +507,58 @@ class ExternalMemoryAdapter:
         submitted = await self.plugin.submit_sources((contact,))
         return contact.source_id if submitted.durable and submitted.state != "failed" else None
 
+    async def _write_proactive(self, root, scope):
+        meta = _mapping(root.get("metadata", {}), "metadata")
+        memory_id = _text(root.get("memory_id"))
+        if not memory_id:
+            raise ExternalMemoryContractError("proactive message requires memory_id")
+        body = _text(meta.get("clean_visible_text", root.get("content")))
+        cleaner = self.plugin.source_store.cleaner
+        text = cleaner.clean(body)
+        message_id = f"companion:{scope.installation_id}:{memory_id}"
+        bot_account = _text(root["context"]["scope"].get("account_id"))
+        identity = EventIdentity(
+            platform_instance_id=scope.platform_instance_id,
+            platform_name=platform_name(self.plugin.context, scope.platform_instance_id) or "",
+            message_type=scope.message_type, unified_msg_origin=scope.umo, session_id=scope.session_id,
+            group_id=scope.group_id, account_id=scope.account_id, account_name="",
+            self_id=bot_account, message_id=message_id)
+        occurred = root.get("occurred_at")
+        source = CapturedSource(
+            identity=identity, actor_kind="agent", actor_account_id=bot_account, message_id=message_id,
+            content_text=text, observed_at=datetime.fromisoformat(occurred).timestamp() if occurred else time.time(),
+            metadata={"delivered_proactive": True, "delivery_basis": "provider_write",
+                      "external_source_plugin": COMPANION_PLUGIN_ID, "external_memory_id": memory_id,
+                      "proactive_contact_id": _text(meta.get("contact_id")) or memory_id,
+                      "delivery_target_id": scope.native_scope_id, "companion_role_id": scope.persona_id,
+                      "companion_conversation": scope.conversation_ref, **receipt_fingerprints(body),
+                      "text_cleaning_revision": cleaner.revision})
+        if await self.plugin.source_store.has_provider_message(source):
+            return source.source_id
+        if not text.strip():
+            return None
+        persona, cid = await self._host_persona(scope)
+        if not is_supported_persona(persona):
+            return await self._write_event(root, scope)
+        source.metadata["host_conversation_id"] = cid
+        submitted = await self.plugin.submit_sources((replace(source, persona_id=persona),))
+        return source.source_id if submitted.durable and submitted.state != "failed" else None
+
     async def write(self, record: Any) -> str | None:
         """Persist a companion life/proactive record through durable ingress."""
 
         root = _mapping(record, "record")
         if root.get("schema") != PROVIDER_API_VERSION:
             raise ExternalMemoryContractError("unsupported external memory write schema")
-        if root.get("kind") == "proactive_message" and _mapping(root.get("metadata", {}), "metadata").get("delivery_status") == "delivered":
-            return await self.accept_delivery(root)
-        scope = parse_external_scope(root.get("context"))
+        if root.get("source_plugin") == COMPANION_PLUGIN_ID and root.get("kind") == "proactive_message":
+            meta = _mapping(root.get("metadata", {}), "metadata")
+            if "clean_visible_text" not in meta and meta.get("delivery_status") == "delivered" and "delivery_id" in meta:
+                return await self.accept_delivery(root)
+            scope = parse_external_scope(root.get("context"), delivered=True)
+            return await self._write_proactive(root, scope)
+        return await self._write_event(root, parse_external_scope(root.get("context")))
+
+    async def _write_event(self, root, scope):
         source = self._external_source(root, scope, cleaner=self.plugin.source_store.cleaner)
         try:
             existing = await self.plugin.source_store.get_records((source.source_id,))

@@ -96,7 +96,7 @@ def contact_part(sequence, text, *, count=4, contact="visit"):
 
 
 @pytest.mark.asyncio
-async def test_contact_is_one_source_across_restart_push_poll_and_replay(plugin_factory, tmp_path, monkeypatch):
+async def test_contact_is_one_source_across_restart_concurrent_push_and_replay(plugin_factory, tmp_path):
     from adapters.proactive_context import missing_deliveries
 
     config = {"automatic_extraction_enabled": False}
@@ -109,17 +109,7 @@ async def test_contact_is_one_source_across_restart_push_poll_and_replay(plugin_
 
     plugin = await plugin_factory(config, directory=tmp_path)
     adapter = plugin.external_memory
-    from adapters.proactive_sync import ProactiveSync
-    sync = ProactiveSync(plugin)
-    await sync.pipeline.set_state(sync.STATE_KEY, {"after": 5, "since": 0})
-
-    async def page(**options):
-        assert options["after"] == 5
-        return {"items": [parts[1], parts[2]], "installation_id": "install-a",
-                "next_cursor": 7, "has_more": False}
-    monkeypatch.setattr(sync, "page", page)
-    assert await asyncio.gather(adapter.write(parts[3]), sync.sync_page()) == [source_id, False]
-    assert (await sync.pipeline.get_state(sync.STATE_KEY))["after"] == 7
+    assert await asyncio.gather(*(adapter.write(parts[i]) for i in (1, 2, 3))) == [source_id] * 3
     assert [await adapter.write(item) for item in parts] == [source_id] * 4
     row, = await plugin.source_store.get_records((source_id,))
     assert row["content_text"] == "甲\n乙\n乙\n丙\n丁"
@@ -182,3 +172,83 @@ async def test_existing_per_segment_source_survives_source_format_upgrade_and_re
     assert await plugin.external_memory.write(item) == legacy.source_id
     assert (await plugin.source_store.health())["source_count"] == 1
     assert (await plugin.source_store.get_records((legacy.source_id,)))[0]["content_text"] == "原有分段"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["private", "group"])
+async def test_standard_companion_write_reaches_extraction_once(plugin_factory, kind):
+    from unittest.mock import AsyncMock
+    from core.memory_spaces import group_space, private_space
+
+    plugin = await plugin_factory({"external_memory_enabled": True, "automatic_extraction_enabled": False})
+    ctx = companion_context(kind=kind, role="companion-internal-role")
+    ctx["scope"]["conversation_id"] = "astrbot-conversation:original:v2-role:opaque"
+    ctx["principal"]["native_account_id"] = "scheduler"
+    message_type = "FriendMessage" if kind == "private" else "GroupMessage"
+    umo = f"qq:{message_type}:session-a"
+    conversation = SimpleNamespace(user_id=umo, persona_id=None)
+    lookup = AsyncMock(return_value=conversation)
+    plugin.context.conversation_manager.get_conversation = lookup
+    resolver = AsyncMock(return_value=("host-persona", None, None, False))
+    plugin.context.persona_manager = SimpleNamespace(resolve_selected_persona=resolver)
+    body = "第一行\n第二行<<PRIVATE_COMPANION_SPLIT>>第三行\n第四行"
+    item = {"schema": PROVIDER_API_VERSION, "source_plugin": COMPANION_PLUGIN_ID,
+            "kind": "proactive_message", "context": ctx, "memory_id": "proactive:whole",
+            "occurred_at": "2026-11-24T10:00:00+08:00", "content": f"我主动说过：{body}",
+            "metadata": {"contact_id": "contact", "clean_visible_text": body}}
+    writer = plugin.external_memory.write
+    source_id = await writer(item)
+    assert source_id
+    lookup.assert_awaited_once_with(umo, "original")
+    resolver.assert_awaited_once_with(umo=umo, conversation_persona_id=None, platform_name="")
+    row, = await plugin.source_store.get_records((source_id,))
+    assert (row["source_type"], row["actor_kind"], row["persona_id"], row["actor_account_id"]) == (
+        "conversation", "agent", "host-persona", "bot-account")
+    assert row["content_text"] == "第一行\n第二行\n第三行\n第四行"
+    assert row["observed_at"] == datetime.fromisoformat(item["occurred_at"]).timestamp()
+    meta = json.loads(row["metadata_json"])
+    assert meta["host_conversation_id"] == "original" and meta["delivery_basis"] == "provider_write"
+    if kind == "private":
+        owner = await plugin.source_store.resolve_account("qq", "user-1")
+        assert owner and meta["recipient_logical_user_id"] == owner
+        spec = private_space("host-persona", owner)
+    else:
+        spec = group_space("host-persona", "qq", "group-1")
+    discovered = await SourceScanner(plugin.source_store).discover_spaces()
+    assert discovered.spaces == (spec,)
+    space = await plugin.memory_store.get_or_create_space(spec)
+    assert await plugin.maintenance.pending_source_count(space) == 1
+    assert [x["source_id"] for x in (await SourceScanner(plugin.source_store).page(spec)).records] == [source_id]
+    resolver.return_value = ("another-persona", None, None, False)
+    assert await writer(item) == source_id
+    assert (await plugin.source_store.health())["source_count"] == 1
+    assert await writer({**item, "memory_id": "empty", "metadata": {"clean_visible_text": "&&angry&&"}}) is None
+
+    # A removed host window cannot send new content to the now-selected persona.
+    lookup.return_value = None
+    unresolved_id = await writer({**item, "memory_id": "another-contact"})
+    unresolved, = await plugin.source_store.get_records((unresolved_id,))
+    assert unresolved["source_type"] == "source_event"
+    assert await plugin.maintenance.pending_source_count(space) == 1
+
+
+@pytest.mark.asyncio
+async def test_standard_write_replay_preserves_first_queued_message(plugin_factory, monkeypatch):
+    from unittest.mock import AsyncMock
+    from tests.test_completion_host import _controlled_ingress
+
+    plugin = await plugin_factory({"automatic_extraction_enabled": False})
+    await _controlled_ingress(plugin)
+    plugin.context.persona_manager = SimpleNamespace(
+        resolve_selected_persona=AsyncMock(return_value=("first", None, None, False)))
+    item = {"schema": PROVIDER_API_VERSION, "source_plugin": COMPANION_PLUGIN_ID, "kind": "proactive_message",
+            "memory_id": "same", "content": "一条推送", "context": companion_context()}
+    with monkeypatch.context() as patch:
+        patch.setattr(plugin.ingress, "process_once", AsyncMock(return_value=None))
+        source_id = await plugin.external_memory.write(item)
+        plugin.context.persona_manager.resolve_selected_persona.return_value = ("second", None, None, False)
+        assert await plugin.external_memory.write(item) == source_id
+        assert (await plugin.ingress_store.health())["pending_count"] == 1
+    await plugin.ingress.process_once()
+    stored, = await plugin.source_store.get_records((source_id,))
+    assert stored["persona_id"] == "first" and stored["content_text"] == item["content"]

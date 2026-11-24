@@ -11,6 +11,14 @@ from .image_capture import without_image_data
 PART_WAIT_SECONDS = 60
 
 
+def same_provider_message(stream_id, metadata, source):
+    """Compare immutable writer input, independent of local persona, clock and cleaning settings."""
+    return (stream_id == source.identity.stream_id and
+            all(metadata.get(key) == source.metadata.get(key) for key in
+                ("delivery_basis", "delivery_target_id", "companion_role_id", "companion_conversation",
+                 "proactive_contact_id", "receipt_input_hash")))
+
+
 def contact_source(segment, installation_id, part_count):
     meta = segment.metadata
     scope = [installation_id, meta["proactive_contact_id"], segment.persona_id,

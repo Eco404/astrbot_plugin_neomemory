@@ -11,14 +11,14 @@ from typing import Any
 
 try:
     from ..core.extraction_errors import ExtractionWindowChanged
-    from ..core.proactive_delivery import merge_deliveries, part_texts
+    from ..core.proactive_delivery import merge_deliveries, part_texts, same_provider_message
     from ..core.group_addressing import address_entries
     from ..core.text_cleaning import DEFAULT_CLEANER, RECEIPT_PROJECTION_FIELDS, receipt_text_matches
     from ..core.image_capture import project_images, without_image_data
     from ..core.source_ingest import CapturedSource
 except ImportError:  # Tests import ``storage`` directly from the plugin root.
     from core.extraction_errors import ExtractionWindowChanged
-    from core.proactive_delivery import merge_deliveries, part_texts
+    from core.proactive_delivery import merge_deliveries, part_texts, same_provider_message
     from core.group_addressing import address_entries
     from core.text_cleaning import DEFAULT_CLEANER, RECEIPT_PROJECTION_FIELDS, receipt_text_matches
     from core.image_capture import project_images, without_image_data
@@ -84,6 +84,10 @@ class SourceStore:
             "SELECT * FROM source_records WHERE source_id=?", (source.source_id,))).fetchone()
         if row:
             meta = json.loads(row["metadata_json"])
+            if source.metadata.get("delivery_basis") == "provider_write":
+                if not same_provider_message(row["stream_id"], meta, source):
+                    raise ValueError("proactive message id conflicts with existing content")
+                return row
             # Replayed deliveries can predate markup or embedded-image normalization.
             same_text = receipt_text_matches(row["content_text"], meta, source.content_text, source.metadata)
             if (row["stream_id"] != source.identity.stream_id or row["persona_id"] != source.persona_id
@@ -92,6 +96,10 @@ class SourceStore:
                     or any(meta.get(key) != value for key, value in source.metadata.items() if key != "replay_only" and key not in RECEIPT_PROJECTION_FIELDS)):
                 raise ValueError("delivery id conflicts with existing source")
         return row
+
+    async def has_provider_message(self, source):
+        async with self.database.transaction(write=False) as connection:
+            return await self._delivery_row(connection, source) is not None
 
     async def confirmed_delivery(self, segment, contact):
         async with self.database.transaction(write=False) as connection:
@@ -283,7 +291,7 @@ class SourceStore:
                 if addressing:
                     metadata["group_addressing"] = addressing
 
-            if delivered and not metadata.get("replay_only"):
+            if delivered and metadata.get("delivery_basis") != "provider_write" and not metadata.get("replay_only"):
                 later = await (await connection.execute(
                     "SELECT 1 FROM source_records WHERE stream_id=? AND persona_id=? AND observed_at>? LIMIT 1",
                     (identity.stream_id, source.persona_id, source.observed_at))).fetchone()

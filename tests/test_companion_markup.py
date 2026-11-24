@@ -8,7 +8,6 @@ from core.source_ingest import normalize_agent_response, normalize_event, normal
 from tests.test_source_ingest import FakeEvent
 from tests.test_delivered_extraction import receipt
 from tests.test_recall_runtime import plugin_factory
-from tests.test_proactive_sync import setup
 
 SPLIT = "<<PRIVATE_COMPANION_SPLIT>>"
 REACTION = '<pc_reaction_expression>{"intent":"合成测试"}</pc_reaction_expression>'
@@ -54,7 +53,7 @@ def test_image_caption_component_boundaries_and_user_original():
 
 
 @pytest.mark.asyncio
-async def test_proactive_receipt_replay_and_cursor_for_marker_only_item(plugin_factory):
+async def test_proactive_receipt_replay_and_marker_only_item(plugin_factory):
     plugin = await plugin_factory()
     adapter = plugin.external_memory
     raw = "甲" + SPLIT + "乙"
@@ -67,13 +66,6 @@ async def test_proactive_receipt_replay_and_cursor_for_marker_only_item(plugin_f
                                                (raw, hashlib.sha256(raw.encode()).hexdigest(), source_id))
     assert await adapter.accept_delivery(record, historical=True) == source_id
     assert await adapter.write(receipt(2, 70, text=REACTION)) is None
-    sync, fake, _, state = setup()
-    fake.add(15)
-    fake.entries[0]["content"] = REACTION
-    await sync.configure(True)
-    await sync.stop()
-    await sync.sync_page()
-    assert not fake.writes and state[sync.STATE_KEY]["after"] == 1
 
 
 @pytest.mark.asyncio

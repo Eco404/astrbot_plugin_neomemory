@@ -22,7 +22,6 @@ from astrbot.api.web import error_response, json_response, request
 try:
     from .adapters.console_api import ConsoleAPI
     from .adapters.external_memory import ExternalMemoryAdapter
-    from .adapters.proactive_sync import ProactiveSync
     from .adapters.ingress_api import IngressAPI
     from .adapters.chat_model_capture import requested_chat_route, observed_chat_route
     from .adapters.maintenance_api import MaintenanceAPI
@@ -52,7 +51,6 @@ try:
 except ImportError:  # pragma: no cover - supports direct local loading in probes.
     from adapters.console_api import ConsoleAPI
     from adapters.external_memory import ExternalMemoryAdapter
-    from adapters.proactive_sync import ProactiveSync
     from adapters.ingress_api import IngressAPI
     from adapters.chat_model_capture import requested_chat_route, observed_chat_route
     from adapters.maintenance_api import MaintenanceAPI
@@ -153,7 +151,6 @@ class NeoMemoryPlugin(Star):
         self.short_term: ShortTermService | None = None
         self.ingress: IngressService | None = None
         self.ingress_store: IngressStore | None = None
-        self.proactive_sync = None
         self.image_cache = None
         self.external_memory = ExternalMemoryAdapter(self)
         self._unpersisted_overflow = 0
@@ -216,15 +213,18 @@ class NeoMemoryPlugin(Star):
                 self.runtime.adapter, self.config, self._load_persona)
             self.maintenance.short_term = self.short_term
             self.maintenance.runner.handlers["short_term"] = self.short_term.run
-            self.proactive_sync = ProactiveSync(self)
             await self.maintenance.start()
         except (Exception, asyncio.CancelledError):
             await self._close_stores()
             raise
         self._ready = True
         self.external_memory.connect()
-        await self.proactive_sync.configure(self.config.external_memory_enabled)
         logger.info("NeoMemory source and memory stores ready at %s", self.data_dir)
+
+    @filter.on_plugin_loaded()
+    async def connect_memory_provider(self, _star):
+        if self.ready and not self.terminating:
+            self.external_memory.connect()
 
     async def apply_config(self, config: NeoMemoryConfig) -> None:
         """Apply saved settings to new work while active operations keep snapshots."""
@@ -275,7 +275,6 @@ class NeoMemoryPlugin(Star):
         self.ingress._wake.set()
         if self.ready:
             self.external_memory.connect()
-            await self.proactive_sync.configure(config.external_memory_enabled)
 
     async def _load_persona(self, persona_id: str) -> str | None:
         if not is_supported_persona(persona_id):
@@ -356,9 +355,6 @@ class NeoMemoryPlugin(Star):
         """Release the dependent memory store before its source validator."""
 
         self._ready = False
-        if self.proactive_sync is not None:
-            await self.proactive_sync.stop()
-            self.proactive_sync = None
         maintenance, self.maintenance = self.maintenance, None
         self.jobs = None
         self.short_term = None
@@ -762,10 +758,8 @@ class NeoMemoryPlugin(Star):
         if self.image_cache:
             result["image_cache_cleanup"] = {"last_success_at": self.image_cache.last_cleanup_at,
                                               "error_type": self.image_cache.last_cleanup_error}
-        if self.proactive_sync and self.proactive_sync.last_issue:
-            result["companion_delivery_sync"] = self.proactive_sync.last_issue
-        if self.proactive_sync and self.proactive_sync.progress:
-            result["companion_delivery_progress"] = self.proactive_sync.health()
+        if self.external_memory.registration_issue:
+            result["companion_registration_issue"] = self.external_memory.registration_issue
         result["storage_bytes"] = await asyncio.to_thread(self._storage_bytes)
         if self.ingress is not None:
             result["ingress"] = {**await self.ingress.health(),

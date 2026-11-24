@@ -393,12 +393,9 @@ export function initMaintenance(ui) {
       const reason = longest.reason === 'network' ? '模型网络故障' : longest.reason;
       failureStreak.textContent = `当前最长记录 · ${longest.job_id} · ${stepLabel(longest.step)} · ${reason} · ${label} ${longest.streak} 次`;
     }
-    const deliveryIssue = $('companion-delivery-issue');
-    const delivery = health.companion_delivery_progress || {};
-    deliveryIssue.textContent = delivery.blocked_receipt
-      ? `等待重试陪伴回执 ${delivery.blocked_receipt} · 下次尝试 ${date(delivery.retry_at)}`
-      : health.companion_delivery_sync ? '陪伴插件回执同步：' + health.companion_delivery_sync : '';
-    deliveryIssue.hidden = !deliveryIssue.textContent;
+    const registrationIssue = $('companion-registration-issue');
+    registrationIssue.textContent = health.companion_registration_issue || '';
+    registrationIssue.hidden = !registrationIssue.textContent;
     renderContextBudget(health.recall?.diagnostics?.last_context);
     const sizes = Object.entries(health.storage_bytes || {});
     $('storage-usage').replaceChildren(...sizes.map(([name, size]) => element('p', name + ' · ' + bytes(size))));

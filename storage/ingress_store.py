@@ -19,12 +19,12 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from ..core.proactive_delivery import PART_WAIT_SECONDS, merge_deliveries
+    from ..core.proactive_delivery import PART_WAIT_SECONDS, merge_deliveries, same_provider_message
     from ..core.text_cleaning import RECEIPT_PROJECTION_FIELDS, receipt_text_matches
     from ..core.identity import EventIdentity
     from ..core.source_ingest import CapturedSource
 except ImportError:
-    from core.proactive_delivery import PART_WAIT_SECONDS, merge_deliveries
+    from core.proactive_delivery import PART_WAIT_SECONDS, merge_deliveries, same_provider_message
     from core.text_cleaning import RECEIPT_PROJECTION_FIELDS, receipt_text_matches
     from core.identity import EventIdentity
     from core.source_ingest import CapturedSource
@@ -95,6 +95,8 @@ def _same_queued_receipt(row, source):
     if "receipt_input_hash" not in source.metadata:
         return False
     queued = _deserialize(row["payload_json"])
+    if source.metadata.get("delivery_basis") == "provider_write":
+        return same_provider_message(queued.identity.stream_id, queued.metadata, source)
     if not receipt_text_matches(queued.content_text, queued.metadata, source.content_text, source.metadata):
         return False
     metadata = {k: v for k, v in source.metadata.items() if k not in RECEIPT_PROJECTION_FIELDS}
