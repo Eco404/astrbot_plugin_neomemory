@@ -202,7 +202,7 @@
     </details>
   </section>
   <section data-maintenance-content="manual" hidden>
-    <h2 class="section-title"><span data-icon="memory" aria-hidden="true"></span>人工治理记忆</h2>
+    <h2 class="section-title"><span data-icon="memory" aria-hidden="true"></span>长期记忆治理</h2>
     <p class="muted">当前代的全部状态均可查阅。禁用停止召回并可恢复；删除会保留墓碑和来源，不能用恢复按钮撤销。人工保护独立于状态。</p>
     <div class="grid">
       <div>
@@ -233,6 +233,18 @@
         <button id="governance" class="mutation primary" disabled>提交治理任务</button>
       </fieldset>
     </div>
+  </section>
+  <section data-maintenance-content="manual" data-context-governance="profiles" aria-labelledby="profile-governance-title" hidden>
+    <h2 class="section-title" id="profile-governance-title"><span data-icon="notes" aria-hidden="true"></span>用户画像治理</h2>
+    <div class="context-records"></div>
+  </section>
+  <section data-maintenance-content="manual" data-context-governance="relationships" aria-labelledby="relationship-governance-title" hidden>
+    <h2 class="section-title" id="relationship-governance-title"><span data-icon="memory" aria-hidden="true"></span>人格关系治理</h2>
+    <div class="context-records"></div>
+  </section>
+  <section data-maintenance-content="manual" data-context-governance="short_term" aria-labelledby="short-term-governance-title" hidden>
+    <h2 class="section-title" id="short-term-governance-title"><span data-icon="clock" aria-hidden="true"></span>短期记忆治理</h2>
+    <div class="context-records"></div>
   </section>
   <section data-maintenance-content="recall" hidden aria-labelledby="recall-test-title">
     <h2 class="section-title" id="recall-test-title"><span data-icon="search" aria-hidden="true"></span>召回测试</h2>

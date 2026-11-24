@@ -1,3 +1,4 @@
+import { initContextGovernance } from './context-governance.js';
 import { initTaskModels } from './task-models.js';
 import { initRecallInspector } from './recall.js';
 import { budgetDiagnostics, formatDuration, taskTiming, taskFeedback } from './task-progress.js';
@@ -22,6 +23,7 @@ export function initMaintenance(ui) {
   const pendingSubmissionKeys = new Map();
   let backlogEpoch = null;
   const recall = initRecallInspector(ui);
+  const contextGovernance = initContextGovernance(ui, operation => submit('governance', { operation }));
   const confirmModelTask = initTaskModels(ui);
   const modelJobs = new Set(['extract', 'rebuild', 'section_rebuild', 'topic_consolidate', 'topic_rebuild', 'profile_rebuild', 'relationship_rebuild', 'context_rebuild', 'short_term']);
   setupTabs('[data-maintenance-tab]', tab => {
@@ -30,6 +32,7 @@ export function initMaintenance(ui) {
     }
     if (tab.dataset.maintenanceTab === 'tasks') refreshBacklog();
     if (tab.dataset.maintenanceTab === 'recall') recall.refresh();
+    if (tab.dataset.maintenanceTab === 'manual') contextGovernance.refresh();
   });
   function showTasks() { document.querySelector('[data-maintenance-tab="tasks"]').click(); }
   const activeStates = new Set(['queued', 'running', 'retry_wait']);
@@ -113,6 +116,7 @@ export function initMaintenance(ui) {
   }
   function buttons() {
     const allowed = Boolean(spaceId()) && state.available && !state.posting;
+    contextGovernance.setAvailable(allowed);
     $('governance-editor').disabled = state.nodeLoading;
     $('governance-editor').setAttribute('aria-busy', String(state.nodeLoading));
     $('node-select').disabled = state.nodeLoading;
@@ -148,8 +152,8 @@ export function initMaintenance(ui) {
       const job = await request('tasks', { ...body, idempotency_key: key });
       pendingSubmissionKeys.delete(signature);
       if (!ui.current(epoch)) return;
-      notify('任务已提交：' + job.job_id + (kind === 'governance' ? '。任务完成后请刷新节点，读取最新标题与内容。' : ''));
-      if (kind.endsWith('_rebuild')) showTasks();
+      notify('任务已提交：' + job.job_id + (kind === 'governance' && !extra.operation?.entity_kind ? '。任务完成后请刷新节点，读取最新标题与内容。' : ''));
+      if (kind.endsWith('_rebuild') || extra.operation?.entity_kind) showTasks();
       state.selectedJob = job.job_id; $('task-detail-panel').open = false;
       await refreshTasks();
     } catch { notify('未确认任务是否提交成功。请先查看后台任务，如未显示，可重试同一操作。', true); }
@@ -723,9 +727,9 @@ export function initMaintenance(ui) {
   on('merge-next', 'click', () => { state.mergeOffset += 50; return loadMergeCandidates(); });
   on('merge-prev', 'click', () => { state.mergeOffset = Math.max(0, state.mergeOffset - 50); return loadMergeCandidates(); }); on('delete-confirm', 'input', buttons);
   return {
-    async refresh() { await Promise.all([recall.visible() && recall.refresh(), loadNodes(), refreshTasks(), refreshBacklog(), refreshIngress()]); },
+    async refresh() { await Promise.all([contextGovernance.refresh(), recall.visible() && recall.refresh(), loadNodes(), refreshTasks(), refreshBacklog(), refreshIngress()]); },
     async poll() { if (!recall.visible() && !state.clearingTasks) await Promise.all([refreshTasks(), refreshBacklog(), refreshIngress()]); },
-    changed() { recall.changed(); $('task-detail-panel').open = false; $('extraction-backlog').textContent = '正在读取当前空间的待抽取数量…'; state.nodeRequest += 1; state.nodeLoading = false; clearTaskSource(); state.rawJob = null; $('task-sources').replaceChildren(); state.available = false; state.nodeOffset = state.taskOffset = 0; state.selectedJob = state.detail = null; state.nodes = []; $('node-select').replaceChildren(); $('merge-nodes').replaceChildren(); $('node-preview').textContent = ''; $('version-detail').textContent = ''; $('tasks').replaceChildren(); $('automatic-status').hidden = true; $('task-detail').textContent = '请选择要查看的任务。'; $('restart-hint').textContent = ''; $('task-diagnostics').textContent = ''; $('operation').value = ''; $('node-title').value = ''; $('content').value = ''; $('split-parts').replaceChildren(); $('availability').textContent = '正在读取空间状态…'; buttons(); },
+    changed() { contextGovernance.changed(); recall.changed(); $('task-detail-panel').open = false; $('extraction-backlog').textContent = '正在读取当前空间的待抽取数量…'; state.nodeRequest += 1; state.nodeLoading = false; clearTaskSource(); state.rawJob = null; $('task-sources').replaceChildren(); state.available = false; state.nodeOffset = state.taskOffset = 0; state.selectedJob = state.detail = null; state.nodes = []; $('node-select').replaceChildren(); $('merge-nodes').replaceChildren(); $('node-preview').textContent = ''; $('version-detail').textContent = ''; $('tasks').replaceChildren(); $('automatic-status').hidden = true; $('task-detail').textContent = '请选择要查看的任务。'; $('restart-hint').textContent = ''; $('task-diagnostics').textContent = ''; $('operation').value = ''; $('node-title').value = ''; $('content').value = ''; $('split-parts').replaceChildren(); $('availability').textContent = '正在读取空间状态…'; buttons(); },
     async inspect(job) { showTasks(); if (job.scope_key === '*') $('all-tasks').checked = true; state.selectedJob = job.job_id; $('task-detail-panel').open = false; await refreshTasks(); }
   };
 }
