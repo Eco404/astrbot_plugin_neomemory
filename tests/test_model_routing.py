@@ -34,6 +34,17 @@ def record_calls(env):
 
 
 @pytest.mark.asyncio
+async def test_backlog_explains_minimum_per_stream(environment):
+    env = environment
+    env.engine.config = replace(env.config, private_min_messages=3)
+    await source(env, "second", 3)
+    backlog = await env.engine.extraction_backlog(env.space)
+    assert (backlog.pending, backlog.largest_stream) == (3, 2)
+    assert "单个会话最多 2 条" in backlog.hint and "还差 1 条" in backlog.hint
+    assert (await env.engine.model_preview("extract", env.space))["waiting_message"] == backlog.hint
+
+
+@pytest.mark.asyncio
 async def test_mixed_stream_rebuild_follows_windows_and_falls_back_only_for_legacy(environment):
     env = environment
     restart(env, config=replace(env.config, llm_provider_id="", topic_consolidation_enabled=False))

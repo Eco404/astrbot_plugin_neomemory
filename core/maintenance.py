@@ -50,7 +50,7 @@ from .extraction_regeneration import (
 from .extraction_regeneration import build_messages as regeneration_messages
 from .extraction_schema import extraction_model_json_schema, parse_extraction_output
 from .candidate_feedback import CandidateValidationError
-from .extraction_window import WindowMessage, WindowPolicy, select_window
+from .extraction_window import ExtractionBacklog, ExtractionWindowPending, WindowMessage, WindowPolicy, select_window
 from .forwarded_content import window_text
 from .parallel_rebuild import rebuild_sections
 from .context_rebuild import MODELS as CONTEXT_REBUILD_MODELS, model_schema, scoped_messages
@@ -238,10 +238,14 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             except Exception as exc:
                 self.last_error_type = type(exc).__name__
 
+    async def extraction_backlog(self, space):
+        pending = largest = 0
+        if is_supported_persona(space["persona_id"]):
+            pending, largest = await self.scanner.pending_counts(space, self.memory.path)
+        return ExtractionBacklog(pending, largest, self.policy(space).min_messages)
+
     async def pending_source_count(self, space):
-        if not is_supported_persona(space["persona_id"]):
-            return 0
-        return await self.scanner.pending_count(space, self.memory.path)
+        return (await self.extraction_backlog(space)).pending
 
     async def _pending(self, space, generation_id):
         committed = await self.pipeline.get_cursor(generation_id)
@@ -347,11 +351,12 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         if include_topics:
             payload["include_topics"] = True
         if kind == "extract":
-            records, decision = await self.live_plan(space, generation["generation_id"], manual=True)
-            if decision.status == "waiting":
+            try:
+                records, decision = await self.manual_extraction_plan(space, generation["generation_id"])
+            except ExtractionWindowPending:
                 if replaces and replaces.get("lease_token"):
                     return None
-                raise ValueError("pending messages are below the extraction minimum")
+                raise
             return await self._submit_extract(space, generation, records, decision, idempotency_key, request=request, replaces=replaces)
         if kind == "rebuild" or kind in CONTEXT_REBUILD_MODELS:
             payload["highwater"] = await self.scanner.highwater(space)

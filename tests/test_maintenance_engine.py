@@ -12,6 +12,7 @@ import pytest_asyncio
 from core.config import NeoMemoryConfig
 from core.extraction_apply import ExtractionService
 from core.extraction_references import ExtractionReferences
+from core.extraction_window import ExtractionWindowPending
 from core.maintenance import MaintenanceEngine
 from core.memory_spaces import private_space
 from storage.cache_store import CacheStore, text_hash
@@ -30,6 +31,23 @@ def node(source_id, *, title="合成事件", **kwargs):
     value["emotion"] = None
     value["base_node_ids"] = []
     return value
+
+
+@pytest.mark.asyncio
+async def test_manual_extract_waits_before_selecting_model_and_rechecks_at_submission(environment):
+    env = environment
+    env.engine.config = replace(env.config, private_min_messages=3)
+    preview = await env.engine.model_preview("extract", env.space)
+    assert "2 条" in preview["waiting_message"] and "3 条" in preview["waiting_message"]
+    assert "window" in await env.engine.model_preview("extract", env.space, retry=True)
+    with pytest.raises(ExtractionWindowPending) as caught:
+        await env.engine.enqueue("extract", env.space["space_id"], "manual")
+    assert (caught.value.pending, caught.value.minimum) == (2, 3)
+    assert not await env.engine.jobs.list()
+    await capture(env.sources, number=3)
+    assert "window" in await env.engine.model_preview("extract", env.space)
+    assert (await env.engine.enqueue("extract", env.space["space_id"], "manual"))["state"] == "queued"
+    assert len(await env.engine.jobs.list()) == 1
 
 
 class ControlledProvider:

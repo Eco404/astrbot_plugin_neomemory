@@ -181,11 +181,11 @@
       <div id="automatic-jobs"></div>
     </div>
     <div class="row">
-      <button id="extract" class="mutation primary" disabled>整理待处理内容</button>
+      <button id="extract" class="mutation primary" aria-describedby="extraction-hint" disabled>整理待处理内容</button>
       <button id="topic-consolidate" class="mutation" disabled>整理主题</button>
       <button id="reindex" class="mutation" disabled>重建向量索引</button>
     </div>
-    <p class="muted">整理仍遵循最低消息条数；数量不足时继续等待。其他互斥任务执行期间，相应操作会暂时停用。</p>
+    <p id="extraction-hint" class="muted" role="status">正在读取待抽取数量…</p>
     <details>
       <summary>重构记忆</summary>
       <fieldset id="section-selection"><legend>按板块重构</legend><div class="row">

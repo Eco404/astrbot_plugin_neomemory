@@ -17,6 +17,7 @@ const originalGet = window.AstrBotPluginView.apiGet;
 const originalPost = window.AstrBotPluginView.apiPost;
 window.topicSubmissionKeys = [];
 window.AstrBotPluginView.apiPost = async (endpoint, body) => {
+ if(endpoint === 'tasks/model-preview' && body.kind === 'extract') return {waiting_message:'当前有 7 条待抽取消息。同一会话至少需要 10 条，还差 3 条。'};
  if(endpoint === 'tasks/model-preview' && body.kind === 'rebuild') {
    const step = {mode:'fixed',provider_id:'llm-1',providers:['llm-1'],basis:'plugin'};
    return {window:step,topic:{...step,follows_main:true}};
@@ -101,6 +102,11 @@ async def main():
             await page.select_option('#space', 'space-2')
             await backlog.filter(has_text='7 条').wait_for()
             await page.locator('[data-maintenance-tab="manual"]').click()
+            await page.locator('#extraction-hint').filter(has_text='还差 3 条').wait_for()
+            await page.select_option('#space', 'space-1')
+            await page.locator('#extraction-hint').filter(has_text='当前没有待抽取消息').wait_for()
+            await page.select_option('#space', 'space-2')
+            await page.locator('#extraction-hint').filter(has_text='还差 3 条').wait_for()
             await page.locator('#automatic-title').filter(has_text='自动主题整理已暂停').wait_for()
             assert '普通消息抽取' in await page.locator('#automatic-reason').inner_text()
             assert 'failed-topic' in await page.locator('#automatic-jobs').inner_text()
@@ -108,9 +114,13 @@ async def main():
             assert '发布重构后的主题' in await page.locator('#tasks').inner_text()
             await page.locator("#topic-consolidate:not([disabled])").wait_for()
             assert not await page.locator('#request-key, #new-key').count()
+            await page.locator('#extract').click()
+            await page.locator('#notifications .toast:not(.error)').filter(has_text='还差 3 条').wait_for()
+            assert not await page.locator('#section-rebuild-dialog').is_visible()
+            assert not await page.evaluate("testCalls.some(c => c.endpoint === 'tasks' && c.body.kind === 'extract')")
             await page.locator("#topic-consolidate").click()
             await page.get_by_role("button", name="启动任务", exact=True).click()
-            await page.locator('#notifications').get_by_text('未确认任务是否提交成功。', exact=False).wait_for()
+            await page.locator('#notifications').get_by_text('synthetic lost response', exact=True).wait_for()
             await page.locator("#topic-consolidate").click()
             await page.get_by_role("button", name="启动任务", exact=True).click()
             await page.wait_for_function("document.querySelector('#topic-consolidate').disabled")

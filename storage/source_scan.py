@@ -162,11 +162,12 @@ class SourceScanner:
             AND {scope} {bounds}) """
         return query, tuple(parameters)
 
-    async def pending_count(self, space: Mapping[str, Any], memory_path: Path) -> int:
-        """Count unopened and in-flight sources against the current published generation."""
+    async def pending_counts(self, space: Mapping[str, Any], memory_path: Path) -> tuple[int, int]:
+        """Return the total pending sources and the largest single-stream count."""
         scope, parameters = self._scope_query(space)
         sql = scope + """
-            SELECT COUNT(*)
+            , pending_streams AS (
+            SELECT COUNT(*) AS n
             FROM derived.memory_generations g
             LEFT JOIN derived.derived_cursors c ON c.generation_id=g.generation_id
             CROSS JOIN eligible e
@@ -175,11 +176,14 @@ class SourceScanner:
               AND NOT EXISTS (
                 SELECT 1 FROM derived.extraction_batch_sources b
                 WHERE b.generation_id=g.generation_id AND b.source_id=e.source_id
-              )"""
+              )
+            GROUP BY e.stream_id)
+            SELECT COALESCE(SUM(n),0), COALESCE(MAX(n),0) FROM pending_streams"""
         async with aiosqlite.connect(self.store.path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
             await connection.execute("ATTACH DATABASE ? AS derived", (memory_path.resolve().as_uri() + "?mode=ro",))
             async with connection.execute(sql, (*parameters, space["space_id"])) as cursor:
-                return (await cursor.fetchone())[0]
+                total, largest = await cursor.fetchone()
+                return total, largest
 
     async def highwater(self, space: MemorySpaceSpec | Mapping[str, Any]) -> dict[str, int]:
         """Freeze replay per-stream sequence bounds in one SQLite statement."""

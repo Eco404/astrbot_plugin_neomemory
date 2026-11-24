@@ -277,7 +277,11 @@ async def test_stage_one_host_capture_and_restart(tmp_path: Path, monkeypatch):
         monkeypatch.setattr(maintenance_api, "request", SimpleNamespace(query={"space_id": space["space_id"]}))
         response = await backlog()
         expected = 2 if space["space_type"] == "private" else 1
-        assert response.status_code == 200 and json.loads(response.body) == {"pending_count": expected}
+        assert response.status_code == 200
+        result = json.loads(response.body)
+        assert result["pending_count"] == expected
+        minimum = getattr(plugin.config, f"{space['space_type']}_min_messages")
+        assert f"还差 {minimum - expected} 条" in result["hint"]
     await plugin.terminate()
 
     restarted = NeoMemoryPlugin(FakeContext(), {})

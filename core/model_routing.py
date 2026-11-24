@@ -1,6 +1,7 @@
 """Choose a callable provider from the frozen conversation or task settings."""
 import json
 from collections import defaultdict
+from .extraction_window import ExtractionWindowPending
 
 
 def chat_route(record):
@@ -152,13 +153,7 @@ class ModelRoutingMixin:
                 routes[(route.get("provider_id"), route.get("model_override"))] = route
         return list(routes.values())
 
-    async def _preview_windows(self, kind, space, generation_id, highwater):
-        if kind == "extract":
-            records, decision = await self.live_plan(space, generation_id, manual=True)
-            selected = set(decision.source_ids or (decision.blocked_source_id,))
-            if records:
-                yield [row for row in records if row["source_id"] in selected]
-            return
+    async def _preview_windows(self, space, highwater):
         for stream, high in highwater.items():
             offset = 0
             while True:
@@ -186,7 +181,14 @@ class ModelRoutingMixin:
                 "providers": providers, "missing_windows": missing,
                 "basis": next(iter(bases)) if len(bases) == 1 else "chat"}
 
-    async def model_preview(self, kind, space, *, include_topics=False, selection=None, policy=None, highwater=None):
+    async def manual_extraction_plan(self, space, generation_id):
+        records, decision = await self.live_plan(space, generation_id, manual=True)
+        if decision.status == "waiting":
+            raise ExtractionWindowPending(await self.extraction_backlog(space))
+        return records, decision
+
+    async def model_preview(self, kind, space, *, include_topics=False, selection=None, policy=None, highwater=None,
+                            retry=False):
         selection = selection or {}
         if policy is None:
             policy = topic_model_policy(await self.memory.get_space_policy(space["space_id"]), self.config)
@@ -199,10 +201,21 @@ class ModelRoutingMixin:
         window_fixed = fixed_route(policy, default, selection)
         topic_fixed = fixed_route(policy, default, selection, topic=True)
         window_routes, topic_routes = [], []
-        if (window_step and not window_fixed) or (kind == "rebuild" and topic_step and not topic_fixed):
-            if kind != "extract" and highwater is None:
+        if kind == "extract":
+            if not retry or not window_fixed:
+                try:
+                    records, decision = await self.manual_extraction_plan(space, generation_id)
+                except ExtractionWindowPending as waiting:
+                    if not retry:
+                        return {"waiting_message": str(waiting)}
+                else:
+                    if not window_fixed:
+                        selected = set(decision.source_ids or (decision.blocked_source_id,))
+                        window_routes.append(self.resolve_window_route(policy, [r for r in records if r["source_id"] in selected], selection))
+        elif (window_step and not window_fixed) or (kind == "rebuild" and topic_step and not topic_fixed):
+            if highwater is None:
                 highwater = await self.scanner.highwater(space)
-            async for records in self._preview_windows(kind, space, generation_id, highwater):
+            async for records in self._preview_windows(space, highwater):
                 window_routes.append(self.resolve_window_route(policy, records, selection))
                 if kind == "rebuild" and topic_step and not topic_fixed:
                     observed = [chat_route(row) for row in records]

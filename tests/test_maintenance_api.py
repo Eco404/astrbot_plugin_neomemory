@@ -10,6 +10,7 @@ pytest.importorskip("astrbot.api.web")
 import adapters.maintenance_api as module  # noqa: E402
 from adapters.maintenance_api import MaintenanceAPI  # noqa: E402
 from core.source_ingest import normalize_event  # noqa: E402
+from core.extraction_window import ExtractionBacklog
 from core.recall_history import RecallHistory
 from core.memory_spaces import group_space, private_space  # noqa: E402
 from storage.job_store import JobStore  # noqa: E402
@@ -120,6 +121,19 @@ async def test_all_endpoints_require_ready_maintenance(api, attribute, value):
     for name in ("tasks", "task", "test_recall", "recall_history", "recall_recording", "extraction_backlog", "availability", "submit", "retry", "cancel", "delete", "clear_completed", "spaces", "nodes", "versions", "relations"):
         result = payload(await getattr(api, name)(), 503)
         assert result["data"]["error_code"] == "maintenance_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_manual_extract_reports_window_that_became_unavailable_before_submit(api, monkeypatch):
+    async def enqueue(*args, **kwargs):
+        raise module.ExtractionWindowPending(ExtractionBacklog(1, 1, 3))
+
+    monkeypatch.setattr(api.plugin.maintenance, "enqueue", enqueue)
+    submit_body(api)
+    response = payload(await api.submit(), 409)
+    assert "还差 2 条" in response["message"]
+    assert response["data"] == {"error_code": "extraction_window_pending", "pending_count": 1, "min_messages": 3}
+    assert await api.plugin.jobs.list() == []
 
 
 @pytest.mark.asyncio

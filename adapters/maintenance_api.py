@@ -10,6 +10,7 @@ from typing import Any
 from astrbot.api.web import error_response, json_response, request
 
 try:
+    from ..core.extraction_window import ExtractionWindowPending
     from ..core.model_routing import ModelSelectionRequired
     from ..storage.topic_store import TopicStore
     from ..storage.console_store import ConsoleStore
@@ -17,6 +18,7 @@ try:
     from ..storage.governance_store import validate_operation
     from ..storage.job_store import JobConflict, inspection_checkpoint
 except ImportError:
+    from core.extraction_window import ExtractionWindowPending
     from core.model_routing import ModelSelectionRequired
     from storage.topic_store import TopicStore
     from storage.console_store import ConsoleStore
@@ -76,6 +78,9 @@ def _guard(handler):
                                   data={"error_code": "maintenance_not_found"})
         except ModelSelectionRequired:
             return error_response("请选择本次任务使用的模型。", status_code=400, data={"error_code": "model_required"})
+        except ExtractionWindowPending as waiting:
+            return error_response(str(waiting), status_code=409, data={"error_code": "extraction_window_pending",
+                                  "pending_count": waiting.pending, "min_messages": waiting.minimum})
         except (ValueError, TypeError):
             return error_response("请求字段无效，请检查必填项、范围和治理载荷格式。", status_code=400,
                                   data={"error_code": "invalid_maintenance_request"})
@@ -189,8 +194,8 @@ class MaintenanceAPI:
     @_guard
     async def extraction_backlog(self):
         space = await self._space(request.query.get("space_id"))
-        count = await self.plugin.maintenance.pending_source_count(space)
-        return json_response({"pending_count": count})
+        backlog = await self.plugin.maintenance.extraction_backlog(space)
+        return json_response({"pending_count": backlog.pending, "hint": backlog.hint})
 
     @_guard
     async def topic_rebuild_preview(self):
@@ -239,7 +244,8 @@ class MaintenanceAPI:
         else:
             space = await self._space(body.get("space_id"))
             kind, include_topics = self._sections(_text(body.get("kind")), body, space)
-        return json_response(await self.plugin.maintenance.model_preview(kind, space, include_topics=include_topics))
+        return json_response(await self.plugin.maintenance.model_preview(
+            kind, space, include_topics=include_topics, retry="job_id" in body))
 
     @_guard
     async def submit(self):

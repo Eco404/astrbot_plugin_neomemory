@@ -14,6 +14,32 @@ from dataclasses import dataclass
 from typing import Literal
 
 
+@dataclass(frozen=True, slots=True)
+class ExtractionBacklog:
+    pending: int
+    largest_stream: int
+    minimum: int
+
+    @property
+    def hint(self) -> str:
+        if not self.pending:
+            return f"当前没有待抽取消息。同一会话至少需要 {self.minimum} 条。"
+        detail = f"当前有 {self.pending} 条待抽取消息"
+        if self.largest_stream < self.pending:
+            detail += f"，单个会话最多 {self.largest_stream} 条"
+        if self.largest_stream < self.minimum:
+            return f"{detail}。同一会话至少需要 {self.minimum} 条，还差 {self.minimum - self.largest_stream} 条。"
+        return f"{detail}。已达到同一会话至少 {self.minimum} 条的整理要求。"
+
+
+class ExtractionWindowPending(ValueError):
+    def __init__(self, backlog: ExtractionBacklog):
+        self.pending = backlog.pending
+        self.minimum = backlog.minimum
+        message = backlog.hint if backlog.largest_stream < backlog.minimum else "尚未选出可整理的消息，请稍后重试。"
+        super().__init__(message)
+
+
 def _nonnegative_finite(value: float, name: str) -> None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a finite nonnegative number")

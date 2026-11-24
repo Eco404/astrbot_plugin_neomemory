@@ -1,4 +1,4 @@
-import { $, element, enhanceSelect } from './ui.js';
+import { $, element, enhanceSelect, notify } from './ui.js';
 
 const bases = { space: '来自空间设置', plugin: '来自插件设置', chat: '来自对话窗口', topic: '来自主题模型设置',
   short_term: '来自短期模型设置', session_config: '按会话配置选择', request_provider: '来自对话请求' };
@@ -69,8 +69,11 @@ export function initTaskModels(ui) {
     if (dialog.open) return null;
     const id = ++request, epoch = ui.epoch();
     const body = job_id ? { job_id } : { kind, space_id, ...(sections && { sections }) };
-    const [preview, models, impact] = await Promise.all([
-      ui.bridge.apiPost('tasks/model-preview', body), ui.bridge.apiGet('models'),
+    const preview = await ui.bridge.apiPost('tasks/model-preview', body);
+    if (id !== request || !ui.current(epoch) || ui.page() !== 'maintenance') return null;
+    if (preview.waiting_message) { notify(preview.waiting_message); return null; }
+    const [models, impact] = await Promise.all([
+      ui.bridge.apiGet('models'),
       sections?.includes('topics') || kind === 'topic_rebuild' ? ui.bridge.apiGet('topics/rebuild-preview', { space_id }) : null,
     ]);
     if (id !== request || !ui.current(epoch) || ui.page() !== 'maintenance') return null;
