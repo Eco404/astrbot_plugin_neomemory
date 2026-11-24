@@ -132,12 +132,11 @@ async def test_candidate_evidence_tracks_real_commit_and_rejection(tmp_path, mon
             return "not-json"
         source = payload["sources"][0]
         known = payload["known_profiles"]
-        return json.dumps({"schema_version": "extraction.v1", "result": "changes",
-            "reason": "changes", "node_changes": [], "edges": [], "coverage_changes": [],
+        assert all("content_version" not in profile for profile in known)
+        return json.dumps({"node_changes": [], "edges": [], "coverage_changes": [],
             "relationship_change": None, "profile_changes": [{
                 "logical_user_id": source["actor_logical_user_id"],
-                "expected_version": known[0]["content_version"] if known else 0,
-                "description": "合成画像", "tags": [],
+                "description": "补充后的合成画像" if known else "初始合成画像", "tags": [],
                 "source_ids": ["unknown-source" if fault else source["source_id"]],
             }]})
 
@@ -163,6 +162,11 @@ async def test_candidate_evidence_tracks_real_commit_and_rejection(tmp_path, mon
     else:
         assert second["candidate_diagnostics"]["status"] == "profiles_applied"
         assert second["candidate_diagnostics"]["consistency_ok"] is True
+        case = json.loads((writer.directory / (second["name"] + ".json")).read_text())
+        before, = case["before"]["profiles"]
+        after, = case["after"]["profiles"]
+        assert after["content_version"] == before["content_version"] + 1
+        assert after["description"] == "补充后的合成画像"
 
 
 def test_selection_fixtures_keep_optional_and_required_coverage_separate():
