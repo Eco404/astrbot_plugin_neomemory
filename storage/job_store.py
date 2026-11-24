@@ -611,7 +611,7 @@ class JobStore:
         for progress in checkpoint.get("section_progress", {}).values():
             if progress["state"] != "succeeded":
                 progress.update(state="queued", attempt=1)
-                for field in ("available_at", "error_code", "retry_exhausted", "consecutive_failures"):
+                for field in ("available_at", "error_code", "retry_exhausted", "consecutive_failures", "retry_progress"):
                     progress.pop(field, None)
         return _checkpoint_json(checkpoint)
 

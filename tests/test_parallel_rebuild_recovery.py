@@ -290,3 +290,33 @@ async def test_local_queue_wait_preserves_branch_network_budget_across_restart(e
     assert restarted and context_calls == 1
     assert result["result"]["section_progress"]["topics"]["attempt"] == actual_attempts == limit + 3
     assert all(request == topic_requests[0] for request in topic_requests)
+
+
+@pytest.mark.asyncio
+async def test_branch_storage_and_provider_failures_have_separate_streaks(environment, monkeypatch):
+    from core.jobs import ModelNetworkError, RetryableJobError
+
+    env = environment
+    await seed(env)
+    job = await enqueue_and_claim(env, "profile_rebuild", include_topics=True)
+    stages = iter([("topic_model", ModelNetworkError("provider_temporary_failure")),
+                   ("topic_index", RetryableJobError("storage_busy"))])
+    async def topics(worker, lane):
+        stage, error = next(stages)
+        await worker._save(lane, {}, stage)
+        raise error
+
+    async def context(worker, lane):
+        return {"source_count": 0}
+
+    monkeypatch.setattr(type(env.engine), "_replace_topics", topics)
+    monkeypatch.setattr(type(env.engine), "_replay_rebuild", context)
+    now = [env.engine.jobs.clock()]
+    monkeypatch.setattr(env.engine.jobs, "clock", lambda: now[0])
+    for code in ("provider_temporary_failure", "storage_busy"):
+        waiting = await execute(env, job)
+        assert waiting["state"] == "retry_wait" and waiting["available_at"] == now[0] + 5
+        entry = waiting["checkpoint"]["section_progress"]["topics"]
+        assert entry["error_code"] == code and entry["consecutive_failures"] == 1
+        now[0] = waiting["available_at"]
+        job = await env.engine.jobs.claim("next", lease_seconds=60)

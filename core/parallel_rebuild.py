@@ -54,10 +54,14 @@ async def rebuild_sections(engine, job):
                     entry["attempt"] -= 1
                     delay = engine.jobs.retry_delay(1)
                 else:
+                    network_failure = isinstance(exc, ModelNetworkError)
+                    point = [entry["step"], entry["done"], "network" if network_failure else code]
                     consecutive = entry.get("consecutive_failures", entry["attempt"] - 1) + 1
-                    entry["consecutive_failures"] = consecutive
+                    if entry.get("retry_progress", point) != point:
+                        consecutive = 1
+                    entry.update(retry_progress=point, consecutive_failures=consecutive)
                     delay = engine.jobs.next_retry_delay(consecutive, job["max_attempts"],
-                        retryable=temporary, model_network=isinstance(exc, ModelNetworkError))
+                        retryable=temporary, model_network=network_failure)
                 if delay is None:
                     entry.update(state="failed", error_code=code, retry_exhausted=temporary)
                 else:
