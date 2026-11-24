@@ -225,12 +225,14 @@ class WindowObserver:
             "prompt_sha256": digest(messages),
             "known_node_versions": [{"node_id": node["node_id"], "content_version": node["content_version"],
                                      "content_sha256": hashlib.sha256(node["content_text"].encode()).hexdigest()}
-                                    for node in payload["known_nodes"]],
+                                    for node in self.batch.known_nodes],
             "known_profiles": payload["known_profiles"],
             "known_relationship": payload["known_relationship"],
         }
         if self.regeneration is not None:
             self.current["model_input"]["regeneration"] = dict(self.regeneration)
+            record["regeneration"] = dict(self.regeneration)
+        record["input_digest"] = self.batch.input_digest
         try:
             raw = await self.original_generate(messages, **kwargs)
         except BaseException as exc:
@@ -415,7 +417,7 @@ async def replay(source_db, persona_file, output_dir, *, run=False, max_windows=
             job = await engine.jobs.submit("rebuild", space["space_id"], payload, "recorded-replay-prefix", max_attempts=1)
             await engine.runner.start()
             job, transitions = await wait_terminal(engine, kind="rebuild", job_id=job["job_id"],
-                timeout=len(selected) * config.extraction_timeout_seconds + 60)
+                timeout=len(selected) * config.extraction_timeout_seconds + 60, stop_on_retry=True)
             report["job_transitions"] = transitions
             report["job"] = {key: job[key] for key in ("state", "step", "progress_done", "progress_total", "attempt", "max_attempts", "error_type", "error_code")}
             report["windows"] = observer.windows

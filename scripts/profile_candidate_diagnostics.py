@@ -17,7 +17,7 @@ from typing import Any
 from core.extraction_apply import digest
 from core.extraction_references import ExtractionReferences, ReferenceValidationError
 from core.extraction_regeneration import build_messages
-from core.extraction_schema import MAX_OUTPUT_CHARS, parse_extraction_output
+from core.extraction_schema import MAX_OUTPUT_CHARS, parse_extraction_output, parse_extraction_output_for_context
 
 MAX_RECORDS = 8
 # These maintenance errors follow a rejected apply operation. Transport errors,
@@ -128,7 +128,11 @@ class CandidateRecorder:
             record.update(status="invalid_output", invalid_kind="oversize")
             return
         try:
-            output = parse_extraction_output(raw).model_dump(mode="json")
+            if references is None:
+                candidate = parse_extraction_output(raw)
+            else:
+                candidate = parse_extraction_output_for_context(raw, references.batch, validate_supplied_versions=False)
+            output = candidate.model_dump(mode="json")
         except ValueError:
             record.update(status="invalid_output", invalid_kind="schema")
             return

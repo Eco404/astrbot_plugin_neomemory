@@ -28,7 +28,8 @@ except ImportError:
     from verify_stage4_api import credentials, failure
 
 
-async def wait_terminal(engine, *, kind: str, job_id: str | None = None, timeout: float = 150) -> tuple[dict, list[str]]:
+async def wait_terminal(engine, *, kind: str, job_id: str | None = None, timeout: float = 150,
+                        stop_on_retry: bool = False) -> tuple[dict, list[str]]:
     """Observe the real background runner; no handler is invoked by the probe."""
     seen = []
     async with asyncio.timeout(timeout):
@@ -40,7 +41,8 @@ async def wait_terminal(engine, *, kind: str, job_id: str | None = None, timeout
                 marker = f"{job['state']}:{job['step']}"
                 if not seen or seen[-1] != marker:
                     seen.append(marker)
-                if job["state"] not in {"queued", "running", "retry_wait"}:
+                if job["state"] not in {"queued", "running", "retry_wait"} or (
+                        stop_on_retry and job["state"] == "retry_wait"):
                     return job, seen
             await asyncio.sleep(0.1)
 

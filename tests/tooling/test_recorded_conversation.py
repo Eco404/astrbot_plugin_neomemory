@@ -45,10 +45,8 @@ def fake_factory(monkeypatch, *, fail_call=None, malformed=False, profile=False)
                 return "PRIVATE_INVALID_OUTPUT"
             output = no_change()
             if profile:
-                old = payload["known_profiles"]
                 output.update(result="changes", reason="changes", profile_changes=[{
                     "logical_user_id": payload["space"]["logical_user_id"],
-                    "expected_version": old[0]["content_version"] if old else 0,
                     "tags": ["PRIVATE_TAG"], "description": f"PRIVATE_PROFILE_{len(calls)}",
                     "source_ids": [next(row["source_id"] for row in payload["sources"] if row["actor_kind"] == "user")],
                 }])
@@ -120,6 +118,7 @@ async def test_bounded_prefix_uses_background_rebuild_and_retains_private_eviden
         assert all(row["sequence_no"] <= index * 40 for row in payload["sources"])
     assert calls[0]["known_profiles"] == []
     assert calls[1]["known_profiles"][0]["description"] == "PRIVATE_PROFILE_1"
+    assert "content_version" not in calls[1]["known_profiles"][0]
     with sqlite3.connect(output / "memory.db") as db:
         assert db.execute("SELECT COUNT(*) FROM extraction_batches").fetchone()[0] == 2
         assert db.execute("SELECT COUNT(*) FROM memory_jobs").fetchone()[0] == 1
@@ -127,7 +126,7 @@ async def test_bounded_prefix_uses_background_rebuild_and_retains_private_eviden
 
 
 @pytest.mark.asyncio
-async def test_first_failure_stops_and_preserves_committed_prefix_and_failed_job(tmp_path, monkeypatch):
+async def test_first_network_failure_stops_and_preserves_committed_prefix_and_retry_state(tmp_path, monkeypatch):
     source, persona = await source_fixture(tmp_path)
     calls, closes = fake_factory(monkeypatch, fail_call=2)
     output = tmp_path / "failed"
@@ -135,7 +134,7 @@ async def test_first_failure_stops_and_preserves_committed_prefix_and_failed_job
     assert report["state"] == "failed" and not report["structure_ok"]
     assert len(calls) == 2 and len(closes) == 2
     assert report["consumed_sources"] == 40 and report["untested_sources"] == 45
-    assert report["job"]["state"] == "failed" and report["job"]["attempt"] == 1
+    assert report["job"]["state"] == "retry_wait" and report["job"]["attempt"] == 1
     assert report["job"]["error_code"] == "provider_temporary_failure"
     assert report["generation_activated"] is False
     assert "PRIVATE_PROVIDER_FAILURE" not in json.dumps(report)
