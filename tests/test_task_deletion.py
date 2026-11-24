@@ -341,9 +341,20 @@ async def test_delete_topic_rebuild_only_evicts_unpublished_draft_vectors(enviro
 @pytest.mark.asyncio
 async def test_clear_completed_after_scoped_generation_retires(environment):
     env = environment
-    env.adapter.output = '{"profile_changes":[]}'
+    scope = env.space["space_id"]
+    env.adapter.output = json.dumps({"profile_changes": [{
+        "logical_user_id": "u1", "source_ids": ["s1"], "tags": ["指挥"],
+        "description": "担任合唱团指挥。", "remove_tags": [], "remove_sentences": [],
+    }]})
     claimed = await enqueue_and_claim(env, "profile_rebuild")
     assert (await execute(env, claimed))["state"] == "succeeded"
-    result = await env.engine.clear_completed(scope_key=env.space["space_id"])
+    profile, = await env.memory.list_profiles(space_id=scope)
+    versions = await env.memory.list_profile_versions(profile["profile_id"])
+    assert versions and versions[0]["derivations"][0]["sources"]
+
+    result = await env.engine.clear_completed(scope_key=scope)
     assert result["deleted_count"] == 1
     assert await env.engine.jobs.get(claimed["job_id"]) is None
+    assert await env.memory.list_profiles(space_id=scope) == [profile]
+    assert await env.memory.list_profile_versions(profile["profile_id"]) == versions
+    assert (await env.engine.clear_completed(scope_key=scope))["deleted_count"] == 0
