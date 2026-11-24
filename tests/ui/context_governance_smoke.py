@@ -13,6 +13,8 @@ from tests.ui.full_smoke import MOCK_BRIDGE, QuietHandler
 CONTEXT = r"""
 const get = window.AstrBotPluginView.apiGet;
 window.AstrBotPluginView.apiGet=async(endpoint,args={})=>{
+ if(endpoint==='memory/profile-users')return {items:args.space_id==='group'?[]:[
+  {logical_user_id:'user-1',display_name:'小林'},{logical_user_id:'user-2',display_name:'明月'}]};
  if(endpoint!=='memory/context')return get(endpoint,args);
  const base={generation_id:'gen-1',status:'active',content_version:3,updated_at:200,logical_user_name:'小林'};
  const slots={format:'relationship.slots.v1',long_term:{body:'我愿意听{{user:user-1}}慢慢说。'},aftereffect:{body:'我还在惦记这次谈话。'}};
@@ -23,6 +25,7 @@ window.AstrBotPluginView.apiGet=async(endpoint,args={})=>{
  if(args.kind==='profiles'){
   if(args.space_id==='space-1' && window.deferProfiles)await new Promise(resolve=>window.releaseProfiles=resolve);
   if(args.space_id==='group')return {items:[],has_more:false};
+  if(args.logical_user_id==='user-2')return {items:[{...base,logical_user_name:'明月',profile_id:'profile-2',description:'热爱阅读',tags:[]}],has_more:false};
   return {items:[{...base,profile_id:'profile-1',description:'平日徒步',tags:['户外']}],has_more:false};
  }
  return {items:[{...base,state_id:'summary-1',conversation_id:'host.v1:opaque',summary_text:'周末的安排'}],has_more:false};
@@ -36,6 +39,13 @@ async def check_context_governance(page):
     operations = 'testCalls.filter(c => c.body.operation?.entity_kind)'
 
     profile = page.locator('[data-context-governance="profiles"] article').first
+    tabs = page.get_by_role('tablist', name='人工记忆治理')
+    await tabs.get_by_role('tab', name='用户画像').click()
+    chooser = page.get_by_label('选择用户', exact=True)
+    await chooser.select_option('user-2')
+    await profile.get_by_text('热爱阅读').wait_for()
+    await chooser.select_option('user-1')
+    await profile.get_by_text('平日徒步').wait_for()
     await profile.get_by_role('button', name='编辑', exact=True).click()
     await profile.get_by_label('画像正文').fill('每周末徒步')
     await profile.get_by_label('标签').fill('户外\n远足')
@@ -53,6 +63,7 @@ async def check_context_governance(page):
     await manual.click()
 
     relationship = page.locator('[data-context-governance="relationships"] article').first
+    await tabs.get_by_role('tab', name='人格关系').click()
     await relationship.get_by_role('button', name='编辑', exact=True).click()
     assert await relationship.get_by_label('长期理解').input_value() == '我愿意听{{user:user-1}}慢慢说。'
     await relationship.get_by_label('近期余韵').fill('我很期待。')
@@ -65,6 +76,7 @@ async def check_context_governance(page):
     await manual.click()
 
     summary = page.locator('[data-context-governance="short_term"] article').first
+    await tabs.get_by_role('tab', name='短期记忆').click()
     await summary.get_by_role('button', name='删除', exact=True).click()
     await summary.get_by_role('button', name='取消', exact=True).click()
     assert await page.evaluate(operations + '.length') == 2
@@ -77,6 +89,7 @@ async def check_context_governance(page):
     await tasks.wait_for()
     await manual.click()
     await page.evaluate("window.deferProfiles=true")
+    await tabs.get_by_role('tab', name='用户画像').click()
     await manual.click()
     await page.wait_for_function("typeof window.releaseProfiles === 'function'")
     await page.select_option('#space', 'group')
@@ -84,10 +97,15 @@ async def check_context_governance(page):
     await page.evaluate("window.deferProfiles=false; releaseProfiles()")
     assert await profile.count() == 0
     assert not await page.evaluate("relationshipSpaces.includes('group')")
-    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth"), await page.evaluate(
+        "[...document.querySelectorAll('body *')].filter(el=>el.getBoundingClientRect().right>innerWidth).map(el=>el.id||el.tagName).slice(-25)")
     assert not await page.locator('[data-context-governance="relationships"]').is_visible()
     await page.select_option('#space', 'space-1')
+    await tabs.get_by_role('tab', name='人格关系').click()
     await relationship.wait_for()
+    await page.select_option('#space', 'group')
+    assert await tabs.get_by_role('tab', name='人格关系').count() == 0
+    assert await tabs.get_by_role('tab', name='长期记忆').get_attribute('aria-selected') == 'true'
 
 
 async def main():

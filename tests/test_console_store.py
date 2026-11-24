@@ -238,6 +238,9 @@ async def test_same_nickname_search_preserves_identity_and_filters_scope_and_gen
     await memory.upsert_profile(space_id=other["space_id"], logical_user_id=first_uid,
         tags=[], description=first_ref + "的其他人格资料。")
     profiles = (await console.context(group["space_id"], "profiles", q="Alice"))["items"]
+    choices = await console.profile_users(group["space_id"])
+    assert {(it["display_name"], it["logical_user_id"]) for it in choices} == {("Alice", first_uid), ("Alice", "second-member")}
+    assert [it["logical_user_id"] for it in (await console.context(group["space_id"], "profiles", logical_user_id=first_uid))["items"]] == [first_uid]
     assert {item["logical_user_id"] for item in profiles} == {first_uid, "second-member"}
     assert all(item["space_id"] == group["space_id"] for item in profiles)
 

@@ -44,9 +44,10 @@ def payload(response, status=200):
 def test_registration_uses_authenticated_host_bridge(api):
     routes = []
     api.register(SimpleNamespace(register_web_api=lambda *args: routes.append(args)))
-    assert len(routes) == 4
+    assert len(routes) == 5
     assert {(row[0], tuple(row[2])) for row in routes} == {
         ("/astrbot_plugin_neomemory/memory/context", ("GET",)),
+        ("/astrbot_plugin_neomemory/memory/profile-users", ("GET",)),
         ("/astrbot_plugin_neomemory/memory/source", ("GET",)),
         ("/astrbot_plugin_neomemory/notes", ("GET",)),
         ("/astrbot_plugin_neomemory/notes", ("POST",)),
@@ -59,6 +60,10 @@ async def test_profile_context_and_empty_note_reads(api):
     store = api.plugin.console_store.memory
     await store.upsert_profile(space_id=api.test_space["space_id"], logical_user_id="u", tags=["coder"], description="Hello")
     api.test_query["kind"] = "profiles"
+    assert payload(await api.profile_users())["items"][0]["logical_user_id"] == "u"
+    api.test_query["logical_user_id"] = "another-user"
+    assert payload(await api.context())["items"] == []
+    api.test_query["logical_user_id"] = "u"
     result = payload(await api.context())
     assert result["items"][0]["tags"] == ["coder"]
     assert payload(await api.notes())["items"] == []

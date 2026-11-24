@@ -48,7 +48,8 @@ class ConsoleAPI:
         if not callable(register):
             return
         for endpoint, method, handler in (
-            ("memory/context", "GET", self.context), ("memory/source", "GET", self.source),
+            ("memory/context", "GET", self.context), ("memory/profile-users", "GET", self.profile_users),
+            ("memory/source", "GET", self.source),
             ("notes", "GET", self.notes), ("notes", "POST", self.submit_note),
         ):
             register(f"{PREFIX}/{endpoint}", handler, [method], f"NeoMemory console {endpoint}")
@@ -68,7 +69,15 @@ class ConsoleAPI:
     async def context(self):
         space_id = _text(request.query.get("space_id"), maximum=256)
         kind = _text(request.query.get("kind"))
-        return json_response(await self.plugin.console_store.context(space_id, kind, **self._page(default_status="all")))
+        options = self._page(default_status="all")
+        if "logical_user_id" in request.query:
+            options["logical_user_id"] = _text(request.query["logical_user_id"], maximum=256)
+        return json_response(await self.plugin.console_store.context(space_id, kind, **options))
+
+    @_guard
+    async def profile_users(self):
+        space_id = _text(request.query.get("space_id"), maximum=256)
+        return json_response({"items": await self.plugin.console_store.profile_users(space_id)})
 
     @_guard
     async def source(self):

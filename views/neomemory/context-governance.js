@@ -1,4 +1,4 @@
-import { button, date, element, labels } from './ui.js';
+import { button, date, element, enhanceSelect, labels, setupTabs, shortLogicalUserId } from './ui.js';
 
 const kinds = {
   profiles: { entity: 'profile', key: 'profile_id', name: '用户画像', fields: [['description', '画像正文'], ['tags', '标签（每行一个）']] },
@@ -88,6 +88,9 @@ function recordCard(record, kind, submit) {
 
 export function initContextGovernance(ui, submit) {
   const sections = [...document.querySelectorAll('[data-context-governance]')];
+  const tabs = [...document.querySelectorAll('[data-governance-tab]')];
+  const profileUser = document.getElementById('governance-profile-user');
+  profileUser.addEventListener('change', () => load(profileUser.closest('[role="tabpanel"]'), 0, false));
   const offsets = new Map(), requests = new Map(), limit = 10;
   let available = false;
   function setAvailable(value) {
@@ -95,20 +98,51 @@ export function initContextGovernance(ui, submit) {
     for (const editor of document.querySelectorAll('.context-governance-editor')) editor.disabled = !available;
   }
   const visible = () => ui.page() === 'maintenance' && document.querySelector('[data-maintenance-tab="manual"]').getAttribute('aria-selected') === 'true';
+  const selectTab = setupTabs('[data-governance-tab]', (tab, loadContent = true) => {
+    const visibleTabs = tabs.filter(item => !item.hidden);
+    tab.parentElement.style.setProperty('--segments', visibleTabs.length);
+    tab.parentElement.style.setProperty('--active-segment', visibleTabs.indexOf(tab));
+    for (const item of tabs) document.getElementById(item.getAttribute('aria-controls')).hidden = item !== tab;
+    const pane = document.getElementById(tab.getAttribute('aria-controls'));
+    if (loadContent && pane.dataset.contextGovernance && !pane.querySelector('.context-records').childElementCount) refresh();
+  });
   function changed() {
     offsets.clear(); requests.clear();
+    profileUser.replaceChildren(); profileUser.disabled = true;
     for (const section of sections) section.querySelector('.context-records').replaceChildren();
+    const relationship = tabs.find(tab => tab.dataset.governanceTab === 'relationships');
+    relationship.hidden = ui.spaceType() !== 'private';
+    selectTab(tabs.find(tab => !tab.hidden && tab.getAttribute('aria-selected') === 'true') || tabs[0], false);
   }
-  async function load(section, offset) {
+  async function load(section, offset, reloadUsers = true) {
     const kind = section.dataset.contextGovernance, list = section.querySelector('.context-records');
-    section.hidden = !visible() || (kind === 'relationships' && ui.spaceType() !== 'private');
-    if (section.hidden) return;
     const epoch = ui.epoch(), space = ui.space(), request = (requests.get(kind) || 0) + 1;
     requests.set(kind, request);
     list.replaceChildren(element('p', space ? '正在读取…' : '请先选择记忆空间。', 'muted'));
     if (!space) return;
     try {
-      const result = await ui.bridge.apiGet('memory/context', { kind, space_id: space, offset, limit });
+      const args = { kind, space_id: space, offset, limit };
+      if (kind === 'profiles') {
+        if (reloadUsers) {
+          profileUser.disabled = true;
+          const { items } = await ui.bridge.apiGet('memory/profile-users', { space_id: space });
+          if (!ui.current(epoch) || requests.get(kind) !== request) return;
+          const previous = profileUser.value, names = new Map();
+          for (const user of items) names.set(user.display_name, (names.get(user.display_name) || 0) + 1);
+          profileUser.replaceChildren(...items.map(user => {
+            const name = names.get(user.display_name) > 1 ? user.display_name + ' · ' + shortLogicalUserId(user.logical_user_id) : user.display_name;
+            return new Option(name, user.logical_user_id);
+          }));
+          if (items.some(user => user.logical_user_id === previous)) profileUser.value = previous;
+          profileUser.disabled = !items.length;
+          enhanceSelect(profileUser);
+        }
+        if (!profileUser.value) {
+          list.replaceChildren(element('p', '当前空间暂无用户画像。', 'muted')); return;
+        }
+        args.logical_user_id = profileUser.value;
+      }
+      const result = await ui.bridge.apiGet('memory/context', args);
       if (!ui.current(epoch) || requests.get(kind) !== request) return;
       if (!result.items.length && offset) return load(section, Math.max(0, offset - limit));
       offsets.set(kind, offset); list.replaceChildren();
@@ -128,7 +162,8 @@ export function initContextGovernance(ui, submit) {
     }
   }
   function refresh() {
-    if (visible()) return Promise.all(sections.map(section => load(section, offsets.get(section.dataset.contextGovernance) || 0)));
+    const section = sections.find(item => !item.hidden);
+    if (section && visible()) return load(section, offsets.get(section.dataset.contextGovernance) || 0);
   }
   return { refresh, changed, setAvailable };
 }

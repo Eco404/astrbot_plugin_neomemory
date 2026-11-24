@@ -202,7 +202,14 @@
     </details>
   </section>
   <section data-maintenance-content="manual" hidden>
-    <h2 class="section-title"><span data-icon="memory" aria-hidden="true"></span>长期记忆治理</h2>
+    <h2 id="governance-title" class="section-title"><span data-icon="memory" aria-hidden="true"></span>人工记忆治理</h2>
+    <div class="switches governance-tabs" role="tablist" aria-labelledby="governance-title">
+      <button id="govern-nodes" data-governance-tab="nodes" role="tab" aria-controls="governance-nodes" aria-selected="true">长期记忆</button>
+      <button id="govern-profiles" data-governance-tab="profiles" role="tab" aria-controls="governance-profiles" aria-selected="false" tabindex="-1">用户画像</button>
+      <button id="govern-relationships" data-governance-tab="relationships" role="tab" aria-controls="governance-relationships" aria-selected="false" tabindex="-1" hidden>人格关系</button>
+      <button id="govern-short-term" data-governance-tab="short_term" role="tab" aria-controls="governance-short-term" aria-selected="false" tabindex="-1">短期记忆</button>
+    </div>
+    <div id="governance-nodes" role="tabpanel" aria-labelledby="govern-nodes">
     <p class="muted">当前代的全部状态均可查阅。禁用停止召回并可恢复；删除会保留墓碑和来源，不能用恢复按钮撤销。人工保护独立于状态。</p>
     <div class="grid">
       <div>
@@ -233,18 +240,13 @@
         <button id="governance" class="mutation primary" disabled>提交治理任务</button>
       </fieldset>
     </div>
-  </section>
-  <section data-maintenance-content="manual" data-context-governance="profiles" aria-labelledby="profile-governance-title" hidden>
-    <h2 class="section-title" id="profile-governance-title"><span data-icon="notes" aria-hidden="true"></span>用户画像治理</h2>
-    <div class="context-records"></div>
-  </section>
-  <section data-maintenance-content="manual" data-context-governance="relationships" aria-labelledby="relationship-governance-title" hidden>
-    <h2 class="section-title" id="relationship-governance-title"><span data-icon="memory" aria-hidden="true"></span>人格关系治理</h2>
-    <div class="context-records"></div>
-  </section>
-  <section data-maintenance-content="manual" data-context-governance="short_term" aria-labelledby="short-term-governance-title" hidden>
-    <h2 class="section-title" id="short-term-governance-title"><span data-icon="clock" aria-hidden="true"></span>短期记忆治理</h2>
-    <div class="context-records"></div>
+    </div>
+    <div id="governance-profiles" role="tabpanel" data-context-governance="profiles" aria-labelledby="govern-profiles" hidden>
+      <label><span id="governance-profile-label">选择用户</span><select id="governance-profile-user" aria-labelledby="governance-profile-label" disabled></select></label>
+      <div class="context-records"></div>
+    </div>
+    <div id="governance-relationships" role="tabpanel" data-context-governance="relationships" aria-labelledby="govern-relationships" hidden><div class="context-records"></div></div>
+    <div id="governance-short-term" role="tabpanel" data-context-governance="short_term" aria-labelledby="govern-short-term" hidden><div class="context-records"></div></div>
   </section>
   <section data-maintenance-content="recall" hidden aria-labelledby="recall-test-title">
     <h2 class="section-title" id="recall-test-title"><span data-icon="search" aria-hidden="true"></span>召回测试</h2>

@@ -440,6 +440,7 @@ async def context_governance_lifecycle(page, frame, harness):
         ('short_term', '摘要正文', 'Continue discussing the timetable.'),
     ):
         section = frame.locator(f'[data-context-governance="{kind}"]')
+        await frame.locator(f'[data-governance-tab="{kind}"]').click()
         card = section.locator('article')
         await card.get_by_role('button', name='编辑', exact=True).click()
         await card.get_by_label(field, exact=True).fill(content)

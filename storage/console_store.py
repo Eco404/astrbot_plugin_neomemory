@@ -197,7 +197,17 @@ class ConsoleStore:
             result.append(rendered)
         return result
 
-    async def context(self, space_id, kind, *, status="all", q="", limit=50, offset=0):
+    async def profile_users(self, space_id):
+        async with self.memory.database.transaction(write=False) as connection:
+            space = await _space(connection, space_id)
+            cursor = await connection.execute(
+                "SELECT logical_user_id FROM user_profiles WHERE space_id=? AND generation_id=? "
+                "ORDER BY updated_at DESC,logical_user_id", (space_id, space["generation_id"]))
+            ids = [row["logical_user_id"] for row in await cursor.fetchall()]
+        names = await self.sources.get_user_display_names(ids) if self.sources and ids else {}
+        return [{"logical_user_id": uid, "display_name": names.get(uid, "未命名用户")} for uid in ids]
+
+    async def context(self, space_id, kind, *, status="all", q="", limit=50, offset=0, logical_user_id=None):
         _page(limit, offset, q)
         if kind not in _CONTEXT:
             raise ValueError("unknown context kind")
@@ -209,6 +219,11 @@ class ConsoleStore:
             space = await _space(connection, space_id)
             conditions = ["space_id=?", "generation_id=?"]
             parameters = [space_id, space["generation_id"]]
+            if logical_user_id is not None:
+                if kind != "profiles":
+                    raise ValueError("user selection requires profiles")
+                conditions.append("logical_user_id=?")
+                parameters.append(logical_user_id)
             if kind == "relationships" and space["space_type"] != "private":
                 return _listing(space, [], limit, offset, kind=kind, total=0)
             if kind == "short_term":
