@@ -354,6 +354,7 @@ MEMORY_SCHEMA = (
 
 
 MEMORY_FORMAT = 3
+MEMORY_FORMAT_REVISION = "v4-dev.1"
 
 MEMORY_V3_MIGRATION = (
     "ALTER TABLE memory_jobs ADD COLUMN automatic_origin INTEGER NOT NULL DEFAULT 0",
@@ -373,9 +374,7 @@ async def initialize_memory_schema(database):
 
     async with database.transaction() as connection:
         version, = await (await connection.execute("PRAGMA user_version")).fetchone()
-        if version == MEMORY_FORMAT:
-            return version
-        if version not in (0, 1, 2):
+        if version not in (0, 1, 2, MEMORY_FORMAT):
             raise RuntimeError(f"Unsupported memory.db schema version: {version}")
         if version == 0:
             for statement in MEMORY_SCHEMA:
@@ -383,7 +382,19 @@ async def initialize_memory_schema(database):
         if version < 2:
             for statement in POLICY_SCHEMA:
                 await connection.execute(statement)
-        for statement in MEMORY_V3_MIGRATION:
-            await connection.execute(statement)
-        await connection.execute(f"PRAGMA user_version = {MEMORY_FORMAT}")
+        if version < MEMORY_FORMAT:
+            for statement in MEMORY_V3_MIGRATION:
+                await connection.execute(statement)
+            await connection.execute(f"PRAGMA user_version = {MEMORY_FORMAT}")
+        revision = await (await connection.execute(
+            "SELECT json_extract(value_json,'$') FROM pipeline_state WHERE state_key='memory_format_revision'"
+        )).fetchone()
+        if revision is None:
+            for field in ("topic_follow_main", "short_term_follow_main"):
+                await connection.execute(f"ALTER TABLE space_policies ADD COLUMN {field} INTEGER NOT NULL DEFAULT 0")
+            await connection.execute(
+                "INSERT INTO pipeline_state VALUES ('memory_format_revision',json_quote(?),unixepoch())",
+                (MEMORY_FORMAT_REVISION,))
+        elif revision[0] != MEMORY_FORMAT_REVISION:
+            raise RuntimeError(f"Unsupported memory.db development revision: {revision[0]}")
     return MEMORY_FORMAT

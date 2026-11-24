@@ -13,11 +13,10 @@ from tests.ui.full_smoke import MOCK_BRIDGE, QuietHandler
 POLICY = r"""
 const get = window.AstrBotPluginView.apiGet, post = window.AstrBotPluginView.apiPost;
 const persona = {shared_recall_enabled:false,allow_group_read_private:false,external_limit:2,external_budget_percent:20};
-const defaults = {...persona, exclude_from_shared_recall:false,model_mode:'inherit',provider_id:'',topic_provider_id:'',short_term_provider_id:''};
+const defaults = {...persona, exclude_from_shared_recall:false,model_mode:'inherit',provider_id:'',topic_provider_id:'',short_term_provider_id:'',topic_follow_main:false,short_term_follow_main:false};
 const policies = {};
 function policy(id) {
- return {space_id:id,persona_id:'demo',defaults,...persona,exclude_from_shared_recall:false,model_mode:'inherit',
-   provider_id:'',topic_provider_id:'',short_term_provider_id:'',shared_spaces:persona.shared_recall_enabled ? [{space_id:'space-1',display_label:'林川'}] : [],...policies[id]};
+ return {space_id:id,persona_id:'demo',defaults,...defaults,...persona,shared_spaces:persona.shared_recall_enabled ? [{space_id:'space-1',display_label:'林川'}] : [],...policies[id]};
 }
 window.AstrBotPluginView.apiGet = async (endpoint,args) => endpoint==='space/policy' ? policy(args.space_id) : get(endpoint,args);
 window.AstrBotPluginView.apiPost = async (endpoint,body) => {
@@ -54,11 +53,15 @@ async def main():
             short_term = page.locator('#policy-short_term_provider_id')
             assert await page.locator('#policy-space-fields select').count() == 3
             for field in (topic, short_term):
-                await expect(field.locator('option:checked')).to_have_text('未指定：跟随主模型')
-                await field.select_option('llm-1')
+                await expect(field.locator('option:checked')).to_have_text('继承插件设置')
+                await field.select_option('main')
+                await expect(field.locator('option:checked')).to_have_text('跟随主模型')
+                await field.locator('..').locator('.reset-setting').click()
+                await expect(field).to_have_value('inherit')
+                await field.select_option('provider:llm-1')
             await page.locator('#policy-discard').click()
             for field in (topic, short_term):
-                await expect(field).to_have_value('')
+                await expect(field).to_have_value('inherit')
             for width in (1280, 390):
                 await page.set_viewport_size({'width': width, 'height': 844})
                 for group, reference, target in [
@@ -97,14 +100,15 @@ async def main():
             await expect(page.locator('#policy-save')).to_be_disabled()
             await page.locator('#policy-shared_recall_enabled').check()
             await page.locator('#policy-model_mode').select_option('provider:llm-1')
-            await short_term.select_option('llm-first')
+            await short_term.select_option('provider:llm-first')
+            await topic.select_option('main')
             await page.locator('#space').select_option('space-2')
             await page.get_by_role('button', name='留下继续编辑').click()
             await expect(page.locator('#space')).to_have_value('space-1')
             await page.locator('#policy-save').click()
             await expect(page.locator('#policy-save')).to_be_disabled()
             assert await page.evaluate('window.savedPolicy') == {
-                'space_id':'space-1', 'model_mode':'fixed', 'provider_id':'llm-1', 'short_term_provider_id':'llm-first', 'shared_recall_enabled':True,
+                'space_id':'space-1', 'model_mode':'fixed', 'provider_id':'llm-1', 'short_term_provider_id':'llm-first', 'topic_follow_main':True, 'shared_recall_enabled':True,
             }
             await page.locator('#space').select_option('space-2')
             await expect(page.locator('#policy-space-title')).to_contain_text('松子')

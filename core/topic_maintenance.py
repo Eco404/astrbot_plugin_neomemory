@@ -361,7 +361,7 @@ class TopicMaintenanceMixin:
                 policy = payload.get("model_policy")
                 if policy is None:
                     policy = topic_model_policy(await (stage_for or self.memory).get_space_policy(space["space_id"]),
-                                                self.config, payload.get("request", {}).get("model_selection", {}))
+                                                self.config)
                 route = fixed_route(policy, policy.get("default_provider_id", self.config.llm_provider_id),
                                     payload.get("request", {}).get("model_selection", {}), topic=True)
                 if not route and store.can_propose_changes(prepared):

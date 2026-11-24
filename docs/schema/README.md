@@ -1,6 +1,6 @@
 # NeoMemory 数据库结构
 
-memory.db 和 source.db 的 SQLite `user_version` 分别为 3 和 2，ingress.db 和 cache.db 为 1。首次打开旧正式版数据库时，各库在事务内完成迁移。数据目录由 AstrBot 的 `StarTools.get_data_dir("astrbot_plugin_neomemory")` 提供。每个文件独立记录 schema 版本。数据库结构版本用于识别文件格式，节点、画像和关系的内容版本则用于记录某个实体在使用过程中的修订。
+memory.db 和 source.db 的 SQLite `user_version` 分别为 3 和 2，ingress.db 和 cache.db 为 1。开发版在 memory.db 的 `pipeline_state.memory_format_revision` 中标记开发修订 `v4-dev.1`，用于记录空间的主题、短期摘要是否各自跟随本空间主模型。首次打开旧正式版数据库时，各库在事务内完成迁移。数据目录由 AstrBot 的 `StarTools.get_data_dir("astrbot_plugin_neomemory")` 提供。每个文件独立记录 schema 版本。数据库结构版本用于识别文件格式，节点、画像和关系的内容版本则用于记录某个实体在使用过程中的修订。
 
 | 数据库 | 持久内容 | 写入与清理 |
 | --- | --- | --- |

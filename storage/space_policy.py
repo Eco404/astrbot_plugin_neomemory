@@ -10,7 +10,9 @@ SPACE_DEFAULTS = {
     "exclude_from_shared_recall": False,
     "model_mode": "inherit",
     "provider_id": "",
+    "topic_follow_main": False,
     "topic_provider_id": "",
+    "short_term_follow_main": False,
     "short_term_provider_id": "",
 }
 
@@ -35,7 +37,8 @@ async def _policy(connection, space_id):
     row = await (await connection.execute(
         "SELECT s.space_id,s.persona_id,p.shared_recall_enabled,p.allow_group_read_private,"
         "p.external_limit,p.external_budget_percent,r.exclude_from_shared_recall,r.model_mode,"
-        "r.provider_id,r.topic_provider_id,r.short_term_provider_id FROM memory_spaces s "
+        "r.provider_id,r.topic_provider_id,r.short_term_provider_id,r.topic_follow_main,r.short_term_follow_main "
+        "FROM memory_spaces s "
         "LEFT JOIN persona_policies p USING(persona_id) LEFT JOIN space_policies r USING(space_id) "
         "WHERE s.space_id=?", (space_id,))).fetchone()
     if row is None:
@@ -59,6 +62,13 @@ class SpacePolicyStoreMixin:
         for key, value in changes.items():
             if key not in defaults or type(value) is not type(defaults[key]):
                 raise ValueError("invalid space policy field")
+        changes = dict(changes)
+        for lane in ("topic", "short_term"):
+            follow, provider = f"{lane}_follow_main", f"{lane}_provider_id"
+            if changes.get(follow):
+                changes[provider] = ""
+            elif changes.get(provider):
+                changes[follow] = False
         async with self.database.transaction() as connection:
             result = await _policy(connection, space_id)
             result.update(changes)

@@ -359,7 +359,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             if await self.scanner.has_deliveries(space, payload["highwater"]):
                 payload["replay_deliveries"] = True
         if kind in {"rebuild", "topic_consolidate", "topic_rebuild", *CONTEXT_REBUILD_MODELS}:
-            policy = topic_model_policy(await self.memory.get_space_policy(space_id), self.config, model_selection or {})
+            policy = topic_model_policy(await self.memory.get_space_policy(space_id), self.config)
             payload["model_policy"] = policy
             preview = await self.model_preview(kind, space, policy=policy, include_topics=include_topics,
                                                selection=model_selection, highwater=payload.get("highwater"))

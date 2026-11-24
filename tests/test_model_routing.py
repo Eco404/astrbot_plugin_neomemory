@@ -96,7 +96,7 @@ async def test_live_streams_keep_unconsumed_tail_and_models_separate(environment
 @pytest.mark.asyncio
 async def test_topic_requires_unambiguous_member_routes(environment):
     env = environment
-    await env.memory.set_space_policy(env.space["space_id"], {"model_mode": "chat"})
+    await env.memory.set_space_policy(env.space["space_id"], {"model_mode": "chat", "topic_follow_main": True})
     for number, provider in enumerate(("a", "b"), 1):
         await source(env, provider, 10 * number)
         message = await source(env, provider, 10 * number + 1, route={"provider_id": provider, "basis": "request_provider"})
@@ -109,9 +109,14 @@ async def test_topic_requires_unambiguous_member_routes(environment):
 
 
 @pytest.mark.asyncio
-async def test_topic_stage_uses_the_confirmed_model_of_its_members(environment):
+@pytest.mark.parametrize("space_policy", [
+    {"model_mode": "chat", "topic_follow_main": True},
+    {"model_mode": "fixed", "provider_id": "different-space-main"},
+])
+async def test_topic_stage_uses_the_confirmed_model_of_its_members(environment, space_policy):
     env = environment
-    await env.memory.set_space_policy(env.space["space_id"], {"model_mode": "chat"})
+    restart(env, config=replace(env.config, llm_provider_id=""))
+    await env.memory.set_space_policy(env.space["space_id"], space_policy)
     await source(env, "stage", 10)
     reply = await source(env, "stage", 11, route={"provider_id": "stage-chat", "basis": "request_provider",
                                                 "model_override": "stage-override"})
@@ -140,6 +145,14 @@ async def test_specialist_models_and_rebuild_steps(environment):
 
     space_id = env.space["space_id"]
     await env.memory.set_space_policy(space_id, {"model_mode": "fixed", "provider_id": "space-main"})
+    preview = await env.engine.model_preview("rebuild", env.space)
+    assert preview["window"]["provider_id"] == "space-main"
+    assert not preview["topic"]["follows_main"] and preview["topic"]["provider_id"] == "global-topic"
+    restart(env, config=replace(env.config, topic_provider_id=""))
+    preview = await env.engine.model_preview("rebuild", env.space, selection={"window_provider_id": "manual-main"})
+    assert not preview["topic"]["follows_main"] and preview["topic"]["provider_id"] == env.config.llm_provider_id
+
+    await env.memory.set_space_policy(space_id, {"topic_follow_main": True})
     preview = await env.engine.model_preview("rebuild", env.space)
     assert preview["topic"]["follows_main"] and preview["topic"]["provider_id"] == "space-main"
     changed = await env.engine.model_preview("rebuild", env.space, selection={"window_provider_id": "manual-main"})

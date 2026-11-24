@@ -21,7 +21,7 @@ export function initSettings(ui) {
     if (selected && !items.some((option) => option.value === selected)) { const option = element('option', selected + '（当前不可用）'); option.value = selected; items.push(option); }
     return items;
   }
-  const policy = initSpaceSettings(ui, choices, key => state.data?.runtime_values?.[key] ?? state.data?.values[key]);
+  const policy = initSpaceSettings(ui, choices);
   function field(key, meta) {
     const row = element('div', '', 'field'), id = 'setting-' + key;
     const label = element('label', meta.description || key); label.htmlFor = id;

@@ -78,7 +78,7 @@ async def test_release_jobs_keep_origin_and_due_time_on_upgrade(tmp_path):
         await memory.close()
         await memory.open()
         assert (await store.get("short_term:automatic")) == automatic
-        assert (await memory.health())["schema_revision"] == "v3"
+        assert (await memory.health())["schema_revision"] == "v4-dev.1"
     finally:
         await memory.close()
 
@@ -102,3 +102,31 @@ async def test_upgrade_release_database_with_existing_checkpoints(tmp_path):
         assert tuple(row) == ('{"done":2}', '[]')
     finally:
         await memory.close()
+
+@pytest.mark.asyncio
+async def test_v3_model_policy_upgrades_and_modes_survive_reopening(tmp_path):
+    from storage.memory_schema import MEMORY_V3_MIGRATION
+    from storage.space_policy import POLICY_SCHEMA
+
+    path = tmp_path / "memory.db"
+    db = SQLiteExecutor(path)
+    await db.open()
+    await initialize_schema(db, MEMORY_SCHEMA + POLICY_SCHEMA + MEMORY_V3_MIGRATION)
+    await db.execute("INSERT INTO memory_spaces(space_id,scope_key,space_type,persona_id,logical_user_id,created_at,updated_at)"
+                     " VALUES('s','scope','private','p','u',1,1)")
+    await db.execute("INSERT INTO space_policies(space_id,model_mode,provider_id,topic_provider_id)"
+                     " VALUES('s','fixed','chat','main')")
+    await db.execute("PRAGMA user_version=3")
+    await db.close()
+    store = MemoryStore(path)
+    await store.open()
+    try:
+        policy = await store.get_space_policy("s")
+        assert policy["topic_provider_id"] == "main" and not policy["topic_follow_main"]
+        assert policy["short_term_provider_id"] == "" and not policy["short_term_follow_main"]
+        await store.set_space_policy("s", {"short_term_follow_main": True})
+        await store.close()
+        await store.open()
+        assert (await store.get_space_policy("s"))["short_term_follow_main"]
+    finally:
+        await store.close()

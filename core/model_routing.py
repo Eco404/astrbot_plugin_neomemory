@@ -13,27 +13,28 @@ def chat_route(record):
 
 
 def specialist_provider(policy, key, config):
-    if policy.get(key):
-        return policy[key]
-    if policy.get("model_mode", "inherit") == "inherit":
-        return getattr(config, key, "")
-    return ""
+    return policy.get(key) or getattr(config, key, "") or config.llm_provider_id
 
 
-def topic_model_policy(policy, config, selection):
+def topic_model_policy(policy, config):
     """Freeze the effective topic choice alongside the main model for queued work."""
-    dedicated = specialist_provider(policy, "topic_provider_id", config)
+    follow_main = policy["topic_follow_main"]
     return {"model_mode": policy["model_mode"], "provider_id": policy["provider_id"],
-            "default_provider_id": config.llm_provider_id,
-            "topic_provider_id": dedicated or selection.get("window_provider_id", "")}
+            "default_provider_id": config.llm_provider_id, "topic_follow_main": follow_main,
+            "topic_provider_id": "" if follow_main else specialist_provider(policy, "topic_provider_id", config)}
 
 
 def fixed_route(policy, default, selection, *, topic=False):
-    override = selection.get("topic_provider_id" if topic else "window_provider_id")
-    if override:
-        return {"provider_id": override, "basis": "task"}
-    if topic and policy.get("topic_provider_id"):
-        return {"provider_id": policy["topic_provider_id"], "basis": "topic"}
+    if topic:
+        if selection.get("topic_provider_id"):
+            return {"provider_id": selection["topic_provider_id"], "basis": "task"}
+        if policy.get("topic_provider_id"):
+            return {"provider_id": policy["topic_provider_id"], "basis": "topic"}
+        # Older queued tasks used the window model whenever their topic override was empty.
+        if not policy.get("topic_follow_main", True):
+            return {}
+    if selection.get("window_provider_id"):
+        return {"provider_id": selection["window_provider_id"], "basis": "task"}
     mode = policy.get("model_mode", "inherit")
     if mode == "fixed":
         return {"provider_id": policy["provider_id"], "basis": "space"}
@@ -188,7 +189,7 @@ class ModelRoutingMixin:
     async def model_preview(self, kind, space, *, include_topics=False, selection=None, policy=None, highwater=None):
         selection = selection or {}
         if policy is None:
-            policy = topic_model_policy(await self.memory.get_space_policy(space["space_id"]), self.config, selection)
+            policy = topic_model_policy(await self.memory.get_space_policy(space["space_id"]), self.config)
         default = policy["default_provider_id"]
         generation = await self.memory.get_active_generation(space["space_id"])
         generation_id = generation["generation_id"]
@@ -215,5 +216,5 @@ class ModelRoutingMixin:
             elif kind != "rebuild":
                 topic_routes = await self.topic_routes(self.memory, space, generation_id)
             result["topic"] = self._route_summary(topic_routes)
-            result["topic"]["follows_main"] = not bool(policy["topic_provider_id"])
+            result["topic"]["follows_main"] = policy.get("topic_follow_main", not policy["topic_provider_id"])
         return result

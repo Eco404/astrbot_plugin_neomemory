@@ -61,11 +61,13 @@ class ShortTermService:
     async def _route(self, space_id, records, selection=None):
         selection = selection or {}
         policy = await self.memory.get_space_policy(space_id)
-        dedicated = specialist_provider(policy, "short_term_provider_id", self.config)
-        if dedicated and not selection.get("window_provider_id"):
-            route = {"provider_id": dedicated, "basis": "short_term"}
-        else:
+        if policy["short_term_follow_main"]:
             route = window_route(policy, self.config.llm_provider_id, records, selection)
+        else:
+            dedicated = specialist_provider(policy, "short_term_provider_id", self.config)
+            route = window_route({}, dedicated, records, selection)
+            if route.get("basis") == "plugin":
+                route["basis"] = "short_term"
         if route:
             try:
                 self._fingerprint(route["provider_id"])

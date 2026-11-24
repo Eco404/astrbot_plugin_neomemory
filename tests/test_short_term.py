@@ -481,7 +481,7 @@ async def test_cancelled_window_waits_for_explicit_retry_even_when_more_sources_
 @pytest.mark.asyncio
 async def test_chat_model_is_scoped_to_summary_prefix_and_frozen_across_retry(env):
     space = env.space["space_id"]
-    await env.memory.set_space_policy(space, {"model_mode": "chat"})
+    await env.memory.set_space_policy(space, {"model_mode": "chat", "short_term_follow_main": True})
     # Old and newer assistant replies are inside the summary. The latest
     # uncompressed messages belong to a future summary window.
     for i, provider in ((1, "first"), (3, "summarize-here"), (7, "reserved-tail")):
@@ -509,6 +509,13 @@ async def test_chat_model_is_scoped_to_summary_prefix_and_frozen_across_retry(en
     assert preview["provider_id"] == "next" and preview["basis"] == "space"
     env.config.short_term_provider_id = "dedicated"
     assert (await env.service.model_preview(job))["window"]["provider_id"] == "next"
+    await env.memory.set_space_policy(space, {"short_term_follow_main": False})
+    assert (await env.service.model_preview(job))["window"]["provider_id"] == "dedicated"
+    env.config.short_term_provider_id = ""
+    assert (await env.service.model_preview(job))["window"]["provider_id"] == env.config.llm_provider_id
+    env.config.llm_provider_id = ""
+    assert (await env.service.model_preview(job))["window"]["provider_id"] == "summarize-here"
+    env.config.short_term_provider_id = "dedicated"
     await env.memory.set_space_policy(space, {"model_mode": "inherit"})
     assert (await env.service.model_preview(job))["window"]["provider_id"] == "dedicated"
     await env.memory.set_space_policy(space, {"short_term_provider_id": "space-summary"})
