@@ -21,6 +21,7 @@ export function initMaintenance(ui) {
     nodeOffset: 0, nodeRequest: 0, nodeLoading: false, taskOffset: 0, spaceOffset: 0, selectedJob: null, detail: null, rawJob: null, rawRequest: 0,
     mergeSelected: new Map(), mergeCandidates: [], mergeOffset: 0, mergeRequest: 0, ingressOffset: 0, ingressRefreshing: false, ingressReady: false, selectedSource: null };
   const pendingSubmissionKeys = new Map();
+  let nodeQuery = '';
   let backlogEpoch = null;
   const recall = initRecallInspector(ui);
   const contextGovernance = initContextGovernance(ui, operation => submit('governance', { operation }));
@@ -171,13 +172,20 @@ export function initMaintenance(ui) {
     $('operation').value = ''; $('version-detail').textContent = '点击“查阅版本和来源”。'; state.sources = []; $('split-parts').replaceChildren(); $('delete-confirm').checked = false; $('use-json').checked = false; renderAction(); buttons();
   }
   async function loadNodes() {
-    if (!spaceId()) { state.nodes = []; $('node-select').replaceChildren(); $('merge-nodes').replaceChildren(); showNode(); return; }
+    if (!spaceId()) { state.nodes = []; $('node-select').replaceChildren(); $('merge-nodes').replaceChildren(); $('governance-node-count').textContent = ''; showNode(); return; }
     const selected = spaceId(), epoch = ui.epoch(), offset = state.nodeOffset, request = ++state.nodeRequest;
     state.nodeLoading = true; buttons();
     try {
-      const result = await bridge.apiGet('memory/nodes', { space_id: selected, limit: 50, offset });
+      const result = await bridge.apiGet('memory/nodes', { space_id: selected, limit: 50, offset, q: nodeQuery,
+        node_type: $('governance-node-type').value, status: $('governance-node-status').value });
       if (request !== state.nodeRequest || selected !== spaceId() || !ui.current(epoch) || offset !== state.nodeOffset) return;
       state.nodes = result.items;
+      if (!result.items.length && offset) {
+        state.nodeOffset = Math.max(0, (Math.ceil(result.total / 50) - 1) * 50);
+        return loadNodes();
+      }
+      $('governance-node-count').textContent = result.items.length
+        ? `共 ${result.total} 条，第 ${Math.floor(offset / 50) + 1} 页` : '没有符合条件的长期记忆。';
       const previous = $('node-select').value;
       $('node-select').replaceChildren(); $('merge-nodes').replaceChildren();
       for (const node of state.nodes) {
@@ -188,6 +196,11 @@ export function initMaintenance(ui) {
       enhanceSelect($('node-select'));
       $('previous-nodes').disabled = state.nodeOffset === 0; $('next-nodes').disabled = !result.has_more; showNode();
       if (['split', 'merge'].includes($('action').value)) await prepareAction();
+    } catch (error) {
+      if (request !== state.nodeRequest || !ui.current(epoch)) return;
+      state.nodes = []; $('node-select').replaceChildren(); showNode();
+      $('governance-node-count').textContent = '读取失败，请刷新节点重试。';
+      throw error;
     } finally {
       if (request === state.nodeRequest) { state.nodeLoading = false; buttons(); }
     }
@@ -725,6 +738,13 @@ export function initMaintenance(ui) {
   on('clear-completed-cancel', 'click', () => $('clear-completed-dialog').close());
   $('clear-completed-dialog').addEventListener('cancel', event => { if (state.clearingTasks) event.preventDefault(); });
   on('refresh-nodes', 'click', loadNodes); on('node-select', 'change', async () => { showNode(); await prepareAction(); });
+  function filterNodes() {
+    nodeQuery = $('governance-node-q').value.trim();
+    state.nodeOffset = 0;
+    return loadNodes();
+  }
+  onSearchForm('governance-node-filter', filterNodes);
+  on('governance-node-type', 'change', filterNodes); on('governance-node-status', 'change', filterNodes);
   on('next-nodes', 'click', () => { state.nodeOffset += 50; return loadNodes(); });
   on('previous-nodes', 'click', () => { state.nodeOffset = Math.max(0, state.nodeOffset - 50); return loadNodes(); });
   on('versions', 'click', loadVersions); on('draft-operation', 'click', draftOperation);

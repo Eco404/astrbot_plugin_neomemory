@@ -185,6 +185,24 @@ async def governance_lifecycle(page, frame, harness):
     assert edited['content_version'] == 2 and edited['manual_protected']
     assert edited['content_text'] == 'I check the telescope each Monday. I inventory lenses each Friday.'
 
+    await frame.locator('[data-maintenance-tab="manual"]').click()
+    query = frame.locator('#governance-node-q')
+    for phrase in ('Synthetic telescope and lenses', 'inventory lenses each Friday'):
+        await query.fill(phrase)
+        async with page.expect_response(lambda r: '/memory/nodes?' in r.url) as listed:
+            await query.press('Enter')
+        result = await (await listed.value).json()
+        assert [row['node_id'] for row in result['items']] == [original['node_id']]
+        await expect(frame.locator('#node-select')).to_have_value(original['node_id'])
+    await frame.locator('#governance-node-type').select_option(edited['node_type'])
+    await frame.locator('#governance-node-status').select_option('deleted')
+    await expect(frame.locator('#governance-node-count')).to_have_text('没有符合条件的长期记忆。')
+    await expect(frame.locator('#governance')).to_be_disabled()
+    await frame.locator('#governance-node-status').select_option('all')
+    await frame.locator('#governance-node-type').select_option('all')
+    await query.fill('')
+    await expect(frame.locator('#node-select')).to_be_enabled()
+
     await select(original['node_id'], 'split')
     await expect(frame.locator('.split-part')).to_have_count(2)
     for i, (title, content) in enumerate((('Synthetic telescope', 'I check the telescope each Monday.'),
