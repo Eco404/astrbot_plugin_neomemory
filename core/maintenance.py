@@ -37,6 +37,8 @@ from .extraction_context import (
 from .extraction_errors import (
     DuplicateJSONKey,
     ExtractionCapacityError,
+    ExtractionContextChanged,
+    ExtractionWindowChanged,
     InvalidExtractionCandidate,
 )
 from .extraction_references import VERSION as REFERENCE_VERSION
@@ -514,6 +516,15 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         checkpoint = inspection_checkpoint(job)
         window = checkpoint.get("window", {})
         result.update(await self.jobs.recovery_actions(job))
+        if result["restart_required"] and job["kind"] in {"rebuild", *CONTEXT_REBUILD_MODELS}:
+            replay = job["checkpoint"].get("sections", {}).get("context", job["checkpoint"])
+            generation_id = replay.get("generation_id")
+            if generation_id:
+                progress = await self.memory.database.fetchone(
+                    "SELECT COUNT(DISTINCT b.batch_id) AS windows, COUNT(s.source_id) AS sources "
+                    "FROM extraction_batches b LEFT JOIN extraction_batch_sources s ON b.batch_id=s.batch_id "
+                    "WHERE b.generation_id=?", (generation_id,))
+                result["reprepare_progress"] = dict(progress)
         history = await self.jobs.list_candidates(job_id, limit=11)
         result["candidate_history"] = history[:10]
         result["candidate_history_has_more"] = len(history) > 10
@@ -698,6 +709,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                         await self._save(job, checkpoint, "correcting", checkpoint.get("done", 0), checkpoint.get("total"))
         except TimeoutError as exc:
             raise deadline_failure(exc, "extraction_timeout") from None
+        except ExtractionWindowChanged:
+            raise ReviewRequired("context_changed") from None
 
     async def _window_in_budget(self, job, checkpoint, space, generation_id, source_ids, source_cursor, *, building, deadline):
         # A commit can outlive cancellation of its awaiting coroutine. Receipt
@@ -742,10 +755,21 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             job_id=job["job_id"], lease_token=job["lease_token"], allow_building=building,
             source_cursor=source_cursor, reference_protocol=REFERENCE_VERSION)
         if window and not window.get("planned") and batch.input_digest != window["input_digest"]:
-            raise ReviewRequired("context_changed")
+            if window.get("fixed_input_digest") != batch.fixed_input_digest:
+                raise ReviewRequired("context_changed")
+            if "raw" in window:
+                await self.jobs.archive_candidate(job["job_id"], job["lease_token"], window, "window_context_changed")
+            # A correction is only valid for the snapshot on which its draft was based.
+            for field in ("raw", "canonical_raw", "regeneration", "model_request_digest", "validation_errors",
+                          "response_diagnostics", "budget"):
+                window.pop(field, None)
+            window["input_digest"] = batch.input_digest
+            observe_action("refresh_context")
+            await self._save(job, checkpoint, "prepared", checkpoint.get("done", 0), checkpoint.get("total"))
         if not window or window.get("planned"):
             window = {"source_ids": list(source_ids), "source_cursor": source_cursor, "model_route": route,
-                "known_node_ids": list(known), "input_digest": batch.input_digest, "signature": signature,
+                "known_node_ids": list(known), "input_digest": batch.input_digest,
+                "fixed_input_digest": batch.fixed_input_digest, "signature": signature,
                 "index_required": self._index_configured(),
                 "reference_protocol": REFERENCE_VERSION,
                 "correction_limit": self.config.extraction_max_regenerations}
@@ -911,9 +935,11 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             window["validation_errors"] = [{"path": path, "type": exc.code}]
             await self._save(job, checkpoint, "validate", checkpoint.get("done", 0), checkpoint.get("total"))
             raise ReviewRequired(exc.code) from None
-        except ValueError as exc:
-            if str(exc) == "node protection changed":
-                raise ReviewRequired("context_changed") from None
+        except ExtractionContextChanged:
+            raise RetryableJobError("window_context_changed") from None
+        except ExtractionWindowChanged:
+            raise
+        except ValueError:
             raise ReviewRequired("context_or_evidence_invalid") from None
 
     async def _discard_images(self, job, space, source_ids):

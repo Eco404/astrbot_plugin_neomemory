@@ -221,7 +221,7 @@ export function initMaintenance(ui) {
     $('task-diagnostics').textContent = summary.join(' · ');
     const attempts = result.attempts || [];
     const actions = { execute: '执行', resume: '从断点继续', fresh: '重新准备', regenerate: '重新生成窗口',
-      resize: '缩小窗口', resume_committed: '复用已提交的窗口', replan: '重新规划来源' };
+      refresh_context: '重读当前窗口的记忆上下文', resize: '缩小窗口', resume_committed: '复用已提交的窗口', replan: '重新规划来源' };
     $('task-attempts').hidden = !attempts.length;
     $('task-attempt-list').replaceChildren(...attempts.slice().reverse().map(attempt => {
       const info = [new Date(attempt.ended_at * 1000).toLocaleString(), actions[attempt.action] || '执行',
@@ -238,6 +238,10 @@ export function initMaintenance(ui) {
     $('task-sources').replaceChildren();
     for (const sourceId of result.source_ids || []) taskAction($('task-sources'), '读取原文 ' + sourceId, () => readTaskSource(result, sourceId));
     $('restart-hint').textContent = result.recovery_action === 'review' && result.kind === 'identity' ? '账号归属或确认的影响范围已变化，请回到用户管理重新预览和确认。' : result.recovery_action === 'review' && result.kind === 'note' ? '笔记冲突需要返回笔记页，重新读取并编辑。断点重试保留原始版本条件，不会覆盖更新后的正文。' : result.restart_required ? '该任务需要按当前配置重新准备。请使用“重新准备后重试”。' : result.recovery_action === 'resize' ? '从断点重试会缩小截断的消息窗口并保留后续原文。' : result.recovery_action === 'regenerate' ? '从断点重试会归档被拒绝的草稿，把校验问题反馈给模型，并继续各个尚未完成的窗口。' : result.regenerate_window_available ? '从断点重试会继续处理已有草稿。选择“重新生成当前窗口”可另行生成候选。' : result.kind === 'short_term' && result.state === 'cancelled' ? '该短期摘要窗口已停止；使用“从断点重试”或“重新准备后重试”恢复处理。' : '';
+    if (result.reprepare_progress) {
+      const {windows, sources} = result.reprepare_progress;
+      $('restart-hint').textContent += ` 从头重构会重新处理本任务已提交的 ${windows} 个窗口（${sources} 条原文）。`;
+    }
     buttons();
   }
   function clearTaskSource() { state.rawRequest += 1; $('task-source-content').textContent = ''; $('task-source-panel').hidden = true; }

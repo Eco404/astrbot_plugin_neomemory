@@ -20,7 +20,7 @@ from .provenance_store import (
 
 try:
     from ..core.extraction_apply import digest
-    from ..core.extraction_errors import InvalidExtractionCandidate
+    from ..core.extraction_errors import ExtractionContextChanged, ExtractionWindowChanged, InvalidExtractionCandidate
 
     from ..core.memory_emotions import encode_emotion
     from ..core.relationship_state import relationship_slots, relationship_text, transition_relationship
@@ -33,7 +33,7 @@ try:
     from ..core.topic_schema import TOPIC_CREATE_MIN_MEMBERS
 except ImportError:
     from core.extraction_apply import digest
-    from core.extraction_errors import InvalidExtractionCandidate
+    from core.extraction_errors import ExtractionContextChanged, ExtractionWindowChanged, InvalidExtractionCandidate
 
     from core.memory_emotions import encode_emotion
     from core.relationship_state import relationship_slots, relationship_text, transition_relationship
@@ -84,15 +84,15 @@ async def assert_extraction_scope(
         (space_id, generation_id) if generation_id is not None else (space_id,),
     )
     if generation is None:
-        raise ValueError("no matching generation for extraction")
+        raise ExtractionWindowChanged("no matching generation for extraction")
     if allow_building:
         if job is None:
             raise PermissionError("building extraction requires a rebuild task lease")
         await assert_rebuild_target(connection, job, space_id, generation["generation_id"])
         if generation["status"] != "building":
-            raise ValueError("rebuild extraction generation is no longer building")
+            raise ExtractionWindowChanged("rebuild extraction generation is no longer building")
     elif generation["status"] != "active":
-        raise ValueError("stale extraction generation is no longer active")
+        raise ExtractionWindowChanged("stale extraction generation is no longer active")
     return generation
 
 
@@ -136,16 +136,16 @@ async def _node(
         or current["space_id"] != batch.space["space_id"]
         or current["generation_id"] != batch.generation_id
     ):
-        raise ValueError("node belongs to another space or generation")
+        raise ExtractionWindowChanged("node belongs to another space or generation")
     if bool(current["manual_protected"]) != snapshot["manual_protected"]:
-        raise ValueError("node protection changed")
+        raise ExtractionContextChanged("node protection changed")
     if (
         current["content_version"] != snapshot["content_version"]
         or current["updated_at"] != snapshot["updated_at"]
         or current["status"] != snapshot["status"]
         or current["title"] != snapshot.get("title")
     ):
-        raise ValueError("stale node snapshot; prepare extraction again")
+        raise ExtractionContextChanged("stale node snapshot; prepare extraction again")
     if writable and (current["manual_protected"] or current["status"] != "active"):
         raise InvalidExtractionCandidate("readonly_node", path, "candidate writes a read-only node")
     return current
@@ -495,7 +495,7 @@ async def apply_extraction(
             result["result"] = json.loads(result.pop("result_json"))
             return {**result, "replayed": True}
         if generation["activity_round"] != batch.expected_round:
-            raise ValueError("stale extraction generation or activity round")
+            raise ExtractionWindowChanged("stale extraction generation or activity round")
         # A no-change decision also depends on the supplied context. Validate
         # that context even when the model returns no explicit update targets.
         for node_id in known:
@@ -514,7 +514,7 @@ async def apply_extraction(
             expected_members = {edge["target_node_id"] for edge in batch.known_edges
                                 if edge["source_node_id"] == topic["node_id"]}
             if current_members != expected_members:
-                raise ValueError("topic membership changed; prepare extraction again")
+                raise ExtractionContextChanged("topic membership changed; prepare extraction again")
         for event in (node for node in known.values() if node["node_type"] == "event"):
             cursor = await connection.execute(
                 "SELECT target_node_id FROM memory_edges WHERE source_node_id=? AND relation_type='contains'",
@@ -524,7 +524,7 @@ async def apply_extraction(
             expected_members = {edge["target_node_id"] for edge in batch.known_edges
                                 if edge["source_node_id"] == event["node_id"]}
             if current_members != expected_members:
-                raise ValueError("event member structure changed; prepare extraction again")
+                raise ExtractionContextChanged("event member structure changed; prepare extraction again")
         speakers = {
             source["actor_logical_user_id"]
             for source in batch.sources
@@ -544,7 +544,7 @@ async def apply_extraction(
             tuple(row[field] for field in profile_fields) for row in batch.profiles
         )
         if actual_profiles != expected_profiles:
-            raise ValueError("stale profile context")
+            raise ExtractionContextChanged("stale profile context")
         if batch.space["space_type"] == "private":
             relationship = await _one(
                 connection,
@@ -562,7 +562,7 @@ async def apply_extraction(
                 else None
             )
             if actual_relationship != expected_relationship:
-                raise ValueError("stale relationship context")
+                raise ExtractionContextChanged("stale relationship context")
         for source_id in source_lookup:
             existing = await _one(
                 connection,

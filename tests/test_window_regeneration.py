@@ -131,7 +131,7 @@ async def test_regeneration_keeps_configuration_guards(environment, change):
 
 
 @pytest.mark.asyncio
-async def test_regeneration_keeps_input_digest_guard(environment):
+async def test_edited_context_gets_fresh_request_without_old_candidate_feedback(environment):
     env = environment
     known = await env.memory.create_node(space_id=env.space["space_id"], node_type="event",
         content_text="A public synthetic event.", source_ids=[env.records[0].source_id])
@@ -139,10 +139,54 @@ async def test_regeneration_keeps_input_digest_guard(environment):
     assert known["node_id"] in failed["checkpoint"]["window"]["known_node_ids"]
     await env.memory.update_node_content(known["node_id"], "A corrected public synthetic event.")
     await env.engine.retry(failed["job_id"], regenerate_window=True)
-    rejected = await execute(env, await env.engine.jobs.claim("changed-input"))
-    assert rejected["state"] == "failed"
-    assert rejected["error_code"] == "context_changed"
-    assert len(env.adapter.calls) == 1
+    env.adapter.output = json.dumps(output())
+    completed = await execute(env, await env.engine.jobs.claim("changed-input"))
+    assert completed["state"] == "succeeded"
+    assert len(env.adapter.calls) == 2 and len(env.adapter.calls[-1]) == 2
+    assert "A corrected public synthetic event." in env.adapter.calls[-1][1]["content"]
+    assert completed["attempts"][-1]["action"] == "refresh_context"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["profile", "source", "deleted_source", "legacy"])
+async def test_window_scope_of_partial_rebuild_after_input_edit(environment, change):
+    env = environment
+    for number in range(3, 5):
+        await capture(env.sources, number=number)
+    async def respond(messages):
+        env.adapter.output = "bad second window" if len(env.adapter.calls) == 2 else json.dumps(output())
+    env.adapter.on_generate = respond
+    failed = await execute(env, await enqueue_and_claim(env, "rebuild"))
+    target = failed["checkpoint"]["generation_id"]
+    first, = await env.memory.database.fetchall("SELECT * FROM extraction_batches")
+    window = failed["checkpoint"]["window"]
+    assert failed["checkpoint"]["done"] == 2
+    if change == "source":
+        await env.sources.database.execute("UPDATE source_records SET content_text=? WHERE source_id=?",
+                                           ("edited source", window["source_ids"][0]))
+    elif change == "deleted_source":
+        await env.sources.database.execute("DELETE FROM source_records WHERE source_id=?", (window["source_ids"][0],))
+    else:
+        await env.memory.upsert_profile(space_id=env.space["space_id"], generation_id=target,
+            logical_user_id=env.records[0].logical_user_id, description="updated profile", tags=[])
+        if change == "legacy":
+            del window["fixed_input_digest"]
+            await env.memory.database.execute("UPDATE memory_jobs SET checkpoint_json=? WHERE job_id=?",
+                                              (json.dumps(failed["checkpoint"]), failed["job_id"]))
+    await env.engine.retry(failed["job_id"])
+    resumed = await execute(env, await env.engine.jobs.claim("continue"))
+    assert dict(await env.memory.database.fetchone("SELECT * FROM extraction_batches WHERE batch_id=?",
+                                                  (first["batch_id"],))) == dict(first)
+    if change == "profile":
+        assert resumed["state"] == "succeeded" and resumed["result"]["generation_id"] == target
+        assert len(env.adapter.calls) == 3
+        fresh = env.adapter.calls[-1]
+        assert len(fresh) == 2 and "updated profile" in fresh[1]["content"]
+        assert len(await env.memory.database.fetchall("SELECT * FROM extraction_batches")) == 2
+    else:
+        assert resumed["error_code"] == "context_changed" and len(env.adapter.calls) == 2
+        detail = await env.engine.describe(failed["job_id"])
+        assert detail["restart_required"] and detail["reprepare_progress"] == {"windows": 1, "sources": 2}
 
 
 @pytest.mark.asyncio

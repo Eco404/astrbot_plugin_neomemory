@@ -117,6 +117,6 @@ async def test_maintenance_does_not_relabel_changed_context_as_bad_candidate(env
 
     env.adapter.on_generate = concurrent_change
     failed = await execute(env, await enqueue_and_claim(env))
-    assert failed["state"] == "failed"
-    assert failed["error_code"] == "context_or_evidence_invalid"
+    assert failed["state"] == "retry_wait"
+    assert failed["error_code"] == "window_context_changed"
     assert not failed["checkpoint"]["window"].get("validation_errors")

@@ -10,11 +10,13 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from ..core.extraction_errors import ExtractionWindowChanged
     from ..core.group_addressing import address_entries
     from ..core.text_cleaning import DEFAULT_CLEANER, RECEIPT_PROJECTION_FIELDS, receipt_text_matches
     from ..core.image_capture import project_images, without_image_data
     from ..core.source_ingest import CapturedSource
 except ImportError:  # Tests import ``storage`` directly from the plugin root.
+    from core.extraction_errors import ExtractionWindowChanged
     from core.group_addressing import address_entries
     from core.text_cleaning import DEFAULT_CLEANER, RECEIPT_PROJECTION_FIELDS, receipt_text_matches
     from core.image_capture import project_images, without_image_data
@@ -666,7 +668,7 @@ class SourceStore:
             if not record["delivered_proactive"]:
                 del record["delivered_proactive"]
         if len(by_id) != len(source_ids):
-            raise ValueError("unknown source_id in extraction range")
+            raise ExtractionWindowChanged("unknown source_id in extraction range")
         return [by_id[source_id] for source_id in source_ids]
 
     async def resolve_account(self, platform_instance_id: str, account_id: str, platform_name: str | None = None) -> str | None:

@@ -139,9 +139,11 @@ async def test_restart_and_config_change_do_not_replenish_frozen_corrections(env
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('conflict', ['protected', 'changed_input'])
-async def test_actual_conflicts_never_become_candidate_corrections(environment, conflict):
+async def test_actual_conflicts_refresh_only_derived_context(environment, monkeypatch, conflict):
     env = environment
     enable(env)
+    now = [env.engine.jobs.clock()]
+    monkeypatch.setattr(env.engine.jobs, 'clock', lambda: now[0])
     old = await env.memory.create_node(space_id=env.space['space_id'], node_type='event',
         content_text='人工维护的独立经历。', source_ids=[env.records[0].source_id])
     async def change_during_call(messages):
@@ -152,11 +154,24 @@ async def test_actual_conflicts_never_become_candidate_corrections(environment, 
     env.adapter.on_generate = change_during_call
     env.adapter.output = json.dumps(output([node('s1', old=old)]))
     failed = await execute(env, await enqueue_and_claim(env))
-    assert failed['state'] == 'failed'
-    assert failed['error_code'] == ('context_changed' if conflict == 'protected' else 'context_or_evidence_invalid')
+    assert failed['state'] == 'retry_wait' and failed['error_code'] == 'window_context_changed'
     assert len(env.adapter.calls) == 1
     assert not await env.engine.jobs.list_candidates(failed['job_id'])
     assert not await env.memory.database.fetchall('SELECT * FROM extraction_batches')
+    now[0] = failed['available_at']
+    env.adapter.on_generate = None
+    env.adapter.output = json.dumps(output())
+    completed = await execute(env, await env.engine.jobs.claim('refreshed'))
+    assert completed['state'] == 'succeeded' and len(env.adapter.calls) == 2
+    assert len(env.adapter.calls[-1]) == 2
+    new_context = json.loads(env.adapter.calls[-1][1]['content'])['known_nodes'][0]
+    if conflict == 'protected':
+        assert new_context['manual_protected'] and (await env.memory.get_node(old['node_id']))['manual_protected']
+    else:
+        assert new_context['content_text'] == '外部更新后的内容。'
+    archived, = await env.engine.jobs.list_candidates(completed['job_id'])
+    assert archived['error_code'] == 'window_context_changed'
+
 
 
 

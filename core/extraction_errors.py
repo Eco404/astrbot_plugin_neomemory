@@ -10,6 +10,14 @@ class ExtractionCapacityError(ValueError):
         super().__init__("extraction output exceeds character limit")
 
 
+class ExtractionWindowChanged(ValueError):
+    """The source, ownership, or generation of the prepared window no longer matches."""
+
+
+class ExtractionContextChanged(ValueError):
+    """Derived memory or its write protection changed after the window was prepared."""
+
+
 class InvalidExtractionCandidate(ValueError):
     """A model-selected field violates a fixed extraction precondition.
 

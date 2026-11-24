@@ -13,7 +13,7 @@ from .group_addressing import group_source_addresses
 from .extraction_observations import build_observation_anchors
 from .extraction_schema import parse_extraction_output_for_context
 from .candidate_feedback import CandidateValidationError
-from .extraction_errors import InvalidExtractionCandidate
+from .extraction_errors import ExtractionWindowChanged, InvalidExtractionCandidate
 from .source_fragments import fragment_info
 from .prompts import (
     PROMPT_VERSION,
@@ -66,30 +66,35 @@ class PreparedExtraction:
         if selected != self.prompt_version:
             raise ValueError("prepared extraction requires an explicit prompt version")
 
-    @property
-    def input_digest(self) -> str:
-        schema_version = schema_for_prompt_version(self.prompt_version)
+    def _fixed_input(self):
         value = {
             "space": self.space,
             "generation": self.generation_id,
             "round": self.expected_round,
             "sources": self.sources,
-            "nodes": self.known_nodes,
-            "profiles": self.profiles,
-            "relationship": self.relationship,
             "persona": self.persona,
             "prompt": self.prompt_version,
+            "schema": schema_for_prompt_version(self.prompt_version),
         }
-        value["schema"] = schema_version
-        if self.job_id:
-            # Recall reinforcement is concurrent with background extraction and
-            # never changes model-visible facts or mutation preconditions.
-            value["nodes"] = [{key: item for key, item in node.items()
-                if key not in {"reinforcement", "last_recalled_at"}} for node in self.known_nodes]
         if self.allow_building or self.source_cursor > 0:
             value.update(allow_building=self.allow_building, source_cursor=self.source_cursor)
         if self.reference_protocol is not None:
             value["reference_protocol"] = self.reference_protocol
+        return value
+
+    @property
+    def fixed_input_digest(self) -> str:
+        """Identify the frozen window independently of editable memory supplied as context."""
+        return digest(self._fixed_input())
+
+    @property
+    def input_digest(self) -> str:
+        value = self._fixed_input()
+        value.update(nodes=self.known_nodes, profiles=self.profiles, relationship=self.relationship)
+        if self.job_id:
+            # Recall reinforcement does not change model-visible facts or mutation preconditions.
+            value["nodes"] = [{key: item for key, item in node.items()
+                if key not in {"reinforcement", "last_recalled_at"}} for node in self.known_nodes]
         if self.known_edges:
             value["edges"] = self.known_edges
         return digest(value)
@@ -227,7 +232,7 @@ class ExtractionService:
                 source["identity_pending"]
                 or source["persona_id"] != space["persona_id"]
             ):
-                raise ValueError("unresolved or different source persona")
+                raise ExtractionWindowChanged("unresolved or different source persona")
             if source["source_type"] != "conversation":
                 raise ValueError(
                     "source_event extraction is reserved for a later version"
@@ -248,13 +253,13 @@ class ExtractionService:
                     source["message_type"].lower() != "friendmessage"
                     or owner != space["logical_user_id"]
                 ):
-                    raise ValueError("source belongs to another private space")
+                    raise ExtractionWindowChanged("source belongs to another private space")
             elif (
                 source["message_type"].lower() != "groupmessage"
                 or source["platform_instance_id"] != space["platform_instance_id"]
                 or source["group_id"] != space["group_id"]
             ):
-                raise ValueError("source belongs to another group space")
+                raise ExtractionWindowChanged("source belongs to another group space")
         if len(known_node_ids) > 50 or len(set(known_node_ids)) != len(known_node_ids):
             raise ValueError("known nodes require at most 50 unique IDs")
         nodes, edges = await self._topic_context(space_id, generation["generation_id"], known_node_ids)
@@ -318,7 +323,7 @@ class ExtractionService:
                     return
                 row = await self.memory._node_row_in_connection(connection, node_id)
                 if not row or row["space_id"] != space_id or row["generation_id"] != generation_id:
-                    raise ValueError("known node belongs to another space or generation")
+                    raise ExtractionWindowChanged("known node belongs to another space or generation")
                 nodes[node_id] = self.memory._node_from_row(row)
 
             for node_id in node_ids:
@@ -391,7 +396,7 @@ class ExtractionService:
             tuple(item["source_id"] for item in batch.sources)
         )
         if digest(current) != digest(batch.sources):
-            raise ValueError("source snapshot changed; prepare a new extraction")
+            raise ExtractionWindowChanged("source snapshot changed; prepare a new extraction")
         receipt = await self.memory.apply_extraction(
             batch, output, model_id=model_id, prompt_version=batch.prompt_version,
             image_evidence=image_evidence,
