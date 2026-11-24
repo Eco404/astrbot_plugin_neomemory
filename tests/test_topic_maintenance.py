@@ -109,7 +109,8 @@ async def test_topic_invalid_output_has_bounded_persisted_correction(environment
     resumed = await env.engine.jobs.claim("resume", lease_seconds=60)
     retried = await execute(env, resumed)
     assert retried["state"] == "failed"
-    assert len(env.adapter.calls) == 8
+    assert len(env.adapter.calls) == 5
+    assert env.adapter.calls[-1][-2]["content"] == "not json"
     assert retried["checkpoint"]["topic_window"]["corrections"] == 3
 
 

@@ -292,3 +292,23 @@ async def test_topic_manual_regeneration_uses_last_rejected_draft(environment):
     result = await execute(e, await e.engine.jobs.claim('manual-topic'))
     assert result['state'] == 'succeeded'
     assert len(e.adapter.calls) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual", [True, False])
+async def test_summary_resume_archives_rejected_draft_and_keeps_coverage(env, manual):
+    e = env
+    e.config.extraction_max_regenerations = 0
+    e.adapter.output = "invalid json"
+    job = await claim(e)
+    await execute_summary(e, job)
+    if manual:
+        await e.jobs.retry(job["job_id"])
+    else:
+        await e.memory.database.execute("UPDATE memory_jobs SET available_at=0 WHERE job_id=?", (job["job_id"],))
+    e.adapter.output = json.dumps(summary(job))
+    result = await execute_summary(e, await e.jobs.claim("resume-summary"))
+    assert result["state"] == "succeeded" and len(e.adapter.calls) == 2
+    assert e.adapter.calls[-1][-2]["content"] == "invalid json"
+    assert len(await e.jobs.list_candidates(job["job_id"])) == 1
+    assert len(await e.memory.database.fetchall("SELECT * FROM short_term_receipts")) == 1

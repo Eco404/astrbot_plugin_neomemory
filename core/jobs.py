@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 Handler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
+class JobDeferred(Exception):
+    """A handler persisted its next due time and released its lease."""
+
+
 class RetryableJobError(RuntimeError):
     """An adapter classified a transient error after its own retry policy ended."""
 
@@ -187,7 +191,7 @@ class JobRunner:
                 await asyncio.gather(work, return_exceptions=True)
             await self._release(job)
             raise
-        except LeaseLost:
+        except (LeaseLost, JobDeferred):
             pass
         except Exception as exc:
             retryable, code = classify_job_error(exc)

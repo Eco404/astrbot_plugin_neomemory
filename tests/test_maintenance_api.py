@@ -284,15 +284,20 @@ async def test_regenerate_window_mode_is_explicit_and_mutually_exclusive(api, mo
 
 
 @pytest.mark.asyncio
-async def test_task_list_exposes_regeneration_availability_without_raw_candidate(api):
-    submit_body(api)
-    job = payload(await api.submit())
+@pytest.mark.parametrize(("kind", "code", "checkpoint"), [
+    ("extract", "invalid_output", {"window": {"raw": "private rejected candidate"}}),
+    ("short_term", "invalid_short_term_output", {"raw": "private rejected candidate"}),
+    ("topic_rebuild", "invalid_topic_output", {"topic_window": {"raw": "private rejected candidate", "receipt_key": "k"}}),
+])
+async def test_task_list_exposes_regeneration_availability_without_raw_candidate(api, kind, code, checkpoint):
+    job = await api.plugin.jobs.submit(kind, api.test_space["space_id"], {}, "failed-candidate")
     claimed = await api.plugin.jobs.claim("worker")
     await api.plugin.jobs.save_checkpoint(job["job_id"], claimed["lease_token"],
-        checkpoint={"window": {"raw": "private rejected candidate"}}, step="validate", progress_done=0, progress_total=2)
-    await api.plugin.jobs.fail(job["job_id"], claimed["lease_token"], error_type="ReviewRequired", error_code="invalid_output")
+        checkpoint=checkpoint, step="validate", progress_done=0, progress_total=2)
+    await api.plugin.jobs.fail(job["job_id"], claimed["lease_token"], error_type="ReviewRequired", error_code=code)
     listed = payload(await api.tasks())
     assert listed["items"][0]["regenerate_window_available"]
+    assert listed["items"][0]["recovery_action"] == "regenerate"
     assert "private rejected candidate" not in json.dumps(listed)
 
 

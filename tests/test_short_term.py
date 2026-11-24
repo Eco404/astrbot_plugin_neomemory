@@ -503,7 +503,10 @@ async def test_chat_model_is_scoped_to_summary_prefix_and_frozen_across_retry(en
     assert env.adapter.requests[-1]["model"] == "summarize-here-model"
     await env.service.retry(job["job_id"])
     assert (await execute(env, await env.jobs.claim("resume")))["state"] == "failed"
-    assert len(env.adapter.requests) == 1  # Ordinary retry reused the saved response.
+    assert len(env.adapter.requests) == 2
+    assert env.adapter.requests[-1]["provider_id"] == "summarize-here"
+    assert env.adapter.requests[-1]["model"] == "summarize-here-model"
+    assert env.adapter.calls[-1][-2]["content"] == "invalid"
 
     preview = (await env.service.model_preview(job))["window"]
     assert preview["provider_id"] == "next" and preview["basis"] == "space"

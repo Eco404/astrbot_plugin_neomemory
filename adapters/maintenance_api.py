@@ -44,9 +44,6 @@ def _summary(job: dict[str, Any]) -> dict[str, Any]:
     checkpoint = inspection_checkpoint(job) if job.get("checkpoint") else {}
     if window := checkpoint.get("window_index"):
         result["committed_window"] = dict(window)
-    result["regenerate_window_available"] = (
-        job.get("state") in {"failed", "cancelled"} and job.get("kind") in {"extract", "rebuild", "profile_rebuild", "relationship_rebuild", "context_rebuild"}
-        and "raw" in checkpoint.get("window", {}))
     return result
 
 
@@ -175,7 +172,10 @@ class MaintenanceAPI:
         limit = _integer(request.query.get("limit", 50), minimum=1, maximum=100)
         offset = _integer(request.query.get("offset", 0))
         jobs = await self.plugin.jobs.list(scope_key=scope, limit=limit + 1, offset=offset, visible_only=True)
-        return json_response({"items": [_summary(job) for job in jobs[:limit]],
+        items = []
+        for job in jobs[:limit]:
+            items.append({**_summary(job), **await self.plugin.jobs.recovery_actions(job)})
+        return json_response({"items": items,
                               "limit": limit, "offset": offset, "has_more": len(jobs) > limit})
 
     @_guard

@@ -156,3 +156,64 @@ async def test_both_sections_can_use_their_full_retry_budget(environment, monkey
     result = await execute(env, await enqueue_and_claim(env, "profile_rebuild", include_topics=True))
     assert result["state"] == "succeeded" and result["attempt"] == 1
     assert calls == {"topics": 2, "context": 2}
+
+
+@pytest.mark.asyncio
+async def test_resume_corrects_both_rejected_sections_in_one_attempt(environment):
+    env = environment
+    await seed(env)
+    calls = {"topics": 0, "context": 0}
+
+    async def generate(messages, **options):
+        data = json.loads(messages[1]["content"])
+        name = "topics" if "nodes" in data else "context"
+        calls[name] += 1
+        if calls[name] == 1:
+            return "invalid-json-" + name
+        assert messages[-2]["content"] == "invalid-json-" + name
+        assert json.loads(messages[-1]["content"])["errors"]
+        return json.dumps({"changes": []} if name == "topics" else {"profile_changes": []})
+
+    env.adapter.generate = generate
+    job = await enqueue_and_claim(env, "profile_rebuild", include_topics=True)
+    failed = await execute(env, job)
+    assert {p["state"] for p in failed["checkpoint"]["section_progress"].values()} == {"failed"}
+    restart(env)
+    await env.engine.retry(job["job_id"])
+    result = await execute(env, await env.engine.jobs.claim("resume"))
+    assert result["state"] == "succeeded" and calls == {"topics": 2, "context": 2}
+    assert len(await env.engine.jobs.list_candidates(job["job_id"])) == 2
+
+
+@pytest.mark.asyncio
+async def test_waiting_sections_free_worker_and_keep_scope_until_due(environment, monkeypatch):
+    env = environment
+    await seed(env)
+    now = [env.engine.jobs.clock()]
+    monkeypatch.setattr(env.engine.jobs, "clock", lambda: now[0])
+    monkeypatch.setattr(env.engine.jobs, "retry_delay", lambda attempt: 600)
+    calls = {"topics": 0, "context": 0}
+
+    async def generate(messages, **options):
+        data = json.loads(messages[1]["content"])
+        name = "topics" if "nodes" in data else "context"
+        calls[name] += 1
+        if calls[name] == 1:
+            raise ConnectionError()
+        return json.dumps({"changes": []} if name == "topics" else {"profile_changes": []})
+
+    env.adapter.generate = generate
+    job = await enqueue_and_claim(env, "profile_rebuild", include_topics=True)
+    parked = await asyncio.wait_for(execute(env, job), timeout=3)
+    assert parked["state"] == "retry_wait" and parked["lease_token"] is None
+    assert not (await env.engine.jobs.availability(env.space["space_id"]))["available"]
+    await env.engine.jobs.submit("other", "space-b", {}, "other")
+    claimed = await env.engine.jobs.claim("worker")
+    assert claimed["scope_key"] == "space-b"
+    await env.engine.jobs.finish(claimed["job_id"], claimed["lease_token"])
+    assert await env.engine.jobs.claim("early") is None
+    restart(env)
+    monkeypatch.setattr(env.engine.jobs, "clock", lambda: now[0])
+    now[0] += 600
+    result = await execute(env, await env.engine.jobs.claim("resumed"))
+    assert result["state"] == "succeeded" and calls == {"context": 2, "topics": 2}

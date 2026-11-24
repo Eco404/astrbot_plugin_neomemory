@@ -218,7 +218,7 @@ export function initMaintenance(ui) {
     $('task-diagnostics').textContent = summary.join(' · ');
     $('task-sources').replaceChildren();
     for (const sourceId of result.source_ids || []) taskAction($('task-sources'), '读取原文 ' + sourceId, () => readTaskSource(result, sourceId));
-    $('restart-hint').textContent = result.kind === 'note' && result.state === 'failed' ? '笔记冲突需要返回笔记页，重新读取并编辑。断点重试保留原始版本条件，不会覆盖更新后的正文。' : result.restart_required ? '该任务需要按当前配置重新准备。请使用“重新准备后重试”。' : result.regenerate_window_available ? '“重新生成当前窗口”会保留已完成进度和原候选，仅重新调用当前窗口的模型。输入或配置已变化时需要重新准备整个任务。' : result.kind === 'short_term' && result.state === 'cancelled' ? '该短期摘要窗口已停止；使用“从断点重试”或“重新准备后重试”恢复处理。' : '';
+    $('restart-hint').textContent = result.recovery_action === 'review' && result.kind === 'identity' ? '账号归属或确认的影响范围已变化，请回到用户管理重新预览和确认。' : result.recovery_action === 'review' && result.kind === 'note' ? '笔记冲突需要返回笔记页，重新读取并编辑。断点重试保留原始版本条件，不会覆盖更新后的正文。' : result.restart_required ? '该任务需要按当前配置重新准备。请使用“重新准备后重试”。' : result.recovery_action === 'resize' ? '从断点重试会缩小截断的消息窗口并保留后续原文。' : result.recovery_action === 'regenerate' ? '从断点重试会归档被拒绝的草稿，把校验问题反馈给模型，并继续各个尚未完成的窗口。' : result.regenerate_window_available ? '从断点重试会继续处理已有草稿。选择“重新生成当前窗口”可另行生成候选。' : result.kind === 'short_term' && result.state === 'cancelled' ? '该短期摘要窗口已停止；使用“从断点重试”或“重新准备后重试”恢复处理。' : '';
     buttons();
   }
   function clearTaskSource() { state.rawRequest += 1; $('task-source-content').textContent = ''; $('task-source-panel').hidden = true; }
@@ -500,7 +500,7 @@ export function initMaintenance(ui) {
         card.append(taskTiming(job), taskFeedback(job));
         const actions = element('div', '', 'row');
         if (['failed', 'cancelled'].includes(job.state)) {
-          if (job.error_code !== 'model_required') taskAction(actions, '从断点重试', () => taskMutation('tasks/retry', job));
+          if (!job.restart_required && job.recovery_action !== 'review' && job.error_code !== 'model_required') taskAction(actions, '从断点重试', () => taskMutation('tasks/retry', job));
           if (job.regenerate_window_available) taskAction(actions, '重新生成当前窗口', () => taskMutation('tasks/retry', job, { regenerate_window: true }));
           if (!['note', 'identity'].includes(job.kind)) taskAction(actions, '重新准备后重试', () => taskMutation('tasks/retry', job, { fresh: true }));
         }

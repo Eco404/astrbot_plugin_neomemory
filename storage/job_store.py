@@ -19,9 +19,11 @@ from typing import Any
 from .sqlite_executor import SQLiteExecutor
 
 try:
+    from ..core.extraction_apply import digest
     from ..core.extraction_regeneration import VERSION as REGENERATION_VERSION
     from ..core.candidate_feedback import SHORT_TERM_RECOVERY_VERSION, TOPIC_RECOVERY_VERSION
 except ImportError:
+    from core.extraction_apply import digest
     from core.extraction_regeneration import VERSION as REGENERATION_VERSION
     from core.candidate_feedback import SHORT_TERM_RECOVERY_VERSION, TOPIC_RECOVERY_VERSION
 
@@ -81,113 +83,51 @@ def _checkpoint_json(checkpoint):
     return _json(checkpoint)
 
 
-def _manual_retry_checkpoint(job):
+def _recovery_lanes(job):
     checkpoint = job["checkpoint"]
-    error_code = job.get("error_code")
-    candidate_kind = job.get("kind") in {
-        "extract", "rebuild", "profile_rebuild", "relationship_rebuild", "context_rebuild",
-        "topic_consolidate",
-    }
-    clear_candidate = bool(
-        candidate_kind and (error_code == "invalid_topic_output"
-        or error_code in {"invalid_output", "unknown_reference", "output_incomplete", "prompt_budget_exceeded"}
-        or (isinstance(error_code, str) and (error_code.startswith("expected_")
-                                             or error_code.startswith("coverage_"))))
-    )
-
-    def has_candidate_diagnostics(container):
-        if not isinstance(container, dict):
-            return False
-        if container.get("validation_errors") or container.get("errors"):
-            return True
-        return any(has_candidate_diagnostics(container.get(key)) for key in ("window", "topic_window", "topic_synthesis"))
-
-    clear_candidate = clear_candidate or (candidate_kind and has_candidate_diagnostics(checkpoint))
-
-    def reset_candidate(container):
-        """Discard only the failed model draft before a manual resume.
-
-        A normal retry resumes committed windows, but a terminal candidate
-        validation failure must not reuse the same raw response and exhausted
-        correction counter.  The frozen input and progress remain intact.
-        """
-        if not isinstance(container, dict):
-            return
-        for key in ("raw", "canonical_raw", "validation_errors", "model_request_digest",
-                    "response_diagnostics"):
-            container.pop(key, None)
-        container.pop("regeneration", None)
-        if "corrections" in container:
-            container["corrections"] = 0
-        if "correction_attempt" in container:
-            container["correction_attempt"] = 0
-
-    def reset_failed_lane(lane):
-        if not isinstance(lane, dict):
-            return
-        # Rebuilds keep the active topic synthesis nested in the lane.
-        for candidate in (
-            lane,
-            lane.get("window"),
-            lane.get("topic_window"),
-            lane.get("topic_synthesis", {}).get("topic_window")
-            if isinstance(lane.get("topic_synthesis"), dict) else None,
-        ):
-            if clear_candidate and isinstance(candidate, dict) and "raw" in candidate:
-                reset_candidate(candidate)
-
-    if checkpoint.get("sections"):
-        failed_section = checkpoint.get("failed_section")
-        if failed_section in checkpoint["sections"]:
-            reset_failed_lane(checkpoint["sections"][failed_section])
-        else:
-            for lane in checkpoint["sections"].values():
-                if lane.get("state") != "succeeded":
-                    reset_failed_lane(lane)
-    else:
-        reset_failed_lane(checkpoint)
-        reset_failed_lane(checkpoint.get("window"))
-        reset_failed_lane(checkpoint.get("topic_window"))
-        synthesis = checkpoint.get("topic_synthesis")
-        if isinstance(synthesis, dict):
-            reset_failed_lane(synthesis)
-    for lane in checkpoint.get("section_progress", {}).values():
-        if lane["state"] != "succeeded":
-            lane.update(state="queued", attempt=1)
-            for field in ("available_at", "error_code", "retry_exhausted"):
-                lane.pop(field, None)
-    return _checkpoint_json(checkpoint)
-
-
-def _candidate_windows(checkpoint):
-    """Yield failed model windows that should remain inspectable on retry."""
-    if not isinstance(checkpoint, dict):
+    if "sections" not in checkpoint:
+        yield checkpoint, job["error_code"]
         return
-    seen = set()
+    for name, lane in checkpoint["sections"].items():
+        progress = checkpoint["section_progress"][name]
+        if progress["state"] != "succeeded":
+            yield lane, progress.get("error_code")
 
-    def visit(container):
-        if not isinstance(container, dict):
-            return
-        if "raw" in container and id(container) not in seen:
-            seen.add(id(container))
-            yield container
-        for key in ("window", "topic_window"):
-            child = container.get(key)
-            if isinstance(child, dict):
-                yield from visit(child)
-        synthesis = container.get("topic_synthesis")
-        if isinstance(synthesis, dict):
-            yield from visit(synthesis)
 
-    sections = checkpoint.get("sections")
-    if isinstance(sections, dict):
-        failed_section = checkpoint.get("failed_section")
-        lanes = ([sections[failed_section]] if failed_section in sections
-                 else [lane for lane in sections.values() if lane.get("state") != "succeeded"])
-        for lane in lanes:
-            yield from visit(lane)
-    else:
-        yield from visit(checkpoint)
+def _drafts(job):
+    for lane, error_code in _recovery_lanes(job):
+        if job["kind"] == "short_term" and "raw" in lane:
+            yield "short_term", lane, error_code, ("SELECT 1 FROM short_term_receipts WHERE job_id=?", (job["job_id"],))
+        window = lane.get("window", {})
+        if "raw" in window:
+            generation = lane.get("generation_id", job["payload"].get("expected_generation_id"))
+            batch_id = "batch_" + digest([job["scope_key"], generation, window.get("source_ids", [])])
+            yield "extraction", window, error_code, ("SELECT 1 FROM extraction_batches WHERE batch_id=?", (batch_id,))
+        topic = lane.get("topic_window") or lane.get("topic_synthesis", {}).get("topic_window", {})
+        if "raw" in topic:
+            yield "topic", topic, error_code, ("SELECT 1 FROM topic_receipts WHERE receipt_key=?", (topic["receipt_key"],))
+
+
+def _draft_action(kind, window, code, job):
+    diagnostics = window.get("response_diagnostics", {})
+    if (kind in {"extraction", "short_term"}
+            and code in {"output_incomplete", "invalid_short_term_output"}
+            and (diagnostics.get("finish_reason") == "length" or diagnostics.get("incomplete_reason") == "max_output_tokens")
+            and len(window.get("source_ids", job["payload"].get("source_ids", []))) > 1):
+        return "resize"
+    if (code in {"invalid_output", "invalid_short_term_output", "invalid_topic_output", "unknown_reference", "output_incomplete"}
+            or any(item.get("type") == code for item in window.get("validation_errors", []))):
+        return "regenerate"
+    return "resume"
+
+
+def _restart_required(job):
+    return bool(job["payload"].get("topic_inputs_replaced")) or job["error_code"] in {
+        "context_changed", "configuration_changed", "model_required", "model_request_changed",
+        "configuration_or_context_changed", "generation_changed", "source_range_changed",
+        "summary_context_changed", "model_test_configuration_changed", "prompt_budget_exceeded", "oversized_source",
+        "source_budget_exceeded",
+    }
 
 
 def inspection_checkpoint(job):
@@ -349,8 +289,11 @@ class JobStore:
                 return None
             job_id = row["job_id"]
             if row["state"] == "failed":
+                previous = await _get(connection, job_id)
+                checkpoint = await self._prepare_retry(connection, previous)
                 await connection.execute(
-                    "UPDATE memory_jobs SET attempt=0,recovery_mode='resume' WHERE job_id=?", (job_id,))
+                    "UPDATE memory_jobs SET attempt=0,recovery_mode='resume',checkpoint_json=? WHERE job_id=?",
+                    (checkpoint, job_id))
             await connection.execute(
                 "UPDATE memory_jobs SET state='running',owner=?,lease_token=?,lease_until=?,"
                 "attempt=attempt+1,error_type=NULL,error_code=NULL,updated_at=? WHERE job_id=?",
@@ -456,6 +399,16 @@ class JobStore:
             )
             return await _get(connection, job_id)
 
+    async def defer_until(self, job_id, lease_token, available_at):
+        """Park a task until one of its independently budgeted sections can run."""
+        async with self.database.transaction() as connection:
+            await self._lease(connection, job_id, lease_token)
+            await connection.execute(
+                "UPDATE memory_jobs SET state='retry_wait',available_at=?,updated_at=?,"
+                "attempt=MAX(0,attempt-1),owner=NULL,lease_token=NULL,lease_until=NULL WHERE job_id=?",
+                (available_at, self.clock(), job_id),
+            )
+
     async def release(self, job_id: str, lease_token: str) -> dict[str, Any]:
         """Graceful shutdown returns unfinished work to its durable queue."""
         async with self.database.transaction() as connection:
@@ -551,26 +504,71 @@ class JobStore:
         return {"job_id": job_id, "deleted": True, "removed_generation_id": removed_generation,
                 "removed_node_count": len(node_ids)}
 
-    async def retry(self, job_id: str) -> dict[str, Any]:
-        """Explicitly resume a failed/cancelled task, after a fresh admission check."""
+    async def recovery_actions(self, job):
+        if job["state"] not in {"failed", "cancelled"}:
+            return {"regenerate_window_available": False, "restart_required": False, "recovery_action": None}
+        regenerate = False
+        action = "resume"
+        async with self.database.transaction(write=False) as connection:
+            for kind, window, code, receipt in _drafts(job):
+                if not await (await connection.execute(*receipt)).fetchone():
+                    regenerate = True
+                    candidate_action = _draft_action(kind, window, code, job)
+                    if candidate_action != "resume":
+                        action = candidate_action
+        fresh = _restart_required(job)
+        if fresh:
+            action = "reprepare"
+        if job["error_code"] in {"note_revision_changed", "identity_confirmation_changed"}:
+            action = "review"
+        return {"regenerate_window_available": regenerate and not fresh, "restart_required": fresh,
+                "recovery_action": action}
+
+    async def _prepare_retry(self, connection, job, *, regenerate=False):
+        checkpoint = job["checkpoint"]
+        replaced = committed = False
+        for kind, window, code, receipt in _drafts(job):
+            if await (await connection.execute(*receipt)).fetchone():
+                committed = True
+                continue
+            if not regenerate and _draft_action(kind, window, code, job) != "regenerate":
+                continue
+            candidate_id = await self._archive_candidate(connection, job["job_id"], window, code or "manual_regeneration")
+            for field in ("raw", "canonical_raw", "validation_errors", "response_diagnostics", "model_request_digest"):
+                window.pop(field, None)
+            versions = {"short_term": SHORT_TERM_RECOVERY_VERSION, "topic": TOPIC_RECOVERY_VERSION,
+                        "extraction": REGENERATION_VERSION}
+            window["regeneration"] = {"version": versions[kind], "candidate_id": candidate_id}
+            if kind == "topic":
+                window["regeneration"]["refresh_feedback"] = True
+            replaced = True
+        if regenerate and not replaced:
+            if committed:
+                raise ValueError("candidate already committed; resume its receipt or indexing instead")
+            raise ValueError("task has no saved candidate")
+        for progress in checkpoint.get("section_progress", {}).values():
+            if progress["state"] != "succeeded":
+                progress.update(state="queued", attempt=1)
+                for field in ("available_at", "error_code", "retry_exhausted", "consecutive_failures"):
+                    progress.pop(field, None)
+        return _checkpoint_json(checkpoint)
+
+    async def retry(self, job_id: str, *, regenerate=False) -> dict[str, Any]:
         async with self.database.transaction() as connection:
             job = await _get(connection, job_id)
             if job is None:
                 raise KeyError(job_id)
             if job["state"] in ("queued", "retry_wait"):
-                return job  # Repeated UI clicks cannot create a second execution.
+                return job
             if job["state"] not in ("failed", "cancelled"):
                 raise JobConflict("only failed or cancelled tasks can be retried")
             await assert_scope_available(connection, job["scope_key"], exclude_job_id=job_id)
-            for window in _candidate_windows(job["checkpoint"]):
-                await self._archive_candidate(
-                    connection, job_id, window, job["error_code"] or "manual_retry"
-                )
+            checkpoint = await self._prepare_retry(connection, job, regenerate=regenerate)
             now = self.clock()
             await connection.execute(
                 "UPDATE memory_jobs SET state='queued',recovery_mode=NULL,hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
                 "error_type=NULL,error_code=NULL,result_json=NULL,checkpoint_json=? WHERE job_id=?",
-                (now, now, _manual_retry_checkpoint(job), job_id),
+                (now, now, checkpoint, job_id),
             )
             return await _get(connection, job_id)
 
@@ -617,64 +615,8 @@ class JobStore:
         return result
 
     async def regenerate_window(self, job_id: str) -> dict[str, Any]:
-        """Discard only the rejected response, preserving input and replay progress."""
-        async with self.database.transaction() as connection:
-            job = await _get(connection, job_id)
-            if job is None:
-                raise KeyError(job_id)
-            if job["state"] in ("queued", "retry_wait"):
-                return job
-            if job["state"] not in ("failed", "cancelled"):
-                raise JobConflict("only failed or cancelled tasks can regenerate a window")
-            inspected = inspection_checkpoint(job)
-            window = inspected.get("window")
-            topic = inspected.get("topic_window") or inspected.get("topic_synthesis", {}).get("topic_window")
-            if topic and "raw" in topic:
-                await assert_scope_available(connection, job["scope_key"], exclude_job_id=job_id)
-                cursor = await connection.execute("SELECT 1 FROM topic_receipts WHERE receipt_key=?", (topic["receipt_key"],))
-                if await cursor.fetchone():
-                    raise ValueError("topic already committed; resume its indexing instead")
-                candidate_id = await self._archive_candidate(connection, job_id, topic, job["error_code"] or "manual_regeneration")
-                topic.pop("raw")
-                topic.pop("response_diagnostics", None)
-                topic["regeneration"] = {"version": TOPIC_RECOVERY_VERSION, "candidate_id": candidate_id,
-                                         "refresh_feedback": True}
-                now = self.clock()
-                await connection.execute(
-                    "UPDATE memory_jobs SET state='queued',recovery_mode=NULL,hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
-                    "checkpoint_json=?,step='topic_prepare',error_type=NULL,error_code=NULL,result_json=NULL WHERE job_id=?",
-                    (now, now, _manual_retry_checkpoint(job), job_id))
-                return await _get(connection, job_id)
-            if job["kind"] == "short_term" and "raw" in job["checkpoint"]:
-                await assert_scope_available(connection, job["scope_key"], exclude_job_id=job_id)
-                cursor = await connection.execute("SELECT 1 FROM short_term_receipts WHERE job_id=?", (job_id,))
-                if await cursor.fetchone():
-                    raise ValueError("summary already committed; resume its receipt instead")
-                summary = job["checkpoint"]
-                candidate_id = await self._archive_candidate(connection, job_id, summary, job["error_code"] or "manual_regeneration")
-                summary.pop("raw")
-                summary.pop("response_diagnostics", None)
-                summary["regeneration"] = {"version": SHORT_TERM_RECOVERY_VERSION, "candidate_id": candidate_id}
-                now = self.clock()
-                await connection.execute(
-                    "UPDATE memory_jobs SET state='queued',recovery_mode=NULL,hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
-                    "checkpoint_json=?,step='short_term_prepared',error_type=NULL,error_code=NULL,result_json=NULL WHERE job_id=?",
-                    (now, now, _json(summary), job_id))
-                return await _get(connection, job_id)
-            if job["kind"] not in ("extract", "rebuild", "profile_rebuild", "relationship_rebuild", "context_rebuild") or not window or "raw" not in window:
-                raise ValueError("task has no saved extraction candidate")
-            await assert_scope_available(connection, job["scope_key"], exclude_job_id=job_id)
-            candidate_id = await self._archive_candidate(connection, job_id, window, job["error_code"] or "manual_regeneration")
-            for key in ("raw", "canonical_raw", "validation_errors", "model_request_digest", "response_diagnostics"):
-                window.pop(key, None)
-            window["regeneration"] = {"version": REGENERATION_VERSION, "candidate_id": candidate_id}
-            now = self.clock()
-            await connection.execute(
-                "UPDATE memory_jobs SET state='queued',recovery_mode=NULL,hide_on_success=0,attempt=0,available_at=?,updated_at=?,"
-                "checkpoint_json=?,step='prepared',error_type=NULL,error_code=NULL,result_json=NULL "
-                "WHERE job_id=?", (now, now, _manual_retry_checkpoint(job), job_id),
-            )
-            return await _get(connection, job_id)
+        """Regenerate uncommitted drafts and retain completed work in every section."""
+        return await self.retry(job_id, regenerate=True)
 
     async def get(self, job_id: str) -> dict[str, Any] | None:
         return _job(await self.database.fetchone(

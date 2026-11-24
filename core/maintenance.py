@@ -513,9 +513,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         result["hidden_from_task_list"] = bool(job["hide_on_success"] and job["state"] == "succeeded")
         checkpoint = inspection_checkpoint(job)
         window = checkpoint.get("window", {})
-        result["regenerate_window_available"] = (
-            job["state"] in {"failed", "cancelled"} and job["kind"] in {"extract", "rebuild", *CONTEXT_REBUILD_MODELS}
-            and "raw" in window)
+        result.update(await self.jobs.recovery_actions(job))
         history = await self.jobs.list_candidates(job_id, limit=11)
         result["candidate_history"] = history[:10]
         result["candidate_history_has_more"] = len(history) > 10
@@ -552,30 +550,18 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                     previous_summary=previous["summary_text"] if previous else "")
             except ValueError:
                 result["candidate_format_invalid"] = True
-        result["restart_required"] = bool(job["payload"].get("topic_inputs_replaced")) or job["error_code"] in {
-            "context_changed", "configuration_changed", "model_required",
-            "configuration_or_context_changed",
-            "generation_changed", "summary_changed", "summary_context_changed", "model_test_configuration_changed"}
         if job["kind"] == "short_term":
             summary = checkpoint
             result["validation_errors"] = summary.get("errors", [])
             result["automatic_corrections"] = summary.get("corrections", 0)
             result["automatic_correction_limit"] = summary.get("correction_limit", 1) if summary else None
             result["response_diagnostics"] = summary.get("response_diagnostics", {})
-            receipt = await self.memory.database.fetchone("SELECT 1 FROM short_term_receipts WHERE job_id=?", (job_id,))
-            result["regenerate_window_available"] = job["state"] in {"failed", "cancelled"} and "raw" in summary and not receipt
         topic_window = checkpoint.get("topic_window", {}) or checkpoint.get("topic_synthesis", {}).get("topic_window", {})
         topic_budget = topic_window.get("budget") or checkpoint.get("topic_budget") or checkpoint.get("topic_synthesis", {}).get("topic_budget")
         if topic_budget:
             result["topic_budget"] = topic_budget
-            if job["error_code"] == "prompt_budget_exceeded":
-                result["restart_required"] = True
         if topic_window:
-            from .topic_maintenance import TopicStore
             from .topic_schema import parse_output_for_context as parse_topic_output
-            result["regenerate_window_available"] = (
-                job["state"] in {"failed", "cancelled"} and "raw" in topic_window
-                and await TopicStore(self.memory).receipt(topic_window["receipt_key"]) is None)
             result["validation_errors"] = topic_window.get("errors", [])
             result["automatic_corrections"] = topic_window["corrections"]
             result["automatic_correction_limit"] = topic_window["correction_limit"]
