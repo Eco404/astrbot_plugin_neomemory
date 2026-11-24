@@ -43,16 +43,28 @@ class PrivateImageCache:
         self._caption_events = weakref.WeakValueDictionary()
         self._limiter = asyncio.Semaphore(4)
         self._sweeper = None
+        self.last_cleanup_error = None
+        self.last_cleanup_at = None
 
     async def open(self):
-        self.directory.mkdir(parents=True, exist_ok=True)
-        self.prune()
+        self._cleanup()
         self._sweeper = asyncio.create_task(self._sweep())
 
     async def _sweep(self):
         while True:
             await asyncio.sleep(min(300, self.ttl_seconds))
+            self._cleanup()
+
+    def _cleanup(self):
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
             self.prune()
+        except OSError as exc:
+            self.last_cleanup_error = type(exc).__name__
+            logger.warning("NeoMemory private image cleanup delayed: %s", self.last_cleanup_error)
+        else:
+            self.last_cleanup_error = None
+            self.last_cleanup_at = time.time()
 
     def prune(self):
         files = []
@@ -147,9 +159,12 @@ class PrivateImageCache:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         prefixes = {hashlib.sha256(owner.encode()).hexdigest() for owner in owners}
-        for file in self.directory.iterdir():
-            if file.name.partition(".")[0] in prefixes:
-                file.unlink(missing_ok=True)
+        try:
+            for file in self.directory.iterdir():
+                if file.name.partition(".")[0] in prefixes:
+                    file.unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass
 
     async def close(self):
         tasks = list(self._pending.values())

@@ -27,7 +27,7 @@ class Companion:
         return True
 
     def add(self, stamp, owner='u', persona='p'):
-        self.entries.append(dict(id=str(len(self.entries)+1), time=stamp, owner=owner, content='hello',
+        self.entries.append(dict(id=str(len(self.entries)+1), memory_id=str(len(self.entries)+1), time=stamp, owner=owner, content='hello',
                                  metadata={'host_persona_id': persona}, context={'role': {'subject_id': 'companion-role'}}))
 
     async def list_delivered_proactive_messages(self, registration_id, *, after, since, until, highwater, limit):
@@ -74,13 +74,15 @@ async def test_auto_receipts_from_enable_only_resume_on_restart_and_after_transi
     await sync.stop()
     assert await sync.sync_page()
     assert adapter.writes == [('2',False)]
-    resume = ProactiveSync(sync.plugin, clock=lambda: 20.)
+    now = [20.]
+    resume = ProactiveSync(sync.plugin, clock=lambda: now[0])
     resume.PAGE_SIZE = 1
     adapter.accept = False
     with pytest.raises(RetryableJobError):
         await resume.sync_page()
     assert state[sync.STATE_KEY]['after'] == 2
     adapter.accept = True
+    now[0] += 5
     assert not await resume.sync_page()
     assert adapter.writes[-1] == ('3',False)
     await resume.configure(False)
@@ -102,3 +104,37 @@ async def test_cursor_skips_unresolved_and_default_host_personas_then_reads_supp
         pass
     assert state[sync.STATE_KEY]['after'] == 3
     assert adapter.writes == [('3', False)]
+
+
+@pytest.mark.asyncio
+async def test_repeated_failure_in_middle_of_page_resumes_confirmed_prefix_after_restart():
+    sync, adapter, _, state = setup()
+    sync.PAGE_SIZE = 10
+    now = [10.]
+    sync.clock = lambda: now[0]
+    await sync.configure(True)
+    await sync.stop()
+    for at in [11, 12, 13]:
+        adapter.add(at)
+    accept = adapter.accept_delivery
+    async def fail_second(item):
+        if item["memory_id"] != "2":
+            return await accept(item)
+    adapter.accept_delivery = fail_second
+    with pytest.raises(RetryableJobError):
+        await sync.sync_page()
+    assert state[sync.STATE_KEY]["after"] == 0
+    assert sync.health()["blocked_receipt"] == "2"
+    assert adapter.writes == [("1", False)]
+    resumed = ProactiveSync(sync.plugin, clock=sync.clock)
+    assert not await resumed.sync_page()
+    now[0] += 5
+    with pytest.raises(RetryableJobError):
+        await resumed.sync_page()
+    assert resumed.health()["retry_at"] == now[0] + 10
+    assert adapter.writes == [("1", False)]
+    adapter.accept_delivery = accept
+    now[0] += 10
+    assert not await resumed.sync_page()
+    assert adapter.writes == [("1", False), ("2", False), ("3", False)]
+    assert resumed.health() == {"after": 3, "last_success_at": now[0]}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import importlib.metadata
+import time
 import weakref
 from dataclasses import replace
 from pathlib import Path
@@ -158,7 +159,7 @@ class NeoMemoryPlugin(Star):
         self._unpersisted_overflow = 0
         self._admission_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[Any]] = set()
-        self._failed_sources: dict[str, Any] = {}
+        self._failed_sources: dict[str, tuple[Any, float]] = {}
         self._max_failed_sources = 1000
         self._ready = False
         self.terminating = False
@@ -182,7 +183,8 @@ class NeoMemoryPlugin(Star):
             self.ingress_store = IngressStore(self.data_dir / "ingress.db",
                 max_entries=self.config.ingress_max_entries, max_bytes=self.config.ingress_max_bytes)
             await self.ingress_store.open()
-            self.ingress = IngressService(self.ingress_store, self.source_store, self.config)
+            self.ingress = IngressService(self.ingress_store, self.source_store, self.config,
+                                         readmit=self.retry_failed_sources)
             self.memory_store = MemoryStore(
                 self.data_dir / "memory.db",
                 source_exists=self.source_store.has_source,
@@ -580,11 +582,12 @@ class NeoMemoryPlugin(Star):
         return await self.runtime.notes(event, action, content, note_id, query, status)
 
     def _remember_unpersisted(self, source, exc):
-        if source.source_id in self._failed_sources or len(self._failed_sources) < self._max_failed_sources:
-            self._failed_sources[source.source_id] = source
-        else:
-            self._unpersisted_overflow += 1
-        logger.warning("NeoMemory ingress admission failed: %s", type(exc).__name__)
+        if source.source_id not in self._failed_sources:
+            if len(self._failed_sources) < self._max_failed_sources:
+                self._failed_sources[source.source_id] = (source, time.time())
+            else:
+                self._unpersisted_overflow += 1
+            logger.warning("NeoMemory ingress admission failed: %s", type(exc).__name__)
 
     async def _persist_source(self, source) -> None:
         if self.ingress is None or is_unsupported_persona(source.persona_id):
@@ -600,7 +603,7 @@ class NeoMemoryPlugin(Star):
         async with self._admission_lock:
             # A previously unpersisted record must not be overtaken when queue
             # space recovers. The queue itself orders only admitted records.
-            predecessors = [item for item in self._failed_sources.values()
+            predecessors = [item for item, _ in self._failed_sources.values()
                             if item.identity.stream_id == source.identity.stream_id]
             predecessor_ids = {item.source_id for item in predecessors}
             candidates = predecessors + [item for item in fragments
@@ -621,14 +624,28 @@ class NeoMemoryPlugin(Star):
         """Try to durably admit emergency records; durable source retries run separately."""
         if self.ingress is None:
             return 0
-        pending = list(self._failed_sources.values())
-        if limit is not None:
-            pending = pending[:max(0, int(limit))]
-        for source in pending:
-            await self._persist_source(source)
-        # New arrivals may be admitted concurrently between awaits; they must
-        # not turn this batch's restored count negative.
-        return sum(source.source_id not in self._failed_sources for source in pending)
+        if not self._failed_sources:
+            return 0
+        async with self._admission_lock:
+            restored = 0
+            blocked_streams = set()
+            for source, _ in list(self._failed_sources.values()):
+                if limit is not None and restored >= limit:
+                    break
+                if source.identity.stream_id in blocked_streams:
+                    continue
+                try:
+                    await self.ingress.submit(source)
+                except Exception as exc:
+                    # A full or unavailable inbox affects every stream. Let its
+                    # writer drain before trying another emergency admission.
+                    if getattr(exc, "code", None) in {"ingress_entry_limit", "ingress_persistence_unavailable"}:
+                        break
+                    blocked_streams.add(source.identity.stream_id)
+                else:
+                    self._failed_sources.pop(source.source_id)
+                    restored += 1
+            return restored
 
     def _schedule(self, coroutine) -> asyncio.Task:
         task = asyncio.create_task(coroutine)
@@ -726,12 +743,18 @@ class NeoMemoryPlugin(Star):
             )
         result = await self.source_store.health()
         result["memory"] = await self.memory_store.health()
+        if self.image_cache:
+            result["image_cache_cleanup"] = {"last_success_at": self.image_cache.last_cleanup_at,
+                                              "error_type": self.image_cache.last_cleanup_error}
         if self.proactive_sync and self.proactive_sync.last_issue:
             result["companion_delivery_sync"] = self.proactive_sync.last_issue
+        if self.proactive_sync and self.proactive_sync.progress:
+            result["companion_delivery_progress"] = self.proactive_sync.health()
         result["storage_bytes"] = await asyncio.to_thread(self._storage_bytes)
         if self.ingress is not None:
             result["ingress"] = {**await self.ingress.health(),
-                "unpersisted_count": len(self._failed_sources), "unpersisted_overflow": self._unpersisted_overflow}
+                "unpersisted_count": len(self._failed_sources), "unpersisted_overflow": self._unpersisted_overflow,
+                "oldest_unpersisted_at": min((at for _, at in self._failed_sources.values()), default=None)}
         if self.maintenance is not None:
             result["maintenance"] = {**self.maintenance.runner.health(),
                 **await self.jobs.health(), "scanner_error_type": self.maintenance.last_error_type,

@@ -1,7 +1,7 @@
 import { initTaskModels } from './task-models.js';
 import { initRecallInspector } from './recall.js';
-import { taskTiming, taskFeedback } from './task-progress.js';
-import { $, element, notify, pretty, on, onSearchForm, newKey, emotionLabels, emotionEntries, enhanceSelect, setupTabs } from './ui.js';
+import { formatDuration, taskTiming, taskFeedback } from './task-progress.js';
+import { $, date, element, notify, pretty, on, onSearchForm, newKey, emotionLabels, emotionEntries, enhanceSelect, setupTabs } from './ui.js';
 
 function attemptLabel(attempt = 0, limit = 0) {
   return attempt > limit ? `网络恢复第${attempt - limit}次` : `尝试 ${attempt} / ${limit}`;
@@ -359,8 +359,11 @@ export function initMaintenance(ui) {
     const health = await bridge.apiGet('health');
     pretty('health', health);
     const deliveryIssue = $('companion-delivery-issue');
-    deliveryIssue.textContent = health.companion_delivery_sync ? '陪伴插件回执同步：' + health.companion_delivery_sync : '';
-    deliveryIssue.hidden = !health.companion_delivery_sync;
+    const delivery = health.companion_delivery_progress || {};
+    deliveryIssue.textContent = delivery.blocked_receipt
+      ? `等待重试陪伴回执 ${delivery.blocked_receipt} · 下次尝试 ${date(delivery.retry_at)}`
+      : health.companion_delivery_sync ? '陪伴插件回执同步：' + health.companion_delivery_sync : '';
+    deliveryIssue.hidden = !deliveryIssue.textContent;
     renderContextBudget(health.recall?.diagnostics?.last_context);
     const sizes = Object.entries(health.storage_bytes || {});
     $('storage-usage').replaceChildren(...sizes.map(([name, size]) => element('p', name + ' · ' + bytes(size))));
@@ -386,13 +389,16 @@ export function initMaintenance(ui) {
       $('ingress-byte-progress').max = summary.max_bytes || 1;
       $('ingress-byte-progress').value = summary.payload_bytes || 0;
       const counts = summary.counts || {};
+      const pendingTimes = [summary.oldest_pending_at, emergency.oldest_unpersisted_at].filter(Number.isFinite);
       $('ingress-summary').textContent = `排队 ${counts.queued || 0} · 写入 ${counts.running || 0} · 等待重试 ${counts.retry_wait || 0} · 需要人工重试 ${counts.failed || 0}`
+        + (pendingTimes.length ? ` · 最久待写 ${formatDuration(Date.now() / 1000 - Math.min(...pendingTimes))}` : '')
+        + (health.last_source_write_at ? ` · 最近写入 ${date(health.last_source_write_at)}` : '')
         + (summary.last_error_code ? ` · 最近诊断：${summary.last_error_code}` : '');
       const unpersisted = emergency.unpersisted_count || 0;
       const overflow = emergency.unpersisted_overflow || 0;
       $('ingress-unpersisted').hidden = !unpersisted && !overflow;
       $('ingress-unpersisted').textContent = (unpersisted
-        ? `尚有 ${unpersisted} 条记录只保存在本次运行的内存中，重启会丢失。请恢复磁盘或待写容量后点击“重试全部待写记录”。`
+        ? `尚有 ${unpersisted} 条记录只保存在本次运行的内存中，重启会丢失。磁盘或待写容量恢复后会自动按序写入。`
         : '当前没有尚未落盘的内存应急记录。')
         + (overflow ? ` 本次运行另有 ${overflow} 条记录超过内存应急容量，未能保存。` : '');
       $('ingress-list').replaceChildren();
@@ -401,7 +407,7 @@ export function initMaintenance(ui) {
         const card = element('article', '', 'task');
         card.dataset.state = item.state;
         card.append(element('div', `${states[item.state] || item.state} · ${item.source_id}`, 'task-title'));
-        card.append(element('p', `会话流：${item.stream_id} · 尝试 ${item.attempts} / ${item.max_attempts} · ${bytes(item.payload_bytes)}`, 'muted'));
+        card.append(element('p', `会话流：${item.stream_id} · 累计尝试 ${item.total_attempts ?? item.attempts} 次 · ${bytes(item.payload_bytes)}`, 'muted'));
         card.append(taskFeedback(item));
         const actions = element('div', '', 'row');
         taskAction(actions, '查看原文', () => ingressDetail(item.source_id));

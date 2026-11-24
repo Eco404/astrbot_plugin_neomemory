@@ -60,7 +60,8 @@ class SourceStore:
             "SELECT COUNT(*) AS count FROM source_records"
         )
         stream_row = await self.database.fetchone(
-            "SELECT COUNT(*) AS count FROM conversation_streams"
+            "SELECT COUNT(*) AS count,(SELECT MAX(updated_at) FROM source_cursors) AS last_write "
+            "FROM conversation_streams"
         )
         return {
             "path": str(self.path),
@@ -69,6 +70,7 @@ class SourceStore:
             "expected_schema_version": CURRENT_SCHEMA_VERSION,
             "source_count": int(row["count"] if row else 0),
             "stream_count": int(stream_row["count"] if stream_row else 0),
+            "last_source_write_at": stream_row["last_write"],
         }
 
     @staticmethod

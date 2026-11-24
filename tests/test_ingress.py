@@ -140,7 +140,8 @@ async def test_failure_keeps_stream_order_other_stream_continues_and_manual_retr
     now[0] += 5
     assert await service.process_once() is None
     row = await service.get(first.source_id)
-    assert row["state"] == "failed" and row["attempts"] == 2
+    assert row["state"] == "retry_wait" and row["attempts"] == 2
+    assert row["available_at"] == now[0] + 6 * 3600
     assert row["error_code"] == "source_operational_error"
     assert "secret" not in json.dumps(await service.list())
     assert "hello" not in json.dumps(await service.list())
@@ -154,6 +155,36 @@ async def test_failure_keeps_stream_order_other_stream_continues_and_manual_retr
     assert captured2.source_id == second.source_id
     assert (captured1.sequence_no, captured2.sequence_no) == (1, 2)
     assert (await service.health())["pending_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_exhausted_transient_head_restarts_and_drains_in_order(ingress, monkeypatch):
+    service, now = ingress
+    first, second = make_source("busy-head"), make_source("following")
+    original = service.sources.capture
+
+    async def busy(source):
+        raise OSError("write temporarily unavailable")
+
+    monkeypatch.setattr(service.sources, "capture", busy)
+    await service.submit(first)
+    await service.submit(second)
+    now[0] += 5
+    await service.process_once()
+    assert (await service.health())["oldest_pending_at"] == 100
+    # Also exercise persisted exhausted rows written before scheduled recovery.
+    await service.store.database.execute(
+        "UPDATE ingress_records SET state='failed',available_at=updated_at WHERE source_id=?", (first.source_id,))
+    await service.store.close()
+    await service.store.open()
+    monkeypatch.setattr(service.sources, "capture", original)
+    now[0] += 6 * 3600 - 1
+    assert await service.process_once() is None
+    now[0] += 1
+    assert (await service.process_once()).source_id == first.source_id
+    assert (await service.process_once()).source_id == second.source_id
+    assert await service.list() == []
+    assert (await service.sources.health())["last_source_write_at"]
 
 
 @pytest.mark.asyncio

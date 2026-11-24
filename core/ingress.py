@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,9 +52,11 @@ class IngressService:
     used, and an obsolete claimant cannot acknowledge another worker's row.
     """
 
-    def __init__(self, store: IngressStore, sources: SourceStore, config: Any):
+    def __init__(self, store: IngressStore, sources: SourceStore, config: Any, *,
+                 readmit: Callable[[int], Awaitable[int]] | None = None):
         self.store = store
         self.sources = sources
+        self.readmit = readmit
         self.max_attempts = int(getattr(config, "ingress_max_attempts", 3))
         self.retry_seconds = float(getattr(config, "ingress_retry_seconds", 5))
         self.poll_seconds = float(getattr(config, "ingress_poll_seconds", 0.5))
@@ -174,7 +177,8 @@ class IngressService:
         # If this acknowledgement fails, retain the row. SourceStore deduplicates
         # a resumed capture, including a commit that completed during cancellation.
         try:
-            await self.store.acknowledge(claim)
+            if await self.store.acknowledge(claim):
+                self.last_error_code = None
         except asyncio.CancelledError:
             await asyncio.shield(self.store.release(claim))
             raise
@@ -187,9 +191,14 @@ class IngressService:
         return result
 
     async def _run(self) -> None:
+        loop = asyncio.get_running_loop()
+        next_readmission = loop.time()
         while not self._stopping:
             try:
                 self._wake.clear()
+                if self.readmit is not None and loop.time() >= next_readmission:
+                    next_readmission = loop.time() + self.retry_seconds
+                    await self.readmit(32)
                 captured = await self.process_once()
                 if captured is not None:
                     continue

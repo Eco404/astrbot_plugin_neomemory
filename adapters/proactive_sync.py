@@ -30,6 +30,7 @@ class ProactiveSync:
         self._worker = None
         self._enabled = False
         self.last_issue = None
+        self.progress = {}
 
     async def configure(self, enabled):
         if not enabled:
@@ -47,6 +48,7 @@ class ProactiveSync:
     async def stop(self):
         self._enabled = False
         self.last_issue = None
+        self.progress = {}
         if self._worker:
             self._worker.cancel()
             await asyncio.gather(self._worker, return_exceptions=True)
@@ -73,29 +75,64 @@ class ProactiveSync:
 
     async def sync_page(self):
         state = await self.pipeline.get_state(self.STATE_KEY)
-        page = await self.page(since=state["since"], after=state["after"])
+        self.progress = state
+        if state.get("retry_at", 0) > self.clock():
+            return False
+        page = await self.page(since=state["since"], after=state["after"], highwater=state.get("page_end"))
         if state.get("installation_id", page["installation_id"]) != page["installation_id"]:
             state = {"since": state["since"], "after": 0, "installation_id": page["installation_id"]}
-            await self.pipeline.set_state(self.STATE_KEY, state)
+            await self._save_progress(state)
             return True
+        # The companion exposes only a page cursor. Retain confirmed receipt IDs
+        # until every record up to that cursor has reached durable ingress.
+        confirmed = set(state.get("confirmed", ()))
         for record in page["items"]:
-            if is_supported_persona(record["metadata"].get("host_persona_id")) and self.plugin.source_store.cleaner.clean(record["content"]).strip():
-                if not await self.plugin.external_memory.accept_delivery(record):
+            receipt = record["memory_id"]
+            if receipt in confirmed:
+                continue
+            try:
+                if (is_supported_persona(record["metadata"].get("host_persona_id"))
+                        and self.plugin.source_store.cleaner.clean(record["content"]).strip()
+                        and not await self.plugin.external_memory.accept_delivery(record)):
                     raise RetryableJobError("companion_delivery_pending")
-        new = {**state, "installation_id": page["installation_id"], "after": page["next_cursor"]}
+            except Exception:
+                attempts = state.get("attempts", 0) + 1 if state.get("blocked_receipt") == receipt else 1
+                retry_at = self.clock() + min(300, 5 * 2 ** min(6, attempts - 1))
+                blocked = {**state, "installation_id": page["installation_id"], "page_end": page["next_cursor"],
+                           "confirmed": sorted(confirmed), "blocked_receipt": receipt,
+                           "attempts": attempts, "retry_at": retry_at}
+                if confirmed.difference(state.get("confirmed", ())):
+                    blocked["last_success_at"] = self.clock()
+                await self._save_progress(blocked)
+                raise
+            confirmed.add(receipt)
+        new = {"since": state["since"], "installation_id": page["installation_id"], "after": page["next_cursor"]}
+        if page["items"] or new["after"] != state["after"]:
+            new["last_success_at"] = self.clock()
+        elif "last_success_at" in state:
+            new["last_success_at"] = state["last_success_at"]
         if state != new:
-            await self.pipeline.set_state(self.STATE_KEY, new)
+            await self._save_progress(new)
         return page["has_more"]
+
+    async def _save_progress(self, state):
+        await self.pipeline.set_state(self.STATE_KEY, state)
+        self.progress = state
+
+    def health(self):
+        return {key: self.progress[key] for key in ("after", "blocked_receipt", "retry_at", "last_success_at")
+                if key in self.progress}
 
     async def _poll(self):
         while self._enabled:
             try:
                 more = await self.sync_page()
-                self.last_issue = None
+                if not self.progress.get("blocked_receipt"):
+                    self.last_issue = None
                 if more:
                     continue
             except ReceiptsUnavailable as exc:
                 self.last_issue = exc.message
             except Exception as exc:
                 self.last_issue = type(exc).__name__
-            await asyncio.sleep(5)
+            await asyncio.sleep(max(5, self.progress.get("retry_at", 0) - self.clock()))

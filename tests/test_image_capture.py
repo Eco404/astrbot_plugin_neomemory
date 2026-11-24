@@ -64,6 +64,32 @@ def test_host_caption_requires_one_direct_image():
 
 
 @pytest.mark.asyncio
+async def test_image_sweeper_recovers_after_temporary_filesystem_error(tmp_path, monkeypatch):
+    cache = PrivateImageCache(tmp_path / "images", ttl_seconds=.01)
+    original = cache.prune
+    recovered = asyncio.Event()
+    calls = 0
+
+    def once_unavailable():
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise PermissionError("temporary image directory failure")
+        original()
+        recovered.set()
+
+    monkeypatch.setattr(cache, "prune", once_unavailable)
+    await cache.open()
+    try:
+        assert cache.last_cleanup_error == "PermissionError"
+        await asyncio.wait_for(recovered.wait(), 2)
+        assert cache.last_cleanup_error is None
+        assert cache.last_cleanup_at is not None
+    finally:
+        await cache.close()
+
+
+@pytest.mark.asyncio
 async def test_image_cache_pending_order_reopen_expiry_and_discard(tmp_path):
     gate = asyncio.Event()
     async def resolve(ref):

@@ -7,6 +7,7 @@ failed stream head blocks later rows in that stream; unrelated streams continue.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import sqlite3
@@ -27,6 +28,9 @@ except ImportError:
     from core.source_ingest import CapturedSource
 
 from .sqlite_executor import SQLiteExecutor
+
+
+INGRESS_RECOVERY_SECONDS = 6 * 3600
 
 
 class IngressError(RuntimeError):
@@ -102,10 +106,19 @@ def classify_capture_error(exc: Exception) -> tuple[str, bool]:
     if isinstance(exc, sqlite3.IntegrityError):
         return "source_integrity_error", False
     if isinstance(exc, sqlite3.OperationalError):
+        code = getattr(exc, "sqlite_errorcode", 0) & 255
+        if code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            return "source_database_busy", True
+        if code == sqlite3.SQLITE_FULL:
+            return "source_storage_full", True
+        if code in (sqlite3.SQLITE_ERROR, sqlite3.SQLITE_MISMATCH):
+            return "source_database_error", False
         return "source_operational_error", True
     if isinstance(exc, sqlite3.DatabaseError):
         return "source_database_error", False
     if isinstance(exc, (TimeoutError, OSError)):
+        if exc.errno == errno.ENOSPC:
+            return "source_storage_full", True
         return "source_io_error", True
     if isinstance(exc, RuntimeError):
         return "source_unavailable", True
@@ -171,6 +184,12 @@ class IngressStore:
                 """)
                 await connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_ingress_stream ON ingress_records(stream_id,arrival_no)"
+                )
+                await connection.execute(
+                    "UPDATE ingress_records SET state='retry_wait',available_at=updated_at+? "
+                    "WHERE state='failed' AND attempts>=max_attempts AND "
+                    "error_code IN ('source_operational_error','source_io_error','source_unavailable')",
+                    (INGRESS_RECOVERY_SECONDS,),
                 )
                 await connection.execute("PRAGMA user_version = 1")
         except BaseException:
@@ -314,6 +333,8 @@ class IngressStore:
         allowed = {
             "source_integrity_error",
             "source_operational_error",
+            "source_database_busy",
+            "source_storage_full",
             "source_database_error",
             "source_io_error",
             "source_unavailable",
@@ -322,8 +343,9 @@ class IngressStore:
         }
         if error_code not in allowed:
             error_code = "source_unexpected_error"
-        retry = retryable and claim.attempts < claim.max_attempts
         now = self.clock()
+        delay = (retry_seconds * (2 ** min(claim.attempts - 1, 6))
+                 if claim.attempts < claim.max_attempts else INGRESS_RECOVERY_SECONDS)
         await self.database.execute(
             """
             UPDATE ingress_records SET state=?,available_at=?,lease_token=NULL,
@@ -331,10 +353,8 @@ class IngressStore:
             WHERE source_id=? AND state='running' AND lease_token=?
         """,
             (
-                "retry_wait" if retry else "failed",
-                now + retry_seconds * (2 ** min(claim.attempts - 1, 6))
-                if retry
-                else now,
+                "retry_wait" if retryable else "failed",
+                now + delay if retryable else now,
                 error_code,
                 now,
                 claim.source_id,
@@ -417,12 +437,14 @@ class IngressStore:
 
     async def health(self) -> dict[str, Any]:
         rows = await self.database.fetchall(
-            "SELECT state,COUNT(*) AS count,SUM(payload_bytes) AS bytes FROM ingress_records GROUP BY state"
+            "SELECT state,COUNT(*) AS count,SUM(payload_bytes) AS bytes,MIN(created_at) AS oldest "
+            "FROM ingress_records GROUP BY state"
         )
         return {
             "schema_version": 1,
             "durable": True,
             "pending_count": sum(row["count"] for row in rows),
+            "oldest_pending_at": min((row["oldest"] for row in rows), default=None),
             "payload_bytes": sum(row["bytes"] for row in rows),
             "counts": {row["state"]: row["count"] for row in rows},
             "max_entries": self.max_entries,

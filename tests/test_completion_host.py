@@ -114,6 +114,29 @@ async def test_full_durable_queue_emergency_records_do_not_get_overtaken_when_ca
 
 
 @pytest.mark.asyncio
+async def test_emergency_backlog_is_readmitted_without_new_host_message(plugin_factory, monkeypatch):
+    plugin = await plugin_factory({"embedding_provider_id": "", "automatic_extraction_enabled": False})
+    await _controlled_ingress(plugin)
+    first, second = make_source("emergency-first"), make_source("emergency-second")
+    enqueue = plugin.ingress_store.enqueue
+
+    async def offline(*args, **kwargs):
+        raise OSError("queue offline")
+
+    monkeypatch.setattr(plugin.ingress_store, "enqueue", offline)
+    for source in (first, second):
+        await plugin._persist_source(source)
+    assert len(plugin._failed_sources) == 2
+    monkeypatch.setattr(plugin.ingress_store, "enqueue", enqueue)
+    await plugin.ingress.start()
+    async with asyncio.timeout(2):
+        while plugin._failed_sources:
+            await asyncio.sleep(.01)
+    records = await plugin.source_store.list_records(stream_id=first.identity.stream_id)
+    assert [record["source_id"] for record in reversed(records)] == [first.source_id, second.source_id]
+
+
+@pytest.mark.asyncio
 async def test_emergency_overflow_is_visible_and_never_evicts_earliest_unpersisted_record(plugin_factory, monkeypatch):
     plugin = await plugin_factory({"ingress_max_entries": 1, "embedding_provider_id": "", "automatic_extraction_enabled": False})
     await _controlled_ingress(plugin)
