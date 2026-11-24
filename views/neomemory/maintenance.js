@@ -653,7 +653,7 @@ export function initMaintenance(ui) {
       if ($('content').value !== node.content_text) result.patch.content_text = content;
       if (importance !== node.importance) result.patch.importance = importance;
       const emotion = readEmotion($('node-emotion-editor'));
-      const identity = (value) => value ? [emotionEntries(value).sort((a, b) => a.tag.localeCompare(b.tag)), value.description] : null;
+      const identity = (value) => value ? [[...emotionEntries(value)].sort((a, b) => a.tag.localeCompare(b.tag)), value.description] : null;
       if (JSON.stringify(identity(emotion)) !== JSON.stringify(identity(node.emotion))) result.patch.emotion = emotion;
       if (!Object.keys(result.patch).length) throw new Error('请先修改标题、正文、重要性或情绪。');
     }

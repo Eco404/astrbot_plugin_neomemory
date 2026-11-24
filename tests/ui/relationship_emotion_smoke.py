@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS = ROOT / 'data/evaluations/relationship-emotion-ui'
 FIXTURES = r"""
 nodes[0].emotion={tags:[{tag:'joy',intensity:0.8},{tag:'concern',intensity:0.2}],description:'这次安排让我期待，也有些担心。'};
-nodes[1].emotion={tags:['trust','affection'],intensity:0.6,description:'旧版共享强度的合成记录。'};
+nodes[1].emotion={tags:[{tag:'trust',intensity:0.65},{tag:'affection',intensity:0.15}],description:'这次交谈让我更信任对方，也多了些亲近。'};
 const slotState={format:'relationship.slots.v1',long_term:{body:'我愿意听{{user:user-1}}慢慢说。',observed_at:0},aftereffect:{body:'刚才没能说完，我心里还有点遗憾。',observed_at:100}};
 const shownState={...slotState,long_term:{...slotState.long_term,body:'我愿意听小林慢慢说。'}};
 const relationships=[{relationship_id:'relationship-1',logical_user_id:'user-1',content_version:2,state_text:'这个兼容拼接正文不应重复显示',state:slotState,display_state:shownState,updated_at:200},
@@ -50,7 +50,7 @@ async def main():
             cards = page.locator('#memory-list > .memory-card')
             await cards.first.locator('.emotion-tag').first.wait_for()
             assert await cards.first.locator('.emotion-tag').all_text_contents() == ['喜悦 · 0.8', '担心 · 0.2']
-            assert await cards.nth(1).locator('.emotion-tag').all_text_contents() == ['信任 · 0.6', '亲近 · 0.6']
+            assert await cards.nth(1).locator('.emotion-tag').all_text_contents() == ['信任 · 0.65', '亲近 · 0.15']
             await page.locator('[data-kind="relationships"]').click()
             await cards.first.locator('[data-slot="long_term"]').filter(has_text='我愿意听小林慢慢说。').wait_for()
             assert await cards.first.locator('.relationship-slot').count() == 2
@@ -90,12 +90,12 @@ async def main():
             assert operation['patch']['emotion'] == {'tags': [{'tag':'joy','intensity':0.3},{'tag':'concern','intensity':0.9}], 'description':'这次安排让我期待，也有些担心。'}
             assert 'intensity' not in operation['patch']['emotion']
             await page.locator('#node-select').select_option('node-2')
-            assert await editor.locator('[data-tag="trust"]').input_value() == '0.6'
-            assert await editor.locator('[data-tag="affection"]').input_value() == '0.6'
-            await page.locator('#node-title').fill('仅修改旧记录标题')
+            assert await editor.locator('[data-tag="trust"]').input_value() == '0.65'
+            assert await editor.locator('[data-tag="affection"]').input_value() == '0.15'
+            await page.locator('#node-title').fill('仅修改标题')
             await page.locator('#draft-operation').click()
             operation = json.loads(await page.locator('#operation').input_value())
-            assert operation['patch'] == {'title':'仅修改旧记录标题'}
+            assert operation['patch'] == {'title':'仅修改标题'}
             await page.set_viewport_size({'width': 320, 'height': 700})
             assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             await page.screenshot(path=str(ARTIFACTS / 'emotion-editor-mobile.png'), full_page=True)
@@ -103,7 +103,7 @@ async def main():
             await browser.close()
             result = {'relationship_slots_and_versions': True, 'legacy_and_empty_relationships': True,
                       'rendered_person_reference': True, 'independent_emotion_display_edit': True,
-                      'legacy_emotion_no_unrelated_patch': True, 'mobile_no_overflow': True, 'page_errors': errors}
+                      'title_edit_preserves_emotion': True, 'mobile_no_overflow': True, 'page_errors': errors}
             (ARTIFACTS / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
             print(json.dumps(result, ensure_ascii=False))
     finally:
