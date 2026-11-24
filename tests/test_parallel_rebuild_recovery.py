@@ -240,3 +240,53 @@ async def test_regeneration_keeps_valid_sibling_draft_on_storage_failure(environ
     assert "raw" not in sections["topics"]["topic_window"]
     saved, = await env.engine.jobs.list_candidates(job["job_id"])
     assert saved["window"] == invalid
+
+
+@pytest.mark.asyncio
+async def test_local_queue_wait_preserves_branch_network_budget_across_restart(environment, monkeypatch):
+    env = environment
+    await seed(env)
+    now = [env.engine.jobs.clock()]
+    monkeypatch.setattr(env.engine.jobs, "clock", lambda: now[0])
+    job = await enqueue_and_claim(env, "profile_rebuild", include_topics=True)
+    limit = job["max_attempts"]
+    outcomes = iter(["queue", "network"] + ["queue"] * (limit + 4) + ["network"] * (limit + 1) + ["success"])
+    topic_requests = []
+    context_calls = 0
+    actual_attempts = 0
+
+    async def generate(messages, **options):
+        nonlocal actual_attempts, context_calls
+        if "nodes" not in json.loads(messages[1]["content"]):
+            context_calls += 1
+            return json.dumps({"profile_changes": []})
+        topic_requests.append(messages)
+        outcome = next(outcomes)
+        if outcome == "queue":
+            options["diagnostics"].update(call_started=False, failure_stage="provider_queue")
+            raise TimeoutError()
+        actual_attempts += 1
+        if outcome == "network":
+            raise ConnectionError()
+        return json.dumps({"changes": []})
+
+    env.adapter.generate = generate
+    restarted = False
+    while True:
+        result = await asyncio.wait_for(execute(env, job), timeout=3)
+        if result["state"] == "succeeded":
+            break
+        assert result["state"] == "retry_wait" and result["lease_token"] is None, result["error_code"]
+        entry = result["checkpoint"]["section_progress"]["topics"]
+        assert entry["attempt"] == entry.get("consecutive_failures", 0) == actual_attempts, entry["error_code"]
+        assert result["checkpoint"]["section_progress"]["context"]["state"] == "succeeded"
+        if entry["error_code"] == "model_queue_timeout" and not restarted:
+            restart(env)
+            monkeypatch.setattr(env.engine.jobs, "clock", lambda: now[0])
+            restarted = True
+        assert await env.engine.jobs.claim("early") is None
+        now[0] = result["available_at"]
+        job = await env.engine.jobs.claim("due")
+    assert restarted and context_calls == 1
+    assert result["result"]["section_progress"]["topics"]["attempt"] == actual_attempts == limit + 3
+    assert all(request == topic_requests[0] for request in topic_requests)

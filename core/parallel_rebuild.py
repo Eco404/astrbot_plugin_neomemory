@@ -48,11 +48,16 @@ async def rebuild_sections(engine, job):
             raise
         except Exception as exc:
             temporary, code = classify_job_error(exc)
-            consecutive = entry.get("consecutive_failures", entry["attempt"] - 1) + 1
-            delay = engine.jobs.next_retry_delay(consecutive, job["max_attempts"],
-                retryable=temporary, model_network=isinstance(exc, ModelNetworkError))
             async with lock:
-                entry["consecutive_failures"] = consecutive
+                if temporary and code == "model_queue_timeout":
+                    # A request still waiting for a local slot never reached the provider.
+                    entry["attempt"] -= 1
+                    delay = engine.jobs.retry_delay(1)
+                else:
+                    consecutive = entry.get("consecutive_failures", entry["attempt"] - 1) + 1
+                    entry["consecutive_failures"] = consecutive
+                    delay = engine.jobs.next_retry_delay(consecutive, job["max_attempts"],
+                        retryable=temporary, model_network=isinstance(exc, ModelNetworkError))
                 if delay is None:
                     entry.update(state="failed", error_code=code, retry_exhausted=temporary)
                 else:
