@@ -13,6 +13,7 @@ RUNTIME_FILES = (
     "_conf_schema.json",
     "requirements.txt",
     "README.md",
+    "CHANGELOG.md",
 )
 RUNTIME_DIRECTORIES = ("adapters", "core", "storage", "views")
 IGNORED_NAMES = {"__pycache__", ".DS_Store", "Thumbs.db"}
