@@ -66,14 +66,25 @@ export function initMaintenance(ui) {
     panel.append(element('p', `辅助资料含封套 ${value.context_bytes ?? '未知'} 字节 · 长期记忆含封套 ${value.long_term_bytes ?? '未知'} 字节 · 块间分隔 ${value.separator_bytes ?? '未知'} 字节`));
     const progress = element('progress'); progress.max = value.budget_limit; progress.value = value.injected_bytes; progress.setAttribute('aria-label', '记忆注入预算占用'); panel.append(progress);
     const table = element('table'), head = element('tr');
-    for (const text of ['条目', '渲染字节', '单独装配字节', '结果']) head.append(element('th', text));
+    const headings = ['条目', '渲染字节', '单独装配字节', '结果'];
+    for (const text of headings) head.append(element('th', text));
     const thead = element('thead'); thead.append(head); const body = element('tbody');
     for (const item of value.entries || []) {
-      const row = element('tr'); row.append(element('td', (names[item.section] || item.section) + (item.node_id ? ` · ${item.node_id}` : '')),
-        element('td', String(item.rendered_bytes)), element('td', String(item.standalone_bytes ?? '未知')),
-        element('td', item.included ? '已注入' : item.reason === 'budget' && item.standalone_bytes > value.budget_limit
+      const row = element('tr');
+      const cells = [
+        (names[item.section] || item.section) + (item.node_id ? ` · ${item.node_id}` : ''),
+        String(item.rendered_bytes),
+        String(item.standalone_bytes ?? '未知'),
+        item.included ? '已注入' : item.reason === 'budget' && item.standalone_bytes > value.budget_limit
           ? '单项已超过总预算，调整顺序无效' : item.reason === 'entry_limit'
-          ? `${reasons.entry_limit}（${item.rendered_chars} / ${item.max_chars}）` : reasons[item.reason] || item.reason || '未注入')); body.append(row);
+          ? `${reasons.entry_limit}（${item.rendered_chars} / ${item.max_chars}）` : reasons[item.reason] || item.reason || '未注入'
+      ];
+      for (const [index, content] of cells.entries()) {
+        const cell = element('td', content);
+        cell.dataset.label = headings[index];
+        row.append(cell);
+      }
+      body.append(row);
     }
     table.append(thead, body); panel.append(table, element('p', '逐项字节包含昵称展开和条目标记；总量另计共享封套、括号与分隔符。没有候选或功能关闭的项目不列出。', 'muted'));
   }

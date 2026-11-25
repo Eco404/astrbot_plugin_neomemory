@@ -351,6 +351,11 @@ html { scroll-padding-bottom: 96px; }
 #governance-profile-user { width: min(18rem, 100%); }
 #identity-id { overflow-wrap: anywhere; font-size: 12px; }
 
+#context-budget-status { min-width: 0; }
+#context-budget-status > p { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+#context-budget-status table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+#context-budget-status th, #context-budget-status td { min-width: 0; overflow-wrap: anywhere; word-break: break-word; padding: 6px 8px; text-align: start; vertical-align: top; }
+#context-budget-status th { color: var(--text-secondary); font-weight: 600; }
 .storage-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 16px; }
 .storage-charts > section { container-type: inline-size; min-width: 0; padding: 14px; border: 1px solid var(--line-soft); border-radius: var(--radius); }
 .storage-charts h3 { display: flex; align-items: center; min-height: 30px; margin: 0; font-size: 14px; }
@@ -498,6 +503,14 @@ button, select, summary, input[type="checkbox"] { touch-action: manipulation; }
   .save-bar button { font-size: 12px; }
   #settings-refresh, #models-refresh { flex-basis: 100%; }
   #page-maintenance > details { padding: 12px 14px; }
+  #context-budget-status table,
+  #context-budget-status tbody,
+  #context-budget-status tr,
+  #context-budget-status td { display: block; }
+  #context-budget-status thead { display: none; }
+  #context-budget-status tr { padding: 10px 0; border-top: 1px solid var(--line-soft); }
+  #context-budget-status td { display: grid; grid-template-columns: minmax(6rem, 35%) minmax(0, 1fr); gap: 8px; padding: 3px 0; }
+  #context-budget-status td::before { content: attr(data-label); color: var(--text-muted); }
 }
 @media (max-width: 360px) {
   .sidebar nav button { flex-direction: column; gap: 3px; padding: 5px 2px; min-height: 48px; }
