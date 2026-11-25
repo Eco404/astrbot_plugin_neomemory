@@ -53,7 +53,8 @@ class IngressService:
     """
 
     def __init__(self, store: IngressStore, sources: SourceStore, config: Any, *,
-                 readmit: Callable[[int], Awaitable[int]] | None = None):
+                 readmit: Callable[[int], Awaitable[int]] | None = None, audit=None):
+        self.audit = audit
         self.store = store
         self.sources = sources
         self.readmit = readmit
@@ -93,7 +94,9 @@ class IngressService:
         async with self._lock:
             pass
 
-    def _diagnostic(self, code: str) -> None:
+    async def _diagnostic(self, code: str) -> None:
+        if self.audit is not None and code != self.last_error_code:
+            await self.audit.record("warning", "system", "原文待写队列异常", error_code=code)
         self.last_error_code = code
         logger.warning("NeoMemory source ingress diagnostic: %s", code)
 
@@ -133,7 +136,7 @@ class IngressService:
                 if isinstance(exc, IngressError)
                 else "ingress_persistence_unavailable"
             )
-            self._diagnostic(code)
+            await self._diagnostic(code)
             raise IngressError(code) from exc
         self._wake.set()
         # Preserve the usual immediate capture path, while still recording it
@@ -153,7 +156,7 @@ class IngressService:
         except Exception:
             # Admission already succeeded; a later inbox read/update failure must
             # not misreport it as an unpersisted message or expose exception text.
-            self._diagnostic("ingress_worker_unavailable")
+            await self._diagnostic("ingress_worker_unavailable")
         return IngressSubmission(
             source.source_id, source.identity.stream_id, state, captured=captured
         )
@@ -178,7 +181,7 @@ class IngressService:
             return None
         except Exception as exc:
             code, retryable = classify_capture_error(exc)
-            self._diagnostic(code)
+            await self._diagnostic(code)
             await self.store.fail(
                 claim,
                 error_code=code,
@@ -195,7 +198,7 @@ class IngressService:
             await asyncio.shield(self.store.release(claim))
             raise
         except Exception:
-            self._diagnostic("ingress_acknowledgement_failed")
+            await self._diagnostic("ingress_acknowledgement_failed")
             try:
                 await self.store.release(claim)
             except Exception:
@@ -220,7 +223,7 @@ class IngressService:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                self._diagnostic("ingress_worker_unavailable")
+                await self._diagnostic("ingress_worker_unavailable")
                 try:
                     await asyncio.wait_for(self._wake.wait(), timeout=self.poll_seconds)
                 except TimeoutError:

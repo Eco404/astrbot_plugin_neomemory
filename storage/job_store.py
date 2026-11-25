@@ -238,6 +238,16 @@ class JobStore:
     def __init__(self, database: SQLiteExecutor, *, clock: Callable[[], float] = time.time):
         self.database = database
         self.clock = clock
+        self.audit = None
+
+    async def _log_job(self, job, event, level="info"):
+        if self.audit is not None:
+            details = {key: job[key] for key in ("job_id", "kind", "scope_key", "state", "step",
+                       "attempt", "automatic_origin", "recovery_mode", "error_code") if job.get(key) is not None}
+            if job["state"] == "retry_wait":
+                details["available_at"] = job["available_at"]
+            await self.audit.record(level, "task", event, **details)
+        return job
 
     async def next_window_key(self, base_key: str, *, reviewed_again: bool = False) -> str | None:
         """Identify one new automatic attempt for this still-pending window."""
@@ -262,9 +272,11 @@ class JobStore:
         if type(max_attempts) is not int or not 1 <= max_attempts <= 20:
             raise ValueError("max_attempts must be between 1 and 20")
         payload_json = _json(payload)
+        if replaces is not None:
+            async with self.database.transaction() as connection:
+                updated = await self._reprepare(connection, replaces, kind, scope_key, payload, max_attempts, invalidate_nodes)
+            return await self._log_job(updated, "任务已重新准备")
         async with self.database.transaction() as connection:
-            if replaces is not None:
-                return await self._reprepare(connection, replaces, kind, scope_key, payload, max_attempts, invalidate_nodes)
             cursor = await connection.execute(
                 "SELECT * FROM memory_jobs WHERE idempotency_key=?", (idempotency_key,),
             )
@@ -292,7 +304,8 @@ class JobStore:
                 (job_id, kind, scope_key, idempotency_key, payload_json,
                  max_attempts, now, now, now, hide_on_success, hide_on_success),
             )
-            return await _get(connection, job_id)
+            updated = await _get(connection, job_id)
+        return await self._log_job(updated, "任务已入队")
 
     async def _reprepare(self, connection, original, kind, scope_key, payload, max_attempts, invalidate_nodes):
         job_id = original["job_id"]
@@ -365,7 +378,8 @@ class JobStore:
                 "attempt=attempt+1,error_type=NULL,error_code=NULL,updated_at=? WHERE job_id=?",
                 (owner, uuid.uuid4().hex, now + lease_seconds, now, job_id),
             )
-            return await _get(connection, job_id)
+            updated = await _get(connection, job_id)
+        return await self._log_job(updated, "开始执行任务", "debug")
 
     async def _lease(self, connection, job_id, lease_token):
         job = await _get(connection, job_id)
@@ -420,7 +434,8 @@ class JobStore:
                 "progress_done=COALESCE(progress_total,progress_done),error_type=NULL,"
                 "error_code=NULL,updated_at=?,attempts_json=? WHERE job_id=?", (result_json, self.clock(), history, job_id),
             )
-            return await _get(connection, job_id)
+            updated = await _get(connection, job_id)
+        return await self._log_job(updated, "任务已完成")
 
     @staticmethod
     def retry_delay(attempt):
@@ -482,7 +497,10 @@ class JobStore:
                 "error_type=?,error_code=?,available_at=?,updated_at=? WHERE job_id=?",
                 (history, state, mode, attempt, error_type, error_code, available, now, job_id),
             )
-            return await _get(connection, job_id)
+            updated = await _get(connection, job_id)
+        if state == "failed":
+            return await self._log_job(updated, "任务执行失败", "error")
+        return await self._log_job(updated, "任务等待恢复", "warning")
 
     async def defer_until(self, job_id, lease_token, available_at):
         """Park a task until one of its independently budgeted sections can run."""
@@ -494,6 +512,7 @@ class JobStore:
                 "attempt=MAX(0,attempt-1),owner=NULL,lease_token=NULL,lease_until=NULL WHERE job_id=?",
                 (available_at, self.clock(), history, job_id),
             )
+        await self._log_job({**job, "state": "retry_wait", "available_at": available_at}, "分支等待重试", "warning")
 
     async def release(self, job_id: str, lease_token: str) -> dict[str, Any]:
         """Graceful shutdown returns unfinished work to its durable queue."""
@@ -505,20 +524,23 @@ class JobStore:
                 "owner=NULL,available_at=?,updated_at=?,attempt=MAX(0,attempt-1) WHERE job_id=?",
                 (now, now, job_id),
             )
-            return await _get(connection, job_id)
+            updated = await _get(connection, job_id)
+        return await self._log_job(updated, "任务已交回队列")
 
     async def cancel(self, job_id: str) -> dict[str, Any]:
         async with self.database.transaction() as connection:
             job = await _get(connection, job_id)
             if job is None:
                 raise KeyError(job_id)
-            if job["state"] in (*ACTIVE_STATES, "failed"):
-                await connection.execute(
-                    "UPDATE memory_jobs SET state='cancelled',recovery_mode=NULL,lease_token=NULL,lease_until=NULL,"
-                    "owner=NULL,result_json=json_set(COALESCE(result_json,'{}'),'$.cancelled_from',state),"
-                    "updated_at=? WHERE job_id=?", (self.clock(), job_id),
-                )
-            return await _get(connection, job_id)
+            if job["state"] not in (*ACTIVE_STATES, "failed"):
+                return job
+            await connection.execute(
+                "UPDATE memory_jobs SET state='cancelled',recovery_mode=NULL,lease_token=NULL,lease_until=NULL,"
+                "owner=NULL,result_json=json_set(COALESCE(result_json,'{}'),'$.cancelled_from',state),"
+                "updated_at=? WHERE job_id=?", (self.clock(), job_id),
+            )
+            updated = await _get(connection, job_id)
+        return await self._log_job(updated, "任务已取消", "warning")
 
     async def delete(self, job_id: str, *, invalidate_nodes=None) -> dict[str, Any]:
         """Delete a stopped task and its unpublished rebuild, preserving committed memory.
@@ -660,7 +682,8 @@ class JobStore:
                 "error_type=NULL,error_code=NULL,result_json=NULL,checkpoint_json=?,attempts_json=? WHERE job_id=?",
                 (now, now, checkpoint, _resume_history(job), job_id),
             )
-            return await _get(connection, job_id)
+            updated = await _get(connection, job_id)
+        return await self._log_job(updated, "任务已重新排队")
 
     async def _archive_candidate(self, connection, job_id, window, error_code):
         if not isinstance(error_code, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", error_code):

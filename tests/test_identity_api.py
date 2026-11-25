@@ -7,6 +7,7 @@ import pytest
 
 pytest.importorskip("astrbot.api.web")
 
+import adapters.audit_api as audit_api
 import adapters.identity_api as module
 from core.memory_spaces import group_space, private_space
 from tests.test_identity_management import source
@@ -37,6 +38,9 @@ async def test_initialized_plugin_identity_routes_complete_background_binding(pl
         return body
 
     monkeypatch.setattr(module, "request", SimpleNamespace(query=query, json=request_body))
+    monkeypatch.setattr(audit_api, "request", module.request)
+    assert (await handlers["logs/clear"]()).status_code == 400
+    assert (await plugin.audit.query())["items"]
     assert (await handlers["identities"]()).status_code == 400
     query["space_id"] = space["space_id"]
     assert {u["logical_user_id"] for u in payload(await handlers["identities"]())["items"]} == {"A", "B"}
@@ -60,6 +64,9 @@ async def test_initialized_plugin_identity_routes_complete_background_binding(pl
     assert await plugin.source_store.resolve_account("test", "b") == "A"
     assert len(payload(await handlers["identities"]())["items"]) == 1
     assert payload(await handlers["identities/apply"]())["job_id"] == submitted["job_id"]
+    events = (await plugin.audit.query(keyword=submitted["job_id"]))["items"]
+    assert {"变更账号绑定", "任务已入队", "开始执行任务", "任务已完成"} <= {row["event"] for row in events}
+    assert "confirmation_token" not in json.dumps(events)
     assert (await plugin.api_bind_account()).status_code == 409
     await plugin.maintenance.clear_completed(scope_key='*')
     assert await plugin.source_store.database.fetchall('SELECT * FROM identity_operation_receipts') == []

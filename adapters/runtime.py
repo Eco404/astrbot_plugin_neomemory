@@ -677,7 +677,9 @@ class MemoryRuntime:
                     note = await store.update_note(note_id, space_id=space["space_id"],
                         content_text=content if action == "update" else None,
                         status={"archive": "archived", "restore": "active", "delete": "deleted"}.get(action))
-                return json.dumps({key: note[key] for key in ("note_id", "status")}, ensure_ascii=False)
+            await self.plugin.audit.record("info", "operation", "Agent 修改笔记", actor="Agent", action=action,
+                                           space_id=space["space_id"], note_id=note["note_id"])
+            return json.dumps({key: note[key] for key in ("note_id", "status")}, ensure_ascii=False)
         except (KeyError, ValueError):
             return "当前空间找不到可操作笔记，或笔记内容无效。"
         except Exception as exc:

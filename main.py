@@ -20,6 +20,8 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.api.web import error_response, json_response, request
 
 try:
+    from .adapters.audit_api import AuditAPI
+    from .storage.audit_log import AuditLog
     from .adapters.console_api import ConsoleAPI
     from .adapters.external_memory import ExternalMemoryAdapter
     from .adapters.ingress_api import IngressAPI
@@ -49,6 +51,8 @@ try:
     from .storage.pipeline_store import PipelineStore
     from .storage.source_store import SourceStore
 except ImportError:  # pragma: no cover - supports direct local loading in probes.
+    from adapters.audit_api import AuditAPI
+    from storage.audit_log import AuditLog
     from adapters.console_api import ConsoleAPI
     from adapters.external_memory import ExternalMemoryAdapter
     from adapters.ingress_api import IngressAPI
@@ -138,6 +142,7 @@ class NeoMemoryPlugin(Star):
         self._host_config = config
         self.config = NeoMemoryConfig.from_mapping(config)
         self.settings = SettingsService(self)
+        self.audit = None
         self.console_store = None
         self.note_service = None
         self.model_tests = None
@@ -173,15 +178,17 @@ class NeoMemoryPlugin(Star):
 
     async def initialize(self) -> None:
         self.data_dir = StarTools.get_data_dir(PLUGIN_NAME)
+        self.audit = AuditLog(self.data_dir)
         self.source_store = SourceStore(self.data_dir / "source.db")
         try:
+            await self.audit.open()
             await self.source_store.open()
             await self.source_store.database.execute("PRAGMA synchronous = FULL")
             self.ingress_store = IngressStore(self.data_dir / "ingress.db",
                 max_entries=self.config.ingress_max_entries, max_bytes=self.config.ingress_max_bytes)
             await self.ingress_store.open()
             self.ingress = IngressService(self.ingress_store, self.source_store, self.config,
-                                         readmit=self.retry_failed_sources)
+                                         readmit=self.retry_failed_sources, audit=self.audit)
             self.memory_store = MemoryStore(
                 self.data_dir / "memory.db",
                 source_exists=self.source_store.has_source,
@@ -199,6 +206,7 @@ class NeoMemoryPlugin(Star):
             await self.image_cache.open()
             self.maintenance.image_cache = self.image_cache
             self.jobs = self.maintenance.jobs
+            self.jobs.audit = self.audit
             self.identity_management = IdentityManagement(self.source_store, self.memory_store, self.jobs, self.runtime)
             self.maintenance.identity_management = self.identity_management
             await self.identity_management.cleanup_receipts()
@@ -214,11 +222,14 @@ class NeoMemoryPlugin(Star):
             self.maintenance.short_term = self.short_term
             self.maintenance.runner.handlers["short_term"] = self.short_term.run
             await self.maintenance.start()
-        except (Exception, asyncio.CancelledError):
+        except (Exception, asyncio.CancelledError) as exc:
+            await self.audit.record("error", "system", "插件初始化中断", error_type=type(exc).__name__)
+            await self.audit.close()
             await self._close_stores()
             raise
         self._ready = True
         self.external_memory.connect()
+        await self.audit.record("info", "system", "插件已启动")
         logger.info("NeoMemory source and memory stores ready at %s", self.data_dir)
 
     @filter.on_plugin_loaded()
@@ -349,6 +360,9 @@ class NeoMemoryPlugin(Star):
             try:
                 await self._close_stores()
             finally:
+                if self.audit is not None:
+                    await self.audit.record("info", "system", "插件已停止")
+                    await self.audit.close()
                 _set_active_plugin(None)
 
     async def _close_stores(self) -> None:
@@ -676,9 +690,11 @@ class NeoMemoryPlugin(Star):
         return task
 
     def _register_web_api(self) -> None:
-        register = getattr(self.context, "register_web_api", None)
-        if not callable(register):
+        if not callable(getattr(self.context, "register_web_api", None)):
             return
+        api = AuditAPI(self)
+        api.register()
+        register = api.register_web_api
         register(
             f"/{PLUGIN_NAME}/health", self.api_health, ["GET"], "NeoMemory health"
         )
@@ -703,11 +719,11 @@ class NeoMemoryPlugin(Star):
 
         register(f"/{PLUGIN_NAME}/models", self.api_models, ["GET"], "NeoMemory providers")
         register(f"/{PLUGIN_NAME}/models/test", self.api_test_model, ["POST"], "NeoMemory provider connectivity")
-        MaintenanceAPI(self).register(self.context)
-        IdentityAPI(self).register(self.context)
-        IngressAPI(self).register(self.context)
-        ConsoleAPI(self).register(self.context)
-        SettingsAPI(self).register(self.context)
+        MaintenanceAPI(self).register(api)
+        IdentityAPI(self).register(api)
+        IngressAPI(self).register(api)
+        ConsoleAPI(self).register(api)
+        SettingsAPI(self).register(api)
 
     async def api_models(self):
         try:

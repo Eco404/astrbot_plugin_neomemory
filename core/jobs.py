@@ -157,7 +157,9 @@ class JobRunner:
         self._workers.clear()
         self._poller = None
 
-    def _diagnostic(self, exc: BaseException) -> None:
+    async def _diagnostic(self, exc: BaseException) -> None:
+        if self.store.audit is not None and type(exc).__name__ != self.last_error_type:
+            await self.store.audit.record("error", "system", "后台执行器异常", error_type=type(exc).__name__)
         self.last_error_type = type(exc).__name__
         logger.warning("NeoMemory task runner diagnostic: %s", self.last_error_type)
 
@@ -168,7 +170,7 @@ class JobRunner:
                     if task.done():
                         self._workers.pop(job_id)
                         if not task.cancelled() and task.exception() is not None:
-                            self._diagnostic(task.exception())
+                            await self._diagnostic(task.exception())
                 while not self._stopping and not self.paused and len(self._workers) < self.concurrency:
                     lease_seconds = self.lease_seconds
                     job = await self.store.claim(self.owner, lease_seconds=lease_seconds,
@@ -184,7 +186,7 @@ class JobRunner:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._diagnostic(exc)
+                await self._diagnostic(exc)
             try:
                 await asyncio.wait_for(self._wake.wait(), self.poll_seconds)
             except TimeoutError:
@@ -202,7 +204,7 @@ class JobRunner:
         except LeaseLost:
             pass  # Cancelled, completed, or a different worker already owns it.
         except Exception as exc:
-            self._diagnostic(exc)  # Lease expiry remains the durable recovery path.
+            await self._diagnostic(exc)  # Lease expiry remains the durable recovery path.
 
     async def _execute(self, job: dict[str, Any], *, lease_seconds: float | None = None) -> None:
         work: asyncio.Task | None = None
@@ -245,7 +247,7 @@ class JobRunner:
             except LeaseLost:
                 pass
             except Exception as failure:
-                self._diagnostic(failure)
+                await self._diagnostic(failure)
         finally:
             current_attempt.reset(attempt_token)
             for task in (work, heartbeat):
