@@ -32,6 +32,7 @@ async def test_rollover_retention_pause_restart_and_clear(tmp_path):
         result = await reopened.query()
         assert result["settings"] == {"enabled": False, "days": 2}
         assert result["items"][0]["event"] == "更新日志设置"
+        assert result["items"][0]["format"] == "plugin-log.v1"
         await reopened.clear()
         assert not list(reopened.directory.iterdir())
         assert (await reopened.query())["settings"] == result["settings"]

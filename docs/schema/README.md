@@ -1,6 +1,6 @@
 # NeoMemory 数据库结构
 
-memory.db 和 source.db 的 SQLite `user_version` 分别为 3 和 2，ingress.db 和 cache.db 为 1。开发版在 memory.db 的 `pipeline_state.memory_format_revision` 中标记开发修订 `v4-dev.1`，用于记录空间的主题、短期摘要是否各自跟随本空间主模型。首次打开旧正式版数据库时，各库在事务内完成迁移。数据目录由 AstrBot 的 `StarTools.get_data_dir("astrbot_plugin_neomemory")` 提供。每个文件独立记录 schema 版本。数据库结构版本用于识别文件格式，节点、画像和关系的内容版本则用于记录某个实体在使用过程中的修订。
+memory.db 和 source.db 的 SQLite `user_version` 分别为 4 和 2，ingress.db 和 cache.db 为 1。首次打开旧正式版数据库时，各库在事务内完成迁移。数据目录由 AstrBot 的 `StarTools.get_data_dir("astrbot_plugin_neomemory")` 提供。每个文件独立记录 schema 版本。数据库结构版本用于识别文件格式，节点、画像和关系的内容版本则用于记录某个实体在使用过程中的修订。
 
 | 数据库 | 持久内容 | 写入与清理 |
 | --- | --- | --- |
@@ -12,6 +12,10 @@ memory.db 和 source.db 的 SQLite `user_version` 分别为 3 和 2，ingress.db
 `proactive_receipt_sources` 将每份已入库的分段回执关联到同一主动联系的会话原文，正文和回执索引在同一事务中写入。
 
 成功采集的人格回复可在来源元数据中记录请求 Provider、模型选择依据、显式模型覆盖值及响应报告的模型名。历史来源缺少这些字段时，可在空间设置或手动任务中指定可调用的模型。
+
+在 `space_policies` 中，`topic_follow_main` 和 `short_term_follow_main` 分别控制主题抽取与短期摘要是否跟随本空间主模型。值为 0 时，优先使用该流程在空间内指定的 Provider，留空则继承插件设置。v3 升级时两列均初始化为 0，保留原有 Provider 配置。
+
+插件审计日志按本地日期写入 `logs/YYYY-MM-DD.jsonl`。每行是一条 `format` 为 `plugin-log.v1` 的 JSON 记录，包含时间、级别、类别、事件和操作详情。
 
 `memory_jobs.attempts_json` 保留每个任务最近 12 次执行的摘要。已有任务升级时保留检查点，执行记录从升级后的下一次尝试开始累计。检查点和业务提交回执分别决定从哪里继续和哪些结果已提交。
 

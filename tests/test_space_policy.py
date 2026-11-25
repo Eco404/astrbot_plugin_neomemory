@@ -18,8 +18,8 @@ async def test_upgrade_from_release_preserves_spaces_and_persists_policies(tmp_p
     await db.close()
     memory = MemoryStore(path)
     await memory.open()
-    assert memory.schema_version == MEMORY_FORMAT == 3
-    assert (await memory.database.fetchone("PRAGMA user_version"))[0] == 3
+    assert memory.schema_version == MEMORY_FORMAT == 4
+    assert (await memory.database.fetchone("PRAGMA user_version"))[0] == MEMORY_FORMAT
     assert (await memory.get_space_policy('s1'))['model_mode'] == 'inherit'
     await memory.set_space_policy('s1', {'model_mode': 'fixed', 'provider_id': 'test-chat'})
     await memory.close()
@@ -78,7 +78,7 @@ async def test_release_jobs_keep_origin_and_due_time_on_upgrade(tmp_path):
         await memory.close()
         await memory.open()
         assert (await store.get("short_term:automatic")) == automatic
-        assert (await memory.health())["schema_revision"] == "v4-dev.1"
+        assert (await memory.health())["schema_revision"] == "v4"
     finally:
         await memory.close()
 
@@ -127,6 +127,7 @@ async def test_v3_model_policy_upgrades_and_modes_survive_reopening(tmp_path):
         await store.set_space_policy("s", {"short_term_follow_main": True})
         await store.close()
         await store.open()
+        assert (await store.database.fetchone("PRAGMA user_version"))[0] == 4
         assert (await store.get_space_policy("s"))["short_term_follow_main"]
     finally:
         await store.close()

@@ -8,7 +8,7 @@ import time
 from contextlib import ExitStack
 from datetime import date, datetime, timedelta
 
-LOG_FORMAT = "plugin-log.v1-dev.1"
+LOG_FORMAT = "plugin-log.v1"
 LEVELS = ("debug", "info", "warning", "error")
 CATEGORIES = ("system", "operation", "task")
 logger = logging.getLogger(__name__)
