@@ -1,4 +1,4 @@
-import { $, element, enhanceSelect, notify, on } from './ui.js';
+import { $, element, mobileAction, enhanceSelect, notify, on } from './ui.js';
 
 const personaFields = [
   ['shared_recall_enabled', '启用同人格跨空间召回', '允许同一人格的其他空间使用已开放的长期记忆。'],
@@ -75,6 +75,7 @@ export function initSpaceSettings(ui, modelChoices) {
     const reset = element('button', '恢复默认', 'reset-setting');
     reset.type = 'button';
     reset.setAttribute('aria-label', name + '恢复默认');
+    mobileAction(reset, 'reset');
     const updateReset = () => {
       reset.disabled = input.disabled || (followKey ? input.value === 'inherit' : draft[key] === defaultValue);
     };

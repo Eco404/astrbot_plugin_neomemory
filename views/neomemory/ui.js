@@ -4,9 +4,19 @@ export const $ = (id) => document.getElementById(id);
 export function element(tag, text = '', className = '') {
   const node = document.createElement(tag); node.textContent = text; node.className = className; return node;
 }
+export function mobileAction(node, symbol) {
+  const label = node.textContent;
+  node.classList.add('mobile-action');
+  node.setAttribute('aria-label', node.getAttribute('aria-label') || label);
+  node.title = node.getAttribute('aria-label');
+  node.replaceChildren(icon(symbol), element('span', label, 'button-text'));
+  return node;
+}
 export function button(label, handler, className = '') {
   const node = element('button', label, className); node.type = 'button';
   node.addEventListener('click', async () => { if (node.disabled) return; node.disabled = true; try { await handler(); } catch (error) { notify(error.message || '操作未完成。', true); } finally { node.disabled = false; } });
+  if (label === '编辑') return mobileAction(node, 'edit');
+  if (label === '删除') return mobileAction(node, 'trash');
   return node;
 }
 export function connectionStatus(connected) {

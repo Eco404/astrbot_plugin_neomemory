@@ -90,6 +90,7 @@ export function initContextGovernance(ui, submit) {
   const sections = [...document.querySelectorAll('[data-context-governance]')];
   const tabs = [...document.querySelectorAll('[data-governance-tab]')];
   const profileUser = document.getElementById('governance-profile-user');
+  const profileUserLabel = profileUser.closest('label');
   profileUser.addEventListener('change', () => load(profileUser.closest('[role="tabpanel"]'), 0, false));
   const offsets = new Map(), requests = new Map(), limit = 10;
   let available = false;
@@ -109,6 +110,7 @@ export function initContextGovernance(ui, submit) {
   function changed() {
     offsets.clear(); requests.clear();
     profileUser.replaceChildren(); profileUser.disabled = true;
+    profileUserLabel.hidden = ui.spaceType() !== 'group';
     for (const section of sections) section.querySelector('.context-records').replaceChildren();
     const relationship = tabs.find(tab => tab.dataset.governanceTab === 'relationships');
     relationship.hidden = ui.spaceType() !== 'private';
@@ -122,7 +124,7 @@ export function initContextGovernance(ui, submit) {
     if (!space) return;
     try {
       const args = { kind, space_id: space, offset, limit };
-      if (kind === 'profiles') {
+      if (kind === 'profiles' && ui.spaceType() === 'group') {
         if (reloadUsers) {
           profileUser.disabled = true;
           const { items } = await ui.bridge.apiGet('memory/profile-users', { space_id: space });
@@ -141,6 +143,8 @@ export function initContextGovernance(ui, submit) {
           list.replaceChildren(element('p', '当前空间暂无用户画像。', 'muted')); return;
         }
         args.logical_user_id = profileUser.value;
+      } else if (kind === 'profiles') {
+        args.logical_user_id = ui.spaceOwner();
       }
       const result = await ui.bridge.apiGet('memory/context', args);
       if (!ui.current(epoch) || requests.get(kind) !== request) return;

@@ -1,4 +1,4 @@
-import { $, button, enhanceSelect, on } from './ui.js';
+import { $, mobileAction, button, enhanceSelect, on } from './ui.js';
 
 const defaults = { mode: 'system', hue: 168, saturation: 38, lightness: 50, opacity: 68 };
 const colors = [[168, '青绿'], [130, '叶绿'], [195, '湖蓝'], [216, '雾蓝'], [345, '蔷薇'], [35, '麦金']];
@@ -26,6 +26,7 @@ function luminance(h, s, l) {
 }
 
 export function initAppearance(ui, changed) {
+  mobileAction($('appearance-reset'), 'reset');
   let values = { ...defaults }, saved = { ...defaults };
   const scheme = matchMedia('(prefers-color-scheme: dark)');
   const canvas = $('appearance-canvas');

@@ -83,31 +83,39 @@ export function initMaintenance(ui) {
     enabledLabel.append(enabled, document.createTextNode('记录这条记忆中的情绪')); editor.append(enabledLabel);
     const fields = element('div', '', 'emotion-fields'); fields.hidden = !enabled.checked;
     const levels = new Map(emotionEntries(value).map(({ tag, intensity }) => [tag, intensity]));
-    const tagsLabel = fieldLabel('情绪标签（最多 3 项）'), tags = document.createElement('select');
-    tags.multiple = true; tags.size = 5; tags.className = 'emotion-tags';
-    for (const [key, label] of Object.entries(emotionLabels)) { const option = element('option', label); option.value = key; option.selected = levels.has(key); tags.append(option); }
-    tagsLabel.append(tags);
+    const choices = element('fieldset', '', 'emotion-choices'), tags = element('div', '', 'emotion-tags');
+    choices.append(element('legend', '情绪标签（最多 3 项）'), tags);
+    for (const [key, label] of Object.entries(emotionLabels)) {
+      const option = element('label', '', 'emotion-tag-option'), input = document.createElement('input');
+      input.type = 'checkbox'; input.className = 'emotion-tag'; input.value = key; input.checked = levels.has(key);
+      option.append(input, document.createTextNode(label)); tags.append(option);
+    }
     const intensities = element('div', '', 'emotion-intensities');
     function showIntensities() {
       for (const input of intensities.querySelectorAll('input')) levels.set(input.dataset.tag, input.value);
       intensities.replaceChildren();
-      for (const option of tags.selectedOptions) {
+      const selected = [...tags.querySelectorAll('input:checked')];
+      for (const option of selected) {
         const label = fieldLabel(`${emotionLabels[option.value]}强度`), input = document.createElement('input');
         input.type = 'number'; input.className = 'emotion-intensity'; input.dataset.tag = option.value;
         input.min = 0; input.max = 1; input.step = 0.01; input.value = levels.get(option.value) ?? 0.5;
         label.append(input); intensities.append(label);
       }
+      const neutralSelected = selected.some(input => input.value === 'neutral');
+      for (const input of tags.querySelectorAll('input')) {
+        input.disabled = !input.checked && (selected.length >= 3 || neutralSelected || (input.value === 'neutral' && selected.length > 0));
+      }
     }
     tags.addEventListener('change', showIntensities); showIntensities();
     const descriptionLabel = fieldLabel('简短情绪说明'), description = document.createElement('textarea');
     description.className = 'emotion-description'; description.value = value?.description || ''; descriptionLabel.append(description);
-    fields.append(tagsLabel, intensities, descriptionLabel, element('p', '每个标签的强度独立填写。描述最多 160 个可读字符，完整用户占位符按一个字符计算。未记录时不推断为平静；请区分谁的情绪。', 'muted'));
+    fields.append(choices, intensities, descriptionLabel, element('p', '每个标签的强度独立填写。描述最多 160 个可读字符，完整用户占位符按一个字符计算。未记录时不推断为平静；请区分谁的情绪。', 'muted'));
     editor.append(fields); enabled.addEventListener('change', () => { fields.hidden = !enabled.checked; });
     return editor;
   }
   function readEmotion(editor) {
     if (!editor.querySelector('.emotion-enabled').checked) return null;
-    const tags = Array.from(editor.querySelector('.emotion-tags').selectedOptions, (option) => option.value);
+    const tags = Array.from(editor.querySelectorAll('.emotion-tags input:checked'), (input) => input.value);
     if (!tags.length || tags.length > 3 || (tags.includes('neutral') && tags.length !== 1)) throw new Error('请选择 1–3 个情绪标签，平静不能与其他情绪并选。');
     const entries = tags.map(tag => ({ tag, intensity: score(editor.querySelector(`.emotion-intensity[data-tag="${tag}"]`), `${emotionLabels[tag]}强度`) }));
     const description = editor.querySelector('.emotion-description').value.trim();
@@ -120,6 +128,7 @@ export function initMaintenance(ui) {
     contextGovernance.setAvailable(allowed);
     $('governance-editor').disabled = state.nodeLoading;
     $('governance-editor').setAttribute('aria-busy', String(state.nodeLoading));
+    $('action').disabled = state.nodeLoading;
     $('node-select').disabled = state.nodeLoading;
     $('refresh-nodes').disabled = state.nodeLoading;
     document.querySelectorAll('.mutation').forEach((button) => { button.disabled = !allowed; });

@@ -155,7 +155,7 @@
     <form id="identities-filter"><label for="identity-q">查找逻辑用户</label><input id="identity-q" type="search" maxlength="200" placeholder="名称、用户标识或账号" /><button type="submit">查询用户</button><button id="identities-refresh" type="button">刷新用户</button></form>
     <p id="identities-status" class="muted" role="status"></p>
     <label><span>选择逻辑用户</span><select id="identity-select"><option value="">请选择逻辑用户</option></select></label>
-    <div class="row"><button id="identities-prev" disabled>上一页用户</button><span id="identities-page" class="muted">第 1 页</span><button id="identities-next" disabled>下一页用户</button></div>
+    <nav id="identities-pagination" class="row" aria-label="逻辑用户分页" hidden><button id="identities-prev">上一页用户</button><span id="identities-page" class="muted">第 1 页</span><button id="identities-next">下一页用户</button></nav>
     <fieldset id="identity-editor" class="identity-editor" disabled>
       <legend>用户与账号设置</legend>
       <p id="identity-id" class="muted"></p>
@@ -211,23 +211,23 @@
     </div>
     <div id="governance-nodes" role="tabpanel" aria-labelledby="govern-nodes">
     <p class="muted">当前代的全部状态均可查阅。禁用停止召回并可恢复；删除会保留墓碑和来源，不能用恢复按钮撤销。人工保护独立于状态。</p>
-    <div class="grid">
+    <div class="governance-node-layout">
       <div>
         <form id="governance-node-filter">
-          <div class="row"><label class="grow"><span>搜索长期记忆</span><input id="governance-node-q" type="search" maxlength="1000" placeholder="搜索标题或正文" /></label><button type="submit">查询</button></div>
+          <label for="governance-node-q">搜索长期记忆</label><div class="search-input-row"><input id="governance-node-q" type="search" maxlength="1000" placeholder="搜索标题或正文" /><button type="submit">查询</button></div>
           <div class="row">
             <label><span>记忆类型</span><select id="governance-node-type"><option value="all">全部类型</option><option value="atomic">原子</option><option value="event">事件</option><option value="topic">主题</option></select></label>
             <label><span>记忆状态</span><select id="governance-node-status"><option value="all">全部状态</option><option value="active">活跃</option><option value="historical">历史</option><option value="disabled">禁用</option><option value="superseded">已替代</option><option value="deleted">已删除</option></select></label>
           </div>
         </form>
         <p id="governance-node-count" class="muted" role="status"></p>
+        <label id="governance-action-label"><span>治理动作</span><select id="action"><option value="edit">修改标题 / 正文 / 重要性 / 情绪</option><option value="split">拆分节点</option><option value="merge">合并节点</option><option value="disable">禁用</option><option value="restore">恢复已禁用节点</option><option value="delete">删除</option><option value="protect">开启人工保护</option><option value="unprotect">解除人工保护</option></select></label>
         <label><span>选择节点</span><select id="node-select"><option value="">请先选择空间</option></select></label>
         <div class="row"><button id="refresh-nodes">刷新节点</button><button id="previous-nodes" disabled>上一页</button><button id="next-nodes" disabled>下一页</button><button id="versions">查阅版本和来源</button></div>
-        <pre id="node-preview">尚未选择节点。</pre>
+        <details id="node-json-details"><summary>原始 JSON</summary><pre id="node-preview">尚未选择节点。</pre></details>
         <details><summary>正文版本、标题操作、来源与关系</summary><pre id="version-detail">点击“查阅版本和来源”。</pre></details>
       </div>
       <fieldset id="governance-editor">
-        <label><span>治理动作</span><select id="action"><option value="edit">修改标题 / 正文 / 重要性 / 情绪</option><option value="split">拆分节点</option><option value="merge">合并节点</option><option value="disable">禁用</option><option value="restore">恢复已禁用节点</option><option value="delete">删除</option><option value="protect">开启人工保护</option><option value="unprotect">解除人工保护</option></select></label>
         <label><span>标题</span><input id="node-title" type="text" placeholder="简短、具体地概括正文" /></label>
         <p id="title-hint" class="muted">标题最多 60 个语义字符；完整用户占位符按一个字符计算。仅改标题不会改变正文版本、强度或人工保护。</p>
         <label><span>修改后正文</span><textarea id="content"></textarea></label>
@@ -250,7 +250,7 @@
     </div>
     </div>
     <div id="governance-profiles" role="tabpanel" data-context-governance="profiles" aria-labelledby="govern-profiles" hidden>
-      <label><span id="governance-profile-label">选择用户</span><select id="governance-profile-user" aria-labelledby="governance-profile-label" disabled></select></label>
+      <label hidden><span id="governance-profile-label">选择用户</span><select id="governance-profile-user" aria-labelledby="governance-profile-label" disabled></select></label>
       <div class="context-records"></div>
     </div>
     <div id="governance-relationships" role="tabpanel" data-context-governance="relationships" aria-labelledby="govern-relationships" hidden><div class="context-records"></div></div>

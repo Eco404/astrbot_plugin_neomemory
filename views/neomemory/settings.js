@@ -1,7 +1,7 @@
 import { initSpaceSettings } from './space-settings.js';
 import { initTextCleaning } from './text-cleaning.js';
 import { initAppearance } from './appearance.js';
-import { $, element, button, notify, on, setupTabs, enhanceSelect } from './ui.js';
+import { $, element, button, mobileAction, notify, on, setupTabs, enhanceSelect } from './ui.js';
 
 export function initSettings(ui) {
   const state = { data: null, models: { llm: [], embedding: [] }, draft: {}, group: '功能', loading: null, posting: false, probing: false };
@@ -57,7 +57,10 @@ export function initSettings(ui) {
       if (key === ($('probe-kind').value === 'embedding' ? 'embedding_provider_id' : 'llm_provider_id')) renderProbe(true);
       render();
     }, 'reset-setting');
-    reset?.setAttribute('aria-label', (meta.description || key) + '恢复默认');
+    if (reset) {
+      reset.setAttribute('aria-label', (meta.description || key) + '恢复默认');
+      mobileAction(reset, 'reset');
+    }
     const updateReset = () => { if (reset) reset.disabled = input.disabled || state.draft[key] === meta.default; };
     updateReset();
     input.addEventListener('input', () => {

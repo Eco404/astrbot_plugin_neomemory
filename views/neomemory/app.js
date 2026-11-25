@@ -40,8 +40,10 @@ setupSelectKeys();
 
 const bridge = window.AstrBotPluginView;
 const state = { page: 'memory', epoch: 0, posting: false, spaces: [], offset: 0, ready: false, spacesRequest: 0 };
+const selectedSpaceInfo = () => state.spaces.find(space => space.space_id === $('space').value);
 const ui = {
-  bridge, space: () => $('space').value, spaceType: () => state.spaces.find(space => space.space_id === $('space').value)?.space_type, epoch: () => state.epoch,
+  bridge, space: () => $('space').value, spaceType: () => selectedSpaceInfo()?.space_type,
+  spaceOwner: () => selectedSpaceInfo()?.logical_user_id, epoch: () => state.epoch,
   showSpaceBar(visible) { $('space-bar').hidden = !visible; scheduleStickyBars(); },
   current: (epoch) => epoch === state.epoch, page: () => state.page,
   async write(endpoint, body) {

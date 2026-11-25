@@ -42,8 +42,10 @@ export function initIdentities(ui) {
     $('identity-editor').disabled = busy || !selected();
     $('identity-select').disabled = busy;
     $('identities-filter').querySelectorAll('button,input').forEach(node => { node.disabled = busy; });
-    $('identities-prev').disabled = busy || state.offset === 0;
-    $('identities-next').disabled = busy || !state.hasMore;
+    $('identities-pagination').hidden = state.offset === 0 && !state.hasMore;
+    $('identities-prev').hidden = state.offset === 0;
+    $('identities-next').hidden = !state.hasMore;
+    $('identities-prev').disabled = $('identities-next').disabled = busy;
     $('identity-confirm-cancel').disabled = $('identity-confirm-apply').disabled = state.posting;
     $('identity-confirm-progress').hidden = !state.posting;
   }
@@ -77,13 +79,14 @@ export function initIdentities(ui) {
     $('identity-platform').value = ''; $('identity-account').value = '';
     controls();
   }
-  async function refresh() {
+  async function refresh(offset = state.offset) {
     const request = ++state.request, previous = state.selected;
     if (!ui.space()) { $('identities-status').textContent = '请先选择记忆空间。'; controls(); return; }
     state.loading = true; controls(); $('identities-status').textContent = '正在读取逻辑用户…';
     try {
-      const result = await ui.bridge.apiGet('identities', { space_id: ui.space(), q: $('identity-q').value.trim(), limit: 30, offset: state.offset });
+      const result = await ui.bridge.apiGet('identities', { space_id: ui.space(), q: $('identity-q').value.trim(), limit: 30, offset });
       if (request !== state.request) return;
+      state.offset = offset;
       state.items = result.items; state.conflicts = result.conflicts || []; state.hasMore = result.has_more;
       state.selected = state.items.some(user => user.logical_user_id === previous) ? previous : state.items[0]?.logical_user_id || null;
       $('identity-select').replaceChildren();
@@ -189,10 +192,10 @@ export function initIdentities(ui) {
       }
     } finally { state.polling = false; controls(); }
   }
-  onSearchForm('identities-filter', () => { state.offset = 0; return refresh(); });
-  on('identities-refresh', 'click', refresh);
-  on('identities-prev', 'click', () => { state.offset = Math.max(0, state.offset - 30); return refresh(); });
-  on('identities-next', 'click', () => { state.offset += 30; return refresh(); });
+  onSearchForm('identities-filter', () => refresh(0));
+  on('identities-refresh', 'click', () => refresh());
+  on('identities-prev', 'click', () => refresh(state.offset - 30));
+  on('identities-next', 'click', () => refresh(state.offset + 30));
   on('identity-select', 'change', () => { state.selected = $('identity-select').value; renderUser(); });
   on('identity-known-account', 'change', () => {
     const value = $('identity-known-account').value, account = value === '' ? null : state.known[Number(value)];

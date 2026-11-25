@@ -316,8 +316,14 @@ async def text_cleaning_controls(page, frame, harness):
             label = await row.locator('.cleaning-label').bounding_box()
             edit = await row.get_by_role('button', name='编辑').bounding_box()
             bounds = await row.bounding_box()
-            assert abs(label['x'] + label['width'] - bounds['x'] - bounds['width']) <= 1
-            assert edit['y'] >= label['y'] + label['height']
+            if width == 320:
+                assert abs(label['x'] + label['width'] - bounds['x'] - bounds['width']) <= 1
+                assert edit['y'] >= label['y'] + label['height']
+            else:
+                assert edit['x'] >= label['x'] + label['width']
+                assert abs(edit['y'] + edit['height']/2 - label['y'] - label['height']/2) <= 1
+            await expect(row.get_by_role('button', name='编辑').locator('svg')).to_be_visible()
+        assert await disclosure.locator('strong').evaluate('el => el.clientHeight < parseFloat(getComputedStyle(el).lineHeight) * 1.5')
     await page.set_viewport_size(desktop)
     await preset.get_by_role('button', name='编辑').click()
     await expect(dialog.get_by_label('规则类型')).to_have_value('regex')
@@ -586,7 +592,8 @@ async def main():
                 await frame.locator('#node-select').select_option(harness.node['node_id'])
                 emotional = frame.locator('#node-emotion-editor')
                 await emotional.locator('.emotion-enabled').check()
-                await emotional.locator('.emotion-tags').select_option(['joy', 'concern'])
+                await emotional.locator('.emotion-tag[value="joy"]').check()
+                await emotional.locator('.emotion-tag[value="concern"]').check()
                 await emotional.locator('.emotion-intensity[data-tag="joy"]').fill('0.25')
                 await emotional.locator('.emotion-intensity[data-tag="concern"]').fill('0.7')
                 await emotional.locator('.emotion-description').fill('我对新的安排有些担心。')
@@ -626,7 +633,7 @@ async def main():
                 await frame.locator('.split-part .part-title').nth(1).fill('合成部分二')
                 await frame.locator('.split-part .part-content').nth(1).fill('另一项合成说明')
                 await frame.locator('.split-part .emotion-enabled').first.check()
-                await frame.locator('.split-part .emotion-tags').first.select_option(['joy'])
+                await frame.locator('.split-part .emotion-tag[value="joy"]').first.check()
                 await frame.locator('.split-part .emotion-description').first.fill('我期待这部分安排。')
                 await frame.locator('#draft-operation').click()
                 parts = json.loads(await frame.locator('#operation').input_value())['parts']

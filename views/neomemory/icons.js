@@ -14,6 +14,9 @@ const paths = {
   arrowLeft: ['m12 5-7 7 7 7', 'M5 12h14'],
   arrowRight: ['m12 5 7 7-7 7', 'M5 12h14'],
   clock: ['M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z', 'M12 7v5l3 2'],
+  reset: ['M3 4v6h6', 'M3.5 10a8.5 8.5 0 1 1 .8 7'],
+  edit: ['M12 20h9', 'M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z'],
+  trash: ['M3 6h18', 'M8 6V4h8v2', 'M19 6l-1 15H6L5 6', 'M10 11v6', 'M14 11v6'],
 };
 export function icon(name) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');

@@ -76,22 +76,29 @@ async def main():
             await page.locator('#node-select').select_option('node-1')
             editor = page.locator('#node-emotion-editor')
             assert await editor.locator('.emotion-intensity').count() == 2
-            assert await editor.locator('[data-tag="joy"]').input_value() == '0.8'
-            assert await editor.locator('[data-tag="concern"]').input_value() == '0.2'
-            await editor.locator('[data-tag="joy"]').fill('0.3')
-            await editor.locator('[data-tag="concern"]').fill('0.9')
-            await editor.locator('.emotion-tags').select_option(['concern'])
+            assert await editor.locator('.emotion-intensity[data-tag="joy"]').input_value() == '0.8'
+            assert await editor.locator('.emotion-intensity[data-tag="concern"]').input_value() == '0.2'
+            await editor.locator('.emotion-intensity[data-tag="joy"]').fill('0.3')
+            await editor.locator('.emotion-intensity[data-tag="concern"]').fill('0.9')
+            await editor.locator('.emotion-tag[value="joy"]').uncheck()
             assert await editor.locator('.emotion-intensity').count() == 1
-            await editor.locator('.emotion-tags').select_option(['joy', 'concern'])
-            assert await editor.locator('[data-tag="joy"]').input_value() == '0.3'
-            assert await editor.locator('[data-tag="concern"]').input_value() == '0.9'
+            await editor.locator('.emotion-tag[value="joy"]').check()
+            assert await editor.locator('.emotion-intensity[data-tag="joy"]').input_value() == '0.3'
+            assert await editor.locator('.emotion-intensity[data-tag="concern"]').input_value() == '0.9'
+            await editor.locator('.emotion-tag[value="sadness"]').check()
+            assert await editor.locator('.emotion-tag[value="trust"]').is_disabled()
+            await editor.locator('.emotion-tag[value="sadness"]').uncheck()
+            await editor.locator('.emotion-tag[value="trust"]').check()
+            assert await editor.locator('.emotion-tag[value="affection"]').is_disabled()
+            await editor.locator('.emotion-tag[value="trust"]').uncheck()
+            assert await editor.locator('.emotion-tag[value="affection"]').is_enabled()
             await page.locator('#draft-operation').click()
             operation = json.loads(await page.locator('#operation').input_value())
             assert operation['patch']['emotion'] == {'tags': [{'tag':'joy','intensity':0.3},{'tag':'concern','intensity':0.9}], 'description':'这次安排让我期待，也有些担心。'}
             assert 'intensity' not in operation['patch']['emotion']
             await page.locator('#node-select').select_option('node-2')
-            assert await editor.locator('[data-tag="trust"]').input_value() == '0.65'
-            assert await editor.locator('[data-tag="affection"]').input_value() == '0.15'
+            assert await editor.locator('.emotion-intensity[data-tag="trust"]').input_value() == '0.65'
+            assert await editor.locator('.emotion-intensity[data-tag="affection"]').input_value() == '0.15'
             await page.locator('#node-title').fill('仅修改标题')
             await page.locator('#draft-operation').click()
             operation = json.loads(await page.locator('#operation').input_value())

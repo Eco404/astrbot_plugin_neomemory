@@ -30,7 +30,8 @@ window.AstrBotPluginView.apiGet=async(endpoint,args={})=>{
    platform_instance_ids:user.accounts.find(account=>account.account_id==='a').platform_instance_ids,
    private_spaces:[{space_id:user.logical_user_id,persona_id:'人格甲'}],counts:{nodes:12,notes:3}
   }))}]:[];
-  return {conflicts,items:structuredClone(users.slice(args.offset||0,(args.offset||0)+(args.limit||30))),has_more:false};
+  const end=args.offset+args.limit;
+  return {conflicts,items:structuredClone(users.slice(args.offset,end)),has_more:end<users.length};
  }
  return identityGet(endpoint,args);
 };
@@ -90,6 +91,33 @@ async def run_case(page, artifacts, name):
     await expect(page.locator('#identity-accounts')).to_contain_text('消息入口：test-platform、second-entry')
     await expect(page.locator('#identity-conflicts')).to_be_hidden()
     await expect(page.locator('#identity-select option:checked')).to_have_text('甲 · lu_1234567 · 2 个账号')
+    picker = page.locator('#identity-select')
+    assert await picker.evaluate('el => Math.abs(el.clientWidth + 2 * el.clientLeft - el.parentElement.clientWidth) <= 1')
+    pager = page.locator('#identities-pagination')
+    prev_page, next_page = pager.locator('#identities-prev'), pager.locator('#identities-next')
+    await expect(pager).to_be_hidden()
+    await page.evaluate("""identityUsers.push(...Array.from({length:58}, (_, i) => ({
+        logical_user_id:'extra-'+i, display_name:'分页用户'+i, accounts:[]
+    })))""")
+    await page.locator('#identities-refresh').click()
+    await expect(next_page).to_be_visible()
+    await expect(prev_page).to_be_hidden()
+    await next_page.click()
+    await expect(prev_page).to_be_visible()
+    await expect(next_page).to_be_visible()
+    await next_page.click()
+    await expect(page.locator('#identities-page')).to_have_text('第 3 页')
+    await expect(next_page).to_be_hidden()
+    await prev_page.click()
+    await expect(page.locator('#identities-page')).to_have_text('第 2 页')
+    await page.locator('#identity-q').fill('无匹配名称')
+    await page.locator('#identities-filter button[type=submit]').click()
+    await expect(picker.locator('option:checked')).to_have_text('没有匹配的逻辑用户')
+    await expect(pager).to_be_hidden()
+    await page.evaluate('identityUsers.splice(3)')
+    await page.locator('#identity-q').fill('')
+    await page.locator('#identities-filter button[type=submit]').click()
+    await expect(picker).to_have_value('lu_1234567aaaaaaaaaaaaaaaaaaaaaaaaa')
     spaces=page.locator('#space')
     await page.evaluate('deferUserList=true')
     await page.locator('#identities-refresh').click()
