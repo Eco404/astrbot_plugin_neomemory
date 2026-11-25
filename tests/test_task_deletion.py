@@ -166,7 +166,7 @@ async def test_successful_rebuild_task_deletion_keeps_published_memory(environme
     derivations = await env.memory.database.fetchall("SELECT * FROM memory_derivations")
     if bulk:
         result = await env.engine.clear_completed(scope_key=env.space["space_id"])
-        assert result == {"deleted_count": 1, "removed_node_count": 0}
+        assert result == {"deleted_count": 1, "automatic_count": 0, "manual_count": 1, "removed_node_count": 0}
     else:
         result = await env.engine.delete(task["job_id"])
         assert result["removed_generation_id"] is None
@@ -283,13 +283,13 @@ async def test_clear_completed_all_pages_scope_and_state_selection(environment):
                 await connection.execute('UPDATE memory_jobs SET scope_key=?,state=? WHERE job_id=?', (target_scope, state, job['job_id']))
         retained.append(job['job_id'])
     assert await env.memory.database.fetchall('SELECT * FROM memory_job_candidates')
-    assert await env.engine.clear_completed(scope_key=scope) == {'deleted_count': 25, 'removed_node_count': 0}
+    assert await env.engine.clear_completed(scope_key=scope) == {'deleted_count': 25, 'automatic_count': 0, 'manual_count': 25, 'removed_node_count': 0}
     assert all([await env.engine.jobs.get(job['job_id']) is None for job in completed])
     assert all([await env.engine.jobs.get(job_id) is not None for job_id in retained])
     assert await env.engine.jobs.get(other['job_id']) is not None
     assert await env.memory.database.fetchall('SELECT * FROM memory_job_candidates') == []
-    assert await env.engine.clear_completed(scope_key=scope) == {'deleted_count': 0, 'removed_node_count': 0}
-    assert await env.engine.clear_completed() == {'deleted_count': 1, 'removed_node_count': 0}
+    assert await env.engine.clear_completed(scope_key=scope) == {'deleted_count': 0, 'automatic_count': 0, 'manual_count': 0, 'removed_node_count': 0}
+    assert await env.engine.clear_completed() == {'deleted_count': 1, 'automatic_count': 0, 'manual_count': 1, 'removed_node_count': 0}
     assert all([await env.engine.jobs.get(job_id) is not None for job_id in retained])
     assert all([await env.sources.has_source(record.source_id) for record in env.records])
     assert await env.memory.database.fetchall('PRAGMA foreign_key_check') == []
@@ -318,7 +318,7 @@ async def test_clear_completed_rolls_back_whole_batch_on_cleanup_failure(environ
     assert await jobs.get(second['job_id']) is not None
     assert len(await env.memory.database.fetchall('SELECT * FROM memory_job_candidates')) == 1
     monkeypatch.setattr(jobs, '_delete_stopped', original)
-    assert await env.engine.clear_completed() == {'deleted_count': 2, 'removed_node_count': 0}
+    assert await env.engine.clear_completed() == {'deleted_count': 2, 'automatic_count': 0, 'manual_count': 2, 'removed_node_count': 0}
 
 
 @pytest.mark.asyncio

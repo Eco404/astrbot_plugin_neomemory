@@ -20,7 +20,10 @@ window.failClear=false;window.deferClear=false;
 window.AstrBotPluginView.apiGet=async(endpoint,args={})=>{
  if(endpoint==='tasks'){
   const rows=testJobs.filter(j=>!args.scope_key||j.scope_key===args.scope_key);
-  return {items:rows.slice(args.offset,args.offset+args.limit),has_more:args.offset+args.limit<rows.length};
+  const completed=rows.filter(j=>j.state==='succeeded');
+  return {items:rows.slice(args.offset,args.offset+args.limit),has_more:args.offset+args.limit<rows.length,
+   completed_counts:{total:completed.length,automatic_count:completed.filter(j=>j.hide_on_success).length,
+    manual_count:completed.filter(j=>!j.hide_on_success).length}};
  }
  return originalGet(endpoint,args);
 };
@@ -31,7 +34,7 @@ window.AstrBotPluginView.apiPost=async(endpoint,body)=>{
  if(window.deferClear)await new Promise(resolve=>window.releaseClear=resolve);
  const old=testJobs.length;
  window.testJobs=testJobs.filter(j=>j.state!=='succeeded'||(body.scope_key&&j.scope_key!==body.scope_key));
- return {deleted_count:old-testJobs.length,removed_node_count:0};
+ return {deleted_count:old-testJobs.length,automatic_count:0,manual_count:old-testJobs.length,removed_node_count:0};
 };
 """
 
@@ -61,6 +64,7 @@ async def main():
                     confirm = page.locator('#clear-completed-confirm')
                     await trigger.click()
                     await expect(dialog).to_be_visible()
+                    await expect(page.locator('#clear-completed-scope')).to_contain_text('可清理 25 个成功任务')
                     await expect(page.locator('#clear-completed-cancel')).to_be_focused()
                     assert '当前空间' in await dialog.inner_text()
                     assert not await page.evaluate("testCalls.some(c=>c.endpoint==='tasks/clear-completed')")

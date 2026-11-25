@@ -520,15 +520,15 @@ async def test_clear_completed_api_scope_and_all_spaces(api):
     jobs = api.plugin.jobs
     main_scope = api.test_space['space_id']
     for scope, key in ((main_scope, 'same-space'), ('another-space', 'elsewhere')):
-        job = await jobs.submit('model_test', scope, {}, key)
+        job = await jobs.submit('model_test', scope, {}, key, hide_on_success=scope == main_scope)
         claimed = await jobs.claim('worker')
         await jobs.finish(job['job_id'], claimed['lease_token'], result={})
     queued = await jobs.submit('extract', main_scope, {}, 'unfinished')
     api.test_body = {'scope_key': main_scope}
-    assert payload(await api.clear_completed()) == {'deleted_count': 1, 'removed_node_count': 0}
-    assert payload(await api.clear_completed()) == {'deleted_count': 0, 'removed_node_count': 0}
+    assert payload(await api.clear_completed()) == {'deleted_count': 1, 'automatic_count': 1, 'manual_count': 0, 'removed_node_count': 0}
+    assert payload(await api.clear_completed()) == {'deleted_count': 0, 'automatic_count': 0, 'manual_count': 0, 'removed_node_count': 0}
     api.test_body = {}
-    assert payload(await api.clear_completed()) == {'deleted_count': 1, 'removed_node_count': 0}
+    assert payload(await api.clear_completed()) == {'deleted_count': 1, 'automatic_count': 0, 'manual_count': 1, 'removed_node_count': 0}
     assert (await jobs.get(queued['job_id']))['state'] == 'queued'
 
 

@@ -181,7 +181,8 @@ class MaintenanceAPI:
         for job in jobs[:limit]:
             items.append({**_summary(job), **await self.plugin.jobs.recovery_actions(job)})
         return json_response({"items": items,
-                              "limit": limit, "offset": offset, "has_more": len(jobs) > limit})
+                              "limit": limit, "offset": offset, "has_more": len(jobs) > limit,
+                              "completed_counts": await self.plugin.jobs.completed_counts(scope_key=scope)})
 
     @_guard
     async def task(self):

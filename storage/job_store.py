@@ -562,18 +562,34 @@ class JobStore:
         async with self.database.transaction() as connection:
             scope_clause = " AND scope_key=?" if scope_key is not None else ""
             cursor = await connection.execute(
-                "SELECT job_id,scope_key,kind FROM memory_jobs WHERE state='succeeded'"
+                "SELECT job_id,scope_key,kind,hide_on_success FROM memory_jobs WHERE state='succeeded'"
                 + scope_clause + " ORDER BY created_at,job_id",
                 (scope_key,) if scope_key is not None else (),
             )
             jobs = await cursor.fetchall()
-            result = {"deleted_count": len(jobs), "removed_node_count": 0, "removed_generation_ids": []}
+            result = {"deleted_count": len(jobs),
+                      "automatic_count": sum(1 for job in jobs if job["hide_on_success"]),
+                      "manual_count": sum(1 for job in jobs if not job["hide_on_success"]),
+                      "removed_node_count": 0, "removed_generation_ids": []}
             for job in jobs:
                 deleted = await self._delete_stopped(connection, job, invalidate_nodes=invalidate_nodes)
                 result["removed_node_count"] += deleted["removed_node_count"]
                 if deleted["removed_generation_id"] is not None:
                     result["removed_generation_ids"].append(deleted["removed_generation_id"])
             return result
+
+    async def completed_counts(self, *, scope_key=None) -> dict[str, int]:
+        """Return successful task counts, including rows hidden from the task list."""
+        scope_clause = " AND scope_key=?" if scope_key is not None else ""
+        row = await self.database.fetchone(
+            "SELECT COUNT(*) AS total, "
+            "COALESCE(SUM(CASE WHEN hide_on_success=1 THEN 1 ELSE 0 END), 0) AS automatic_count "
+            "FROM memory_jobs WHERE state='succeeded'" + scope_clause,
+            (scope_key,) if scope_key is not None else (),
+        )
+        total = int(row["total"] if row else 0)
+        automatic = int(row["automatic_count"] if row else 0)
+        return {"total": total, "automatic_count": automatic, "manual_count": total - automatic}
 
     async def _delete_stopped(self, connection, job, *, invalidate_nodes=None):
         """Shared cleanup for a task selected under the enclosing transaction."""

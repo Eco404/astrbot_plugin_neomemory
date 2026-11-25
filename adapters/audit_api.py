@@ -58,7 +58,7 @@ class AuditAPI:
                         details["fields"] = sorted(body.get("changes", {}))
                 data = json.loads(result.body)
                 if isinstance(data, dict):
-                    details.update({k: data[k] for k in ("job_id", "deleted_count", "retried", "applied") if k in data})
+                    details.update({k: data[k] for k in ("job_id", "deleted_count", "automatic_count", "manual_count", "retried", "applied") if k in data})
             else:
                 error = json.loads(result.body).get("data") or {}
                 if "error_code" in error:

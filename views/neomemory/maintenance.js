@@ -19,7 +19,7 @@ function fieldLabel(caption) {
 export function initMaintenance(ui) {
   const bridge = ui.bridge;
   const state = { spaces: [], nodes: [], available: false, posting: false, refreshing: false,
-    clearingTasks: false, clearScope: null, taskRevision: 0,
+    clearingTasks: false, clearScope: null, completedCounts: { total: 0, automatic_count: 0, manual_count: 0 }, taskRevision: 0,
     nodeOffset: 0, nodeRequest: 0, nodeLoading: false, taskOffset: 0, spaceOffset: 0, selectedJob: null, detail: null, rawJob: null, rawRequest: 0,
     mergeSelected: new Map(), mergeCandidates: [], mergeOffset: 0, mergeRequest: 0, ingressOffset: 0, ingressRefreshing: false, ingressReady: false, selectedSource: null };
   const pendingSubmissionKeys = new Map();
@@ -342,8 +342,13 @@ export function initMaintenance(ui) {
   function openClearCompleted() {
     if (state.posting || state.clearingTasks) return;
     state.clearScope = $('all-tasks').checked || !spaceId() ? null : spaceId();
-    $('clear-completed-scope').textContent = state.clearScope
-      ? '范围：当前空间（' + $('space').selectedOptions[0].textContent + '）。' : '范围：所有空间。';
+    const counts = state.completedCounts || {};
+    const countText = Number.isInteger(counts.total)
+      ? `可清理 ${counts.total} 个成功任务，其中自动任务 ${counts.automatic_count || 0} 个、人工任务 ${counts.manual_count || 0} 个。`
+      : '';
+    $('clear-completed-scope').textContent = (state.clearScope
+      ? '范围：当前空间（' + $('space').selectedOptions[0].textContent + '）。' : '范围：所有空间。')
+      + (countText ? ` ${countText}` : '');
     $('clear-completed-error').hidden = true;
     $('clear-completed-progress').hidden = true;
     $('clear-completed-dialog').showModal();
@@ -363,7 +368,9 @@ export function initMaintenance(ui) {
       }
       state.taskOffset = 0;
       $('clear-completed-dialog').close();
-      notify(`已清空 ${result.deleted_count} 个已完成任务。`);
+      const breakdown = result.automatic_count === undefined ? ''
+        : `其中自动任务 ${result.automatic_count} 个、人工任务 ${result.manual_count} 个。`;
+      notify(`已清空 ${result.deleted_count} 个已完成任务。${breakdown}`);
     } catch (error) {
       $('clear-completed-error').textContent = error.message || '清空未完成，请重试。';
       $('clear-completed-error').hidden = false;
@@ -537,6 +544,7 @@ export function initMaintenance(ui) {
         selected ? bridge.apiGet('availability', { space_id: selected }) : Promise.resolve({ available: false, blocking_jobs: [] })
       ]);
       if (revision !== state.taskRevision || state.clearingTasks || selected !== spaceId() || !ui.current(epoch) || offset !== state.taskOffset || all !== $('all-tasks').checked) return;
+      state.completedCounts = result.completed_counts || { total: 0, automatic_count: 0, manual_count: 0 };
       state.available = available.available; automaticStatus(available.automatic);
       $('availability').textContent = !selected ? '尚无可选空间；收到可归属的会话后后台会发现空间。'
         : available.available ? '当前空间空闲。' : '当前空间暂不可启动新任务：' + available.blocking_jobs.map((job) => `${kinds[job.kind] || job.kind} (${job.job_id})`).join('；');
