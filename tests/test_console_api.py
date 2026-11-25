@@ -44,11 +44,12 @@ def payload(response, status=200):
 def test_registration_uses_authenticated_host_bridge(api):
     routes = []
     api.register(SimpleNamespace(register_web_api=lambda *args: routes.append(args)))
-    assert len(routes) == 5
+    assert len(routes) == 6
     assert {(row[0], tuple(row[2])) for row in routes} == {
         ("/astrbot_plugin_neomemory/memory/context", ("GET",)),
         ("/astrbot_plugin_neomemory/memory/profile-users", ("GET",)),
         ("/astrbot_plugin_neomemory/memory/source", ("GET",)),
+        ("/astrbot_plugin_neomemory/storage/spaces", ("GET",)),
         ("/astrbot_plugin_neomemory/notes", ("GET",)),
         ("/astrbot_plugin_neomemory/notes", ("POST",)),
     }

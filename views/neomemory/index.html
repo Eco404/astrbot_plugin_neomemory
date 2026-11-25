@@ -274,7 +274,15 @@
     <p class="muted" id="recall-retention">所有空间合计保留最近 50 条，此处显示所选空间的记录。插件重载或重启后保留开关和记录，关闭开关会清空所有空间的记录。</p>
     <div id="recall-history" aria-live="polite"></div>
   </section>
-  <section data-maintenance-content="status" hidden><h2 class="section-title"><span data-icon="storage" aria-hidden="true"></span>存储状态</h2><div id="storage-usage"></div></section>
+  <section data-maintenance-content="status" hidden>
+    <h2 class="section-title"><span data-icon="storage" aria-hidden="true"></span>存储状态</h2>
+    <div class="storage-charts">
+      <section><h3>按数据库</h3><div id="storage-usage"></div><p class="storage-note">磁盘占用包含 SQLite 日志与共享内存文件。</p></section>
+      <section><div class="storage-heading"><h3>按记忆空间</h3><button id="calculate-space-usage" type="button">计算空间占用</button></div>
+        <div id="storage-spaces"></div><p id="space-usage-status" class="storage-note" role="status">点击后统计所有空间已归属的内容。</p>
+      </section>
+    </div>
+  </section>
   <section data-maintenance-content="status" hidden><h2 class="section-title"><span data-icon="maintenance" aria-hidden="true"></span>健康状态</h2>
     <h3>后台任务恢复</h3>
     <p class="muted" id="automatic-recovery"></p>

@@ -350,6 +350,28 @@ html { scroll-padding-bottom: 96px; }
 #governance-action-label { margin-top: 16px; }
 #governance-profile-user { width: min(18rem, 100%); }
 #identity-id { overflow-wrap: anywhere; font-size: 12px; }
+
+.storage-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 16px; }
+.storage-charts > section { container-type: inline-size; min-width: 0; padding: 14px; border: 1px solid var(--line-soft); border-radius: var(--radius); }
+.storage-charts h3 { display: flex; align-items: center; min-height: 30px; margin: 0; font-size: 14px; }
+.storage-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.storage-heading button { padding: 4px 10px; min-height: 30px; font-size: 12px; }
+.storage-note { margin: 12px 0 0; color: var(--text-muted); font-size: 12px; }
+.storage-plot { position: relative; display: grid; grid-template-columns: minmax(76px, .65fr) minmax(0, 1fr); align-items: center; gap: 12px; margin-top: 12px; }
+.storage-ring { position: relative; width: 100%; max-width: 146px; justify-self: center; }
+.storage-ring svg { display: block; width: 100%; }
+.storage-center { position: absolute; inset: 0; display: grid; align-content: center; justify-items: center; pointer-events: none; line-height: 1.35; }
+.storage-center strong { font-size: clamp(11px, 3.6cqi, 18px); }
+.storage-center small, .storage-key small { color: var(--text-muted); font-size: 11px; }
+.storage-legend { display: grid; min-width: 0; max-height: 12rem; overflow-y: auto; }
+button.storage-key { display: grid; grid-template-columns: 9px minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 4px; min-height: 32px; border: 0; border-radius: 4px; background: transparent; text-align: start; font-size: 12px; }
+.storage-key > span { overflow-wrap: anywhere; }
+.storage-dot { width: 9px; height: 9px; border-radius: 50%; }
+.storage-tip { position: absolute; z-index: 2; bottom: calc(100% + 3px); inset-inline: 0; margin-inline: auto; width: max-content; max-width: 100%; display: grid; gap: 2px; padding: 8px 12px; border: 1px solid var(--line-control); border-radius: var(--radius-control); background: var(--glass-solid); box-shadow: var(--shadow-float); color: var(--text); font-size: 12px; overflow-wrap: anywhere; pointer-events: none; }
+@container (max-width: 270px) {
+  .storage-plot { grid-template-columns: minmax(0, 1fr); }
+  .storage-ring { width: 110px; }
+}
 #identity-confirm-summary { font-size: 13px; }
 #identity-confirm-summary ul { padding-left: 20px; }
 #identity-confirm-summary .identity-removal { padding: 10px 12px; background: var(--danger-soft); border-radius: var(--radius-control); }

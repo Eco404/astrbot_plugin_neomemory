@@ -8,6 +8,7 @@ proxy subpath deployment and live Providers are deliberately not claimed.
 import asyncio
 from dataclasses import replace
 import json
+import re
 import socket
 import sys
 import tempfile
@@ -560,6 +561,23 @@ async def main():
                 await frame.locator('[data-page="maintenance"]').click()
                 await frame.locator('[data-maintenance-tab="status"]').click()
                 await expect(frame.locator("#storage-usage")).to_contain_text("memory.db")
+                await expect(frame.locator("#storage-spaces svg")).to_have_count(0)
+                database = frame.locator("#storage-usage")
+                await database.get_by_role("button", name="source.db").hover()
+                await expect(database.get_by_role("tooltip")).to_contain_text("保存会话原文")
+                await expect(database.get_by_role("tooltip")).to_contain_text("%")
+                await frame.get_by_role("button", name="计算空间占用").click()
+                await expect(frame.locator("#space-usage-status")).to_have_text(re.compile(r"^计算于 \d{2}:\d{2}$"))
+                await expect(frame.locator("#storage-spaces svg")).to_have_count(1)
+                space_chart = frame.locator("#storage-spaces")
+                await expect(space_chart.locator(".storage-center")).to_have_count(0)
+                key = space_chart.locator(".storage-key").first
+                share = await key.locator("small").inner_text()
+                assert re.fullmatch(r"<?\d+(?:\.\d+)?%", share)
+                name = await key.locator("span").last.inner_text()
+                await expect(key).to_have_accessible_name(f"{name}，{share}")
+                await key.focus()
+                await expect(space_chart.get_by_role("tooltip").locator("span")).to_have_text(share)
                 await expect(frame.locator("#context-budget-status")).to_contain_text("synthetic-ui-assembly")
                 await expect(frame.locator("#context-budget-status")).to_contain_text(harness.space["space_id"])
                 await expect(frame.locator("#context-budget-status")).to_contain_text("UTF-8 字节")

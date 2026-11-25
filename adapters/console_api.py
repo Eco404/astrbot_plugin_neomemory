@@ -49,7 +49,7 @@ class ConsoleAPI:
             return
         for endpoint, method, handler in (
             ("memory/context", "GET", self.context), ("memory/profile-users", "GET", self.profile_users),
-            ("memory/source", "GET", self.source),
+            ("memory/source", "GET", self.source), ("storage/spaces", "GET", self.space_storage),
             ("notes", "GET", self.notes), ("notes", "POST", self.submit_note),
         ):
             register(f"{PREFIX}/{endpoint}", handler, [method], f"NeoMemory console {endpoint}")
@@ -64,6 +64,12 @@ class ConsoleAPI:
                 "q": _text(request.query.get("q", ""), maximum=1000, empty=True),
                 "limit": _integer(request.query.get("limit", 50), minimum=1, maximum=100),
                 "offset": _integer(request.query.get("offset", 0))}
+
+    @_guard
+    async def space_storage(self):
+        cache_path = self.plugin.data_dir / "cache.db"
+        items = await self.plugin.console_store.space_storage(cache_path if cache_path.exists() else None)
+        return json_response({"items": items})
 
     @_guard
     async def context(self):

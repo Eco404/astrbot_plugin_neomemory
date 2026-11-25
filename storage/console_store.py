@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -28,6 +29,7 @@ except ImportError:
 from .job_store import JobConflict, assert_job_lease
 from .recall_store import _NODE_SELECT
 from .source_scan import _record_spec
+from .space_usage import space_payload_sizes
 
 _CONTEXT = {
     "profiles": ("user_profiles", "profile_id", "description", {"active", "disabled", "historical"}),
@@ -130,6 +132,13 @@ class ConsoleStore:
         items = [dict(row) for row in rows[:limit]]
         await self.label_spaces(items)
         return {"items": items, "limit": limit, "offset": offset, "has_more": len(rows) > limit}
+
+    async def space_storage(self, cache_path):
+        spaces = await asyncio.to_thread(space_payload_sizes, self.memory.path,
+                                         self.sources.path if self.sources else None, cache_path)
+        await self.label_spaces(spaces)
+        return [{"space_id": item["space_id"], "display_label": item["display_label"], "size_bytes": item["size_bytes"]}
+                for item in spaces]
 
     async def label_spaces(self, items):
         owners = {item["logical_user_id"] for item in items if item["space_type"] == "private"}

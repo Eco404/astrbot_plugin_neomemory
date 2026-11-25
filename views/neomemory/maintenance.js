@@ -1,4 +1,5 @@
 import { initContextGovernance } from './context-governance.js';
+import { initStorageCharts, bytes } from './storage-charts.js';
 import { initTaskModels } from './task-models.js';
 import { initRecallInspector } from './recall.js';
 import { budgetDiagnostics, formatDuration, taskTiming, taskFeedback } from './task-progress.js';
@@ -24,6 +25,7 @@ export function initMaintenance(ui) {
   let nodeQuery = '';
   let backlogEpoch = null;
   const recall = initRecallInspector(ui);
+  const storageCharts = initStorageCharts(bridge);
   const contextGovernance = initContextGovernance(ui, operation => submit('governance', { operation }));
   const confirmModelTask = initTaskModels(ui);
   const modelJobs = new Set(['extract', 'rebuild', 'section_rebuild', 'topic_consolidate', 'topic_rebuild', 'profile_rebuild', 'relationship_rebuild', 'context_rebuild', 'short_term']);
@@ -388,10 +390,7 @@ export function initMaintenance(ui) {
       $('automatic-jobs').append(row);
     }
   }
-  const bytes = (value) => {
-    const count = Number.isFinite(value) ? value : 0;
-    return count >= 1048576 ? (count / 1048576).toFixed(1) + ' MiB' : count >= 1024 ? (count / 1024).toFixed(1) + ' KiB' : count + ' B';
-  };
+
   async function ingressDetail(sourceId) {
     state.selectedSource = sourceId; $('ingress-detail-panel').open = true;
     $('ingress-detail').textContent = '正在读取所选原文…';
@@ -427,9 +426,7 @@ export function initMaintenance(ui) {
     registrationIssue.textContent = health.companion_registration_issue || '';
     registrationIssue.hidden = !registrationIssue.textContent;
     renderContextBudget(health.recall?.diagnostics?.last_context);
-    const sizes = Object.entries(health.storage_bytes || {});
-    $('storage-usage').replaceChildren(...sizes.map(([name, size]) => element('p', name + ' · ' + bytes(size))));
-    $('storage-usage').append(element('p', sizes.length ? '合计 ' + bytes(sizes.reduce((total, entry) => total + entry[1], 0)) + '（含 SQLite 辅助文件）' : '暂无存储统计。', 'muted'));
+    storageCharts.databases(health.storage_bytes);
     return health;
   }
   async function refreshIngress() {

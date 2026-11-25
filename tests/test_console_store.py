@@ -46,6 +46,39 @@ async def execute(service, space, key, operation):
 
 
 @pytest.mark.asyncio
+async def test_space_storage_follows_source_ownership_and_counts_stored_bytes(stores, tmp_path):
+    from storage.cache_store import CacheStore, text_hash
+
+    memory, sources, private, console, _ = stores
+    sid = private["space_id"]
+    group = await memory.get_or_create_space(group_space("persona-default", "adapter-1", "room"))
+    gid = group["space_id"]
+
+    async def sizes(cache=None):
+        return {item["space_id"]: item["size_bytes"] for item in await console.space_storage(cache)}
+
+    initial = await sizes()
+    assert initial[sid] >= len(b"hello") and initial[gid] == 0
+    message = make_source("group-msg", "群聊")
+    await sources.capture(replace(message, identity=replace(message.identity, group_id="room", message_type="GroupMessage")))
+    after_group = await sizes()
+    assert after_group[gid] >= len("群聊".encode()) and after_group[sid] == initial[sid]
+    await memory.create_note(space_id=sid, content_text="笔记")
+    after_note = await sizes()
+    assert after_note[sid] - initial[sid] == len("笔记{}".encode())
+
+    cache = CacheStore(tmp_path / "cache.db")
+    await cache.open()
+    try:
+        for namespace in (gid, "unowned"):
+            await cache.put_vectors("model", namespace, [text_hash("synthetic")], [[.6, .8]])
+        result = await sizes(cache.path)
+        assert result == {sid: after_note[sid], gid: after_group[gid] + len("[0.6,0.8]")}
+    finally:
+        await cache.close()
+
+
+@pytest.mark.asyncio
 async def test_context_current_generation_decodes_json_and_group_relations(stores):
     memory, _, space, console, _ = stores
     sid, uid = space["space_id"], space["logical_user_id"]
