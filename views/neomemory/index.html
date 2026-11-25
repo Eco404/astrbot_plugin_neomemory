@@ -94,7 +94,7 @@
   <button id="appearance-reset" type="button" class="reset-setting">恢复默认主题</button>
 </fieldset><div class="save-bar"><span id="settings-draft-state" class="draft-state" role="status"></span><div class="row"><button id="settings-discard" hidden>放弃设置</button><button id="settings-save" class="primary" disabled>保存设置</button><button id="settings-apply" hidden>重试应用已保存配置</button><button id="settings-reset-all" disabled>全部恢复默认</button><button id="settings-refresh">重新读取已保存设置</button></div></div><p id="settings-result" role="status"></p></section></div>
 <div id="page-maintenance" class="page" hidden>
-  <div class="switches" role="tablist" aria-label="维护内容"><button data-maintenance-tab="tasks" role="tab" aria-selected="true" tabindex="0">后台任务</button><button data-maintenance-tab="users" role="tab" aria-selected="false" tabindex="-1">用户管理</button><button data-maintenance-tab="manual" role="tab" aria-selected="false" tabindex="-1">人工维护</button><button data-maintenance-tab="recall" role="tab" aria-selected="false" tabindex="-1">召回测试</button><button data-maintenance-tab="status" role="tab" aria-selected="false" tabindex="-1">插件状态</button></div>
+  <div class="switches" role="tablist" aria-label="维护内容"><button data-maintenance-tab="tasks" role="tab" aria-selected="true" tabindex="0">后台任务</button><button data-maintenance-tab="users" role="tab" aria-selected="false" tabindex="-1">用户管理</button><button data-maintenance-tab="manual" role="tab" aria-selected="false" tabindex="-1">人工维护</button><button data-maintenance-tab="recall" role="tab" aria-selected="false" tabindex="-1">召回测试</button><button data-maintenance-tab="status" role="tab" aria-selected="false" tabindex="-1">插件状态</button><button data-maintenance-tab="logs" role="tab" aria-selected="false" tabindex="-1">插件日志</button></div>
   <section data-maintenance-content="tasks">
     <h2 class="section-title"><span data-icon="clock" aria-hidden="true"></span>后台任务</h2>
     <div class="row"><label><input id="all-tasks" type="checkbox" /> 查看所有空间</label><span class="muted">每 3 秒更新状态</span><button id="clear-completed-tasks" class="danger" aria-haspopup="dialog">清空已完成任务</button></div>
@@ -274,6 +274,25 @@
     <p class="muted" id="recall-retention">所有空间合计保留最近 50 条，此处显示所选空间的记录。插件重载或重启后保留开关和记录，关闭开关会清空所有空间的记录。</p>
     <div id="recall-history" aria-live="polite"></div>
   </section>
+  <section data-maintenance-content="logs" hidden>
+    <h2 class="section-title"><span data-icon="storage" aria-hidden="true"></span>插件日志</h2>
+    <p class="muted">显示所有记忆空间的日志。</p>
+    <form id="audit-preferences" class="row">
+      <label class="audit-enabled-label"><input id="audit-enabled" type="checkbox" role="switch" /> 记录插件日志</label>
+      <label class="audit-retention-label"><span>保留天数</span><input id="audit-days" type="number" min="1" max="30" required /></label>
+      <button id="audit-save" type="submit" disabled>保存设置</button>
+    </form>
+    <form id="audit-filters" class="row">
+      <label><span>级别</span><select id="audit-level"><option value="">全部级别</option><option value="debug">调试</option><option value="info">信息</option><option value="warning">警告</option><option value="error">错误</option></select></label>
+      <label><span>类别</span><select id="audit-category"><option value="">全部类别</option><option value="system">插件运行</option><option value="operation">操作</option><option value="task">后台任务</option></select></label>
+      <label><span>日期</span><input id="audit-day" type="date" /></label>
+      <label class="grow"><span>关键词</span><input id="audit-keyword" type="search" placeholder="事件、任务编号、错误码等" /></label>
+      <button type="submit">查询</button>
+    </form>
+    <div class="row"><button id="audit-refresh">刷新日志</button><button id="audit-clear" class="danger">清空日志</button></div>
+    <p id="audit-status" class="muted" role="status"></p><div id="audit-list"></div>
+    <nav id="audit-pages" class="row" aria-label="日志分页" hidden><button id="audit-prev">上一页</button><span id="audit-page"></span><button id="audit-next">下一页</button></nav>
+  </section>
   <section data-maintenance-content="status" hidden>
     <h2 class="section-title"><span data-icon="storage" aria-hidden="true"></span>存储状态</h2>
     <div class="storage-charts">
@@ -336,6 +355,11 @@
   <form method="dialog" id="task-model-form"><div id="task-model-fields"></div><div class="row"><button value="cancel" formnovalidate autofocus>取消</button><button id="section-rebuild-confirm" value="rebuild" class="danger">确认重构</button></div></form>
 </dialog>
 
+<dialog id="audit-confirm-dialog" class="confirmation-dialog" aria-labelledby="audit-confirm-title" aria-describedby="audit-confirm-scope">
+  <h2 id="audit-confirm-title">清空全部插件日志？</h2>
+  <p id="audit-confirm-scope">将删除所有日期、级别和记忆空间的日志，包括当前筛选之外的记录。删除后无法恢复。</p>
+  <div class="row"><button id="audit-cancel" autofocus>取消</button><button id="audit-confirm" class="danger">确认清空</button></div>
+</dialog>
 <dialog id="clear-completed-dialog" class="confirmation-dialog" aria-labelledby="clear-completed-title" aria-describedby="clear-completed-scope clear-completed-description">
   <h2 id="clear-completed-title">清空已完成任务？</h2>
   <p id="clear-completed-scope"></p>

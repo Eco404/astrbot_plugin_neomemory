@@ -1,4 +1,5 @@
 import { initContextGovernance } from './context-governance.js';
+import { initAuditLog } from './audit-log.js';
 import { initStorageCharts, bytes } from './storage-charts.js';
 import { initTaskModels } from './task-models.js';
 import { initRecallInspector } from './recall.js';
@@ -26,6 +27,7 @@ export function initMaintenance(ui) {
   let backlogEpoch = null;
   const recall = initRecallInspector(ui);
   const storageCharts = initStorageCharts(bridge);
+  const audit = initAuditLog(ui);
   const contextGovernance = initContextGovernance(ui, operation => submit('governance', { operation }));
   const confirmModelTask = initTaskModels(ui);
   const modelJobs = new Set(['extract', 'rebuild', 'section_rebuild', 'topic_consolidate', 'topic_rebuild', 'profile_rebuild', 'relationship_rebuild', 'context_rebuild', 'short_term']);
@@ -35,6 +37,7 @@ export function initMaintenance(ui) {
     }
     if (['tasks', 'manual'].includes(tab.dataset.maintenanceTab)) refreshBacklog();
     if (tab.dataset.maintenanceTab === 'recall') recall.refresh();
+    if (tab.dataset.maintenanceTab === 'logs') audit.refresh();
     if (tab.dataset.maintenanceTab === 'manual') contextGovernance.refresh();
   });
   function showTasks() { document.querySelector('[data-maintenance-tab="tasks"]').click(); }
@@ -771,8 +774,8 @@ export function initMaintenance(ui) {
   on('merge-next', 'click', () => { state.mergeOffset += 50; return loadMergeCandidates(); });
   on('merge-prev', 'click', () => { state.mergeOffset = Math.max(0, state.mergeOffset - 50); return loadMergeCandidates(); }); on('delete-confirm', 'input', buttons);
   return {
-    async refresh() { await Promise.all([contextGovernance.refresh(), recall.visible() && recall.refresh(), loadNodes(), refreshTasks(), refreshBacklog(), refreshIngress()]); },
-    async poll() { if (!recall.visible() && !state.clearingTasks) await Promise.all([refreshTasks(), refreshBacklog(), refreshIngress()]); },
+    async refresh() { await Promise.all([audit.visible() && audit.refresh(), contextGovernance.refresh(), recall.visible() && recall.refresh(), loadNodes(), refreshTasks(), refreshBacklog(), refreshIngress()]); },
+    async poll() { if (!audit.visible() && !recall.visible() && !state.clearingTasks) await Promise.all([refreshTasks(), refreshBacklog(), refreshIngress()]); },
     changed() { contextGovernance.changed(); recall.changed(); $('task-detail-panel').open = false; $('extraction-backlog').textContent = $('extraction-hint').textContent = '正在读取当前空间的待抽取数量…'; state.nodeRequest += 1; state.nodeLoading = false; clearTaskSource(); state.rawJob = null; $('task-sources').replaceChildren(); state.available = false; state.nodeOffset = state.taskOffset = 0; state.selectedJob = state.detail = null; state.nodes = []; $('node-select').replaceChildren(); $('merge-nodes').replaceChildren(); $('node-preview').textContent = ''; $('version-detail').textContent = ''; $('tasks').replaceChildren(); $('automatic-status').hidden = true; $('task-detail').textContent = '请选择要查看的任务。'; $('restart-hint').textContent = ''; $('task-diagnostics').textContent = ''; $('operation').value = ''; $('node-title').value = ''; $('content').value = ''; $('split-parts').replaceChildren(); $('availability').textContent = '正在读取空间状态…'; buttons(); },
     async inspect(job) { showTasks(); if (job.scope_key === '*') $('all-tasks').checked = true; state.selectedJob = job.job_id; $('task-detail-panel').open = false; await refreshTasks(); }
   };
