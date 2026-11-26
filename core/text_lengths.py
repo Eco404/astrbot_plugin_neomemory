@@ -14,6 +14,11 @@ def encoded_text_limit(readable_limit: int) -> int:
     return readable_limit * (USER_REFERENCE_MAX_CHARS + USER_REFERENCE_OVERHEAD)
 
 
+def event_text_units(text: str) -> int:
+    """Count letters and digits in event prose, treating each user reference as one letter."""
+    return sum(char.isalnum() for char in _USER_REFERENCE.sub("人", text))
+
+
 def readable_text_length(text: str) -> int:
     """Count each complete, syntactically valid user reference as one unit.
 

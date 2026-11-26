@@ -15,7 +15,7 @@ from pydantic_core import PydanticCustomError
 
 from .memory_nodes import validate_title
 from .memory_emotions import encode_emotion, validate_emotion
-from .text_lengths import encoded_text_limit, readable_text_length
+from .text_lengths import encoded_text_limit, event_text_units, readable_text_length
 from .relationship_state import LONG_TERM_MAX_CHARS, AFTEREFFECT_MAX_CHARS, is_slot_operation
 from .extraction_errors import DuplicateJSONKey, ExtractionCapacityError
 from .candidate_feedback import CandidateValidationError
@@ -26,6 +26,7 @@ from .profile_memory_prompt import PROFILE_EDITS_PROMPT_VERSION
 SCHEMA_VERSION = "extraction.v1"
 MAX_OUTPUT_CHARS = 120_000
 NODE_CONTENT_LIMITS = {"atomic": 800, "event": 3000, "topic": 2000}
+MIN_EVENT_TEXT_UNITS = 2
 
 Identifier = Annotated[
     str, StringConstraints(min_length=1, max_length=200, pattern=r"^\S+$")
@@ -137,7 +138,11 @@ class NodeChange(StrictModel):
     @field_validator("content")
     @classmethod
     def validate_readable_content(cls, value: str, info: ValidationInfo) -> str:
-        return _check_readable_length(value, NODE_CONTENT_LIMITS.get(info.data.get("node_type"), 3000))
+        node_type = info.data.get("node_type")
+        _check_readable_length(value, NODE_CONTENT_LIMITS.get(node_type, 3000))
+        if node_type == "event" and event_text_units(value) < MIN_EVENT_TEXT_UNITS:
+            raise PydanticCustomError("event_content_insufficient", "Event content must describe what happened")
+        return value
 
     @field_validator("base_node_ids")
     @classmethod
@@ -332,6 +337,11 @@ def extraction_model_json_schema(schema_version: str = SCHEMA_VERSION, *, prompt
     model does not spend output budget reproducing internal counters.
     """
     schema = deepcopy(extraction_json_schema(schema_version))
+    # Some constrained decoders treat a search pattern as a full-string match.
+    content = schema["$defs"]["NodeChange"]["properties"]["content"]
+    del content["pattern"]
+    content["description"] = (f"正文须有实际内容。事件须写明发生了什么，至少含{MIN_EVENT_TEXT_UNITS}个文字或数字，"
+                              "完整用户引用算一个字。更新时保留仍然成立的旧事实。")
     for field in ("schema_version", "result", "reason"):
         schema["properties"].pop(field, None)
         if field in schema.get("required", []):

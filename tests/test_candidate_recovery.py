@@ -77,6 +77,37 @@ async def test_fixed_input_candidate_errors_recover_and_commit_once(environment,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('update,body,units', [(False, '嗯。', 1), (True, '……', 0), (True, '{{user:u1}}', 1)])
+async def test_event_body_is_corrected_before_writing(environment, update, body, units):
+    env = environment
+    enable(env)
+    old = None
+    if update:
+        old = await env.memory.create_node(space_id=env.space['space_id'], node_type='event',
+            content_text='配件已订购，正在等货。', source_ids=[env.records[0].source_id])
+    corrected = '配件已经到货。'
+    env.adapter.output = json.dumps(output([node('s1', old=old, content=body)]))
+
+    async def correct(messages):
+        if len(messages) == 4:
+            diagnostic, = json.loads(messages[-1]['content'])['errors']
+            assert (diagnostic['path'], diagnostic['type']) == ('$.node_changes[0].content', 'event_content_insufficient')
+            assert diagnostic['actual_letters_or_digits'] == units
+            assert diagnostic['constraints']['min_letters_or_digits'] == 2
+            rows = await env.memory.list_nodes(space_id=env.space['space_id'])
+            assert [(row['content_version'], row['content_text']) for row in rows] == (
+                [(1, old['content_text'])] if update else [])
+            env.adapter.output = json.dumps(output([node('s1', old=old, content=corrected)]))
+
+    env.adapter.on_generate = correct
+    completed = await execute(env, await enqueue_and_claim(env))
+    assert completed['state'] == 'succeeded'
+    assert len(env.adapter.calls) == 2
+    row, = await env.memory.list_nodes(space_id=env.space['space_id'])
+    assert (row['content_version'], row['content_text']) == (2 if update else 1, corrected)
+
+
+@pytest.mark.asyncio
 async def test_default_is_three_corrections_not_three_total_calls(environment):
     env = environment
     assert NeoMemoryConfig().extraction_max_regenerations == 3

@@ -295,7 +295,7 @@ STRUCTURED = {
     'interaction_confirmation_required', 'interaction_confirmation_invalid',
     'topic_create_identity', 'topic_create_members', 'ordinary_topic_create_members', 'topic_update_identity', 'topic_duplicate_members',
     'topic_duplicate_update', 'topic_member_set', 'topic_member_unavailable', 'topic_unknown_user',
-    'summary_unknown_user', 'initial_summary_evidence_required', 'relationship_slot_body',
+    'summary_unknown_user', 'initial_summary_evidence_required', 'relationship_slot_body', 'event_content_insufficient',
 }
 FORMAT_OR_PROTOCOL = {'invalid_user_reference', 'schema_mismatch', 'json_invalid'}
 HARD_STOP = {'output_capacity_exceeded'}

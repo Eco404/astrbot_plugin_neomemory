@@ -153,6 +153,18 @@ def test_time_is_explicit_nullable_and_ordered():
     assert result.node_changes[0].event_time.start == 0
 
 
+def test_model_schema_leaves_prose_unconstrained_by_decoder_regex():
+    fields = extraction_model_json_schema()["$defs"]["NodeChange"]["properties"]
+    assert "pattern" not in fields["content"]
+    assert fields["local_ref"]["pattern"]
+    for kind in ("atomic", "event", "topic"):
+        with pytest.raises(ValueError):
+            parse(changes(node_changes=[node_change(node_type=kind, content=" \t ")]))
+    for body in ("签收", "OK", "{{user:u1}}到了。"):
+        assert parse(changes(node_changes=[node_change(node_type="event", content=body)])).node_changes[0].content == body
+    assert parse(changes(node_changes=[node_change(node_type="atomic", content="晴")])).node_changes[0].content == "晴"
+
+
 def test_duplicate_candidates_and_unknown_local_edges_are_rejected():
     with pytest.raises(ValueError, match="local_ref"):
         parse(changes(node_changes=[node_change(), node_change()]))

@@ -19,6 +19,7 @@ _FIELDS = frozenset({
     "tags", "description", "remove_sentences", "remove_tags", "relationship_change", "state_text", "emotion_tags", "emotion_intensity", "emotion", "intensity", "tag", "long_term", "aftereffect", "op", "body",
 })
 _EXPLANATIONS = {
+    "event_content_insufficient": "根据来源写明谁做了什么或发生了什么。更新事件时保留仍成立的旧事实。来源不足以支持变化时可省略该项。",
     "schema_mismatch": "按本次输入提供的schema返回业务变化对象，关系使用独立long_term/aftereffect操作，节点情绪每个标签独立强度；不得退回单段或共享强度协议。",
     "relationship_slot_body": "关系各段op=replace时body填写该段完整的内心想法，不能只填keep、replace或clear（含大小写变化）；keep或clear时body必须为空字符串。只修正对应字段，保持来源和原有语义。",
     "create_identity_invalid": "新建节点 operation=create 时 node_id 必须为 null；若实际补充输入中的旧节点，应选择 update 并逐字使用该节点ID，不能仅为通过检查改成新建。",
@@ -77,7 +78,7 @@ _EXPLANATIONS = {
 _NAMED_SCHEMA_ERRORS = frozenset({
     "duplicate_values", "duplicate_edges", "coverage_self_reference", "neutral_emotion_conflict",
     "result_changes_mismatch", "event_metadata_mismatch", "source_sets_overlap", "node_content_too_long",
-    "duplicate_coverage_pair", "relationship_slot_body",
+    "duplicate_coverage_pair", "relationship_slot_body", "event_content_insufficient",
 })
 
 _JSON_SYNTAX_HINTS = {

@@ -91,6 +91,9 @@ def field_feedback(error, schema, path, decoded, *, standards=False):
         if isinstance(node_type, str) and node_type in limits:
             constraints["x-readable-maxLength"] = limits[node_type]
     result = {"path": path, "type": kind, "instruction": FIELD_RULES[kind], "constraints": constraints}
+    if kind == "string_pattern_mismatch" and error["loc"][-1:] == ("content",) and "pattern" not in constraints:
+        result.update(instruction="依据来源填写非空白正文，事件须写明发生了什么。", actual_non_whitespace_chars=0)
+        constraints["min_non_whitespace_chars"] = 1
     if kind in {"readable_too_long", "string_too_long", "string_too_short", "too_long", "too_short"}:
         value = decoded
         for component in error["loc"]:
@@ -389,6 +392,11 @@ def enrich_feedback(errors, decoded, schema, *, context=None, pipeline=None):
             error.update(actual_changes=count, constraints={'result': decoded['result'],
                 'change_count': {'const': 0} if decoded['result'] == 'no_change' else {'minimum': 1},
                 'reason': {'not': 'changes'} if decoded['result'] == 'no_change' else {'const': 'changes'}})
+        elif code == 'event_content_insufficient':
+            from .extraction_schema import MIN_EVENT_TEXT_UNITS
+            from .text_lengths import event_text_units
+            error.update(constraints={'min_letters_or_digits': MIN_EVENT_TEXT_UNITS, 'user_reference_counts_as': 1},
+                         actual_letters_or_digits=event_text_units(item['content']))
         elif code == 'node_content_too_long':
             from .extraction_schema import NODE_CONTENT_LIMITS
             error.update(constraints={'maxLength': NODE_CONTENT_LIMITS[item['node_type']]},
