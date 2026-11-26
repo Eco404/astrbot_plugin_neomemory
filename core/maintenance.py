@@ -545,7 +545,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         if lanes := job["checkpoint"].get("section_progress"):
             result["section_progress"] = lanes
         result["hidden_from_task_list"] = bool((job["result"] or {}).get("replacement_job_id") or
-                                               (job["hide_on_success"] and job["state"] == "succeeded"))
+                                               job["state"] == "succeeded")
         checkpoint = inspection_checkpoint(job)
         window = checkpoint.get("window", {})
         result.update(await self.jobs.recovery_actions(job))

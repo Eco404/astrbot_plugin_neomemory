@@ -12,7 +12,7 @@ from tests.ui.full_smoke import MOCK_BRIDGE, QuietHandler
 TASKS = r"""
 const originalGet=window.AstrBotPluginView.apiGet;
 const originalPost=window.AstrBotPluginView.apiPost;
-window.testJobs=[...Array.from({length:25},(_,i)=>({job_id:'done-'+i,scope_key:'space-1',state:'succeeded'})),
+window.testJobs=[...Array.from({length:55},(_,i)=>({job_id:'done-'+i,scope_key:'space-1',state:'succeeded'})),
  ...Array.from({length:3},(_,i)=>({job_id:'other-'+i,scope_key:'space-2',state:'succeeded'})),
  ...['failed','cancelled','queued','running','retry_wait'].map(state=>({job_id:state,scope_key:'space-1',state}))
 ].map(j=>({...j,kind:'model_test',step:'complete',progress_done:1,progress_total:1,attempt:1,max_attempts:3}));
@@ -20,8 +20,10 @@ window.failClear=false;window.deferClear=false;
 window.AstrBotPluginView.apiGet=async(endpoint,args={})=>{
  if(endpoint==='tasks'){
   const rows=testJobs.filter(j=>!args.scope_key||j.scope_key===args.scope_key);
-  const completed=rows.filter(j=>j.state==='succeeded');
-  return {items:rows.slice(args.offset,args.offset+args.limit),has_more:args.offset+args.limit<rows.length,
+  const completed=rows.filter(j=>j.state==='succeeded').reverse();
+  const active=rows.filter(j=>j.state!=='succeeded');
+  return {items:active.slice(args.offset,args.offset+args.limit),has_more:args.offset+args.limit<active.length,
+   history:completed.slice(0,50),history_has_more:completed.length>50,
    completed_counts:{total:completed.length,automatic_count:completed.filter(j=>j.hide_on_success).length,
     manual_count:completed.filter(j=>!j.hide_on_success).length}};
  }
@@ -58,13 +60,15 @@ async def main():
                     await page.locator('#status').filter(has_text='已连接').wait_for()
                     await page.locator('[data-page=maintenance]').click()
                     await page.locator('#tasks article').first.wait_for()
-                    assert await page.locator('#tasks article').count() == 20
+                    await expect(page.locator('#tasks article')).to_have_count(5)
+                    history = page.locator('#task-history-panel')
+                    await expect(history).to_have_js_property('open', False)
                     trigger = page.locator('#clear-completed-tasks')
                     dialog = page.get_by_role('dialog', name='清空已完成任务？')
                     confirm = page.locator('#clear-completed-confirm')
                     await trigger.click()
                     await expect(dialog).to_be_visible()
-                    await expect(page.locator('#clear-completed-scope')).to_contain_text('可清理 25 个成功任务')
+                    await expect(page.locator('#clear-completed-scope')).to_contain_text('可清理 55 个成功任务')
                     await expect(page.locator('#clear-completed-cancel')).to_be_focused()
                     assert '当前空间' in await dialog.inner_text()
                     assert not await page.evaluate("testCalls.some(c=>c.endpoint==='tasks/clear-completed')")
@@ -74,18 +78,18 @@ async def main():
                     await trigger.click()
                     await page.locator('#clear-completed-cancel').click()
                     await expect(dialog).not_to_be_visible()
-                    assert await page.evaluate('testJobs.length') == 33
-                    # Clear from a later page, including successful rows not currently visible.
-                    await page.locator('#next-tasks').click()
-                    await page.locator('#tasks').filter(has_text='done-20').wait_for()
-                    await page.locator('#tasks article').filter(has_text='done-20').get_by_role('radio').check()
+                    assert await page.evaluate('testJobs.length') == 63
+                    await history.locator('summary').click()
+                    await expect(page.locator('#task-history article')).to_have_count(50)
+                    await page.locator('#task-history article').filter(has_text='done-20').get_by_role('radio').check()
                     await page.locator('#task-detail-panel > summary').click()
+                    await expect(page.locator('#task-detail')).to_contain_text('done-20')
                     await page.evaluate('window.failClear=true')
                     await trigger.click()
                     await confirm.click()
                     await expect(page.locator('#clear-completed-error')).to_contain_text('合成清理失败')
                     await expect(dialog).to_be_visible()
-                    assert await page.evaluate('testJobs.length') == 33
+                    assert await page.evaluate('testJobs.length') == 63
                     await page.evaluate('window.failClear=false;window.deferClear=true')
                     await confirm.click()
                     await page.wait_for_function("typeof releaseClear==='function'")
@@ -100,7 +104,7 @@ async def main():
                     assert box['x'] >= 0 and box['x']+box['width'] <= width+1
                     await page.evaluate('window.deferClear=false;releaseClear()')
                     await expect(dialog).not_to_be_visible()
-                    await expect(page.locator("#notifications .toast").filter(has_text='已清空 25 个').last).to_be_visible()
+                    await expect(page.locator("#notifications .toast").filter(has_text='已清空 55 个').last).to_be_visible()
                     await expect(page.locator('#previous-tasks')).to_be_disabled()
                     await expect(page.locator('#task-detail')).to_have_text('')
                     assert await page.evaluate('testJobs.length') == 8

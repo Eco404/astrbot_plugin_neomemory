@@ -60,7 +60,8 @@ window.AstrBotPluginView={ready:async()=>{},apiGet:async(endpoint,args={})=>{
  if(endpoint==='appearance')return window.testTheme || {};
  if(endpoint==='settings')return settings();
  if(endpoint==='models')return {llm:[{provider_id:'llm-first',model:'first-listed'},{provider_id:'llm-1',model:'synthetic-llm'}],embedding:[{provider_id:'embed-first',model:'first-listed'},{provider_id:'embed-1',model:'synthetic-embed'}]};
- if(endpoint==='tasks')return {items:testJobs,has_more:false};
+ if(endpoint==='tasks')return {items:testJobs.filter(j=>j.state!=='succeeded'),has_more:false,
+  history:testJobs.filter(j=>j.state==='succeeded').reverse().slice(0,50)};
  if(endpoint==='task')return {...testJobs.find(j=>j.job_id===args.job_id),candidate:null,source_ids:args.job_id==='job-failed'?['source-failed']:[],restart_required:false};
  if(endpoint==='extraction/backlog')return args.space_id==='space-2'
   ? {pending_count:7,hint:'当前有 7 条待抽取消息。同一会话至少需要 10 条，还差 3 条。'}

@@ -179,8 +179,11 @@ async def governance_lifecycle(page, frame, harness):
         release.set()
         plugin.maintenance.governance.apply = original_apply
     await await_job(harness, queued['job_id'])
-    await expect(card).to_contain_text('人工治理 · 完成')
-    await expect(card.get_by_role('progressbar', name='任务进度')).to_have_attribute('value', '100')
+    await expect(card).to_have_count(0)
+    await frame.locator('#task-history-panel > summary').click()
+    archived = frame.locator('#task-history > article').filter(has_text=queued['job_id'])
+    await expect(archived).to_contain_text('人工治理 · 完成')
+    await expect(archived.get_by_role('progressbar', name='任务进度')).to_have_attribute('value', '100')
     await expect(frame.locator('#governance')).to_be_enabled()
     edited = await memory.get_node(original['node_id'])
     assert edited['content_version'] == 2 and edited['manual_protected']

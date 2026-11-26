@@ -224,7 +224,8 @@ async def test_task_history_shows_latest_50_in_scope(api):
     scope = api.test_space["space_id"]
     ids = []
     for i in range(52):
-        job = await jobs.submit("extract", scope if i < 51 else "other-space", {}, f"auto-{i}", hide_on_success=True)
+        job = await jobs.submit("extract", scope if i < 51 else "other-space", {}, f"job-{i}",
+                                hide_on_success=i % 2 == 0)
         running = await jobs.claim("worker")
         await jobs.finish(job["job_id"], running["lease_token"])
         ids.append(job["job_id"])
@@ -238,7 +239,7 @@ async def test_task_history_shows_latest_50_in_scope(api):
 
 
 @pytest.mark.asyncio
-async def test_auto_success_leaves_list_but_manual_recovery_remains(api):
+async def test_success_moves_to_history_for_all_task_origins(api):
     jobs = api.plugin.jobs
     scope = api.test_space["space_id"]
     api.test_query.update(scope_key=scope, limit="1")
@@ -253,7 +254,7 @@ async def test_auto_success_leaves_list_but_manual_recovery_remains(api):
     await jobs.retry(first["job_id"])
     job = await jobs.claim("worker")
     await jobs.finish(job["job_id"], job["lease_token"])
-    assert await visible() == [first["job_id"]]
+    assert await visible() == []
 
     second = await jobs.submit("extract", scope, {}, "auto2", hide_on_success=True)
     job = await jobs.claim("worker")
@@ -263,12 +264,17 @@ async def test_auto_success_leaves_list_but_manual_recovery_remains(api):
     await jobs.database.execute("UPDATE memory_jobs SET available_at=0 WHERE job_id=?", (second["job_id"],))
     job = await jobs.claim("worker")
     await jobs.finish(job["job_id"], job["lease_token"])
-    assert await visible() == [first["job_id"]]
+    manual = await jobs.submit("extract", scope, {}, "manual")
+    assert await visible() == [manual["job_id"]]
+    job = await jobs.claim("worker")
+    await jobs.finish(job["job_id"], job["lease_token"])
     listing = payload(await api.tasks())
-    assert [item["job_id"] for item in listing["history"]] == [second["job_id"]]
-    assert not listing["has_more"]
+    assert not listing["items"] and not listing["has_more"]
+    assert [item["job_id"] for item in listing["history"]] == [manual["job_id"], second["job_id"], first["job_id"]]
+    assert listing["completed_counts"] == {"total": 3, "automatic_count": 1, "manual_count": 2}
     api.test_body = {}
-    assert payload(await api.clear_completed())["deleted_count"] == 2
+    cleared = payload(await api.clear_completed())
+    assert (cleared["deleted_count"], cleared["automatic_count"], cleared["manual_count"]) == (3, 1, 2)
     assert not payload(await api.tasks())["history"]
     assert (await jobs.submit("extract", scope, {}, "auto2", hide_on_success=True))["state"] == "queued"
 

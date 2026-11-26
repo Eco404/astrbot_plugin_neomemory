@@ -189,7 +189,7 @@ class MaintenanceAPI:
         items = []
         for job in jobs[:limit]:
             items.append({**_summary(job), **await self.plugin.jobs.recovery_actions(job)})
-        history_jobs = await self.plugin.jobs.list_hidden_successes(
+        history_jobs = await self.plugin.jobs.list_successes(
             scope_key=scope, limit=history_limit + 1, offset=history_offset,
         )
         history = []
