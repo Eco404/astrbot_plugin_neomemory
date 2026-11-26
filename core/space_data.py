@@ -186,7 +186,7 @@ class SpaceDataService:
         if "sources" in selected:
             await self._delete_sources(source_ids)
             if not destroy:
-                result["counts"]["sources"] = len(source_ids)
+                result["sources"] = len(source_ids)
         if self.image_cache is not None and (destroy or "sources" in selected or "long_term" in selected):
             await self.image_cache.discard_many(source_ids)
         if self.cache is not None and (destroy or "sources" in selected or "long_term" in selected):

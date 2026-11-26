@@ -4,6 +4,7 @@ from core.memory_spaces import private_space
 from core.space_data import SpaceDataService
 from storage.memory_store import MemoryStore
 from storage.source_store import SourceStore
+from tests.test_source_store import make_source
 
 
 @pytest.mark.asyncio
@@ -32,6 +33,25 @@ async def test_project_cleanup_preserves_unselected_context_and_other_spaces(tmp
         assert await memory.get_node(node["node_id"]) is None
         assert await memory.get_node(other_node["node_id"]) is not None
         assert await memory.database.fetchone("SELECT 1 FROM user_profiles WHERE profile_id='profile'")
+    finally:
+        await memory.close()
+        await sources.close()
+
+
+@pytest.mark.asyncio
+async def test_clear_sources_returns_count_and_can_be_repeated(tmp_path):
+    sources = SourceStore(tmp_path / "source.db")
+    memory = MemoryStore(tmp_path / "memory.db")
+    await sources.open()
+    await memory.open()
+    try:
+        record = await sources.capture(make_source())
+        space = await memory.get_or_create_space(private_space("persona-default", record.logical_user_id))
+        service = SpaceDataService(sources, memory)
+        for expected in (1, 0):
+            result = await service.clear(space, ["sources"])
+            assert result["source_count"] == result["counts"]["sources"] == expected
+        assert not await sources.has_source(record.source_id)
     finally:
         await memory.close()
         await sources.close()
