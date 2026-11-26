@@ -440,6 +440,22 @@ class IngressStore:
         )
         return [self._public(row) for row in rows]
 
+    async def delete_source_ids(self, source_ids) -> int:
+        ids = list(dict.fromkeys(source_ids))
+        if not ids:
+            return 0
+        deleted = 0
+        async with self.database.transaction() as connection:
+            for start in range(0, len(ids), 400):
+                batch = ids[start:start + 400]
+                placeholders = ",".join("?" for _ in batch)
+                cursor = await connection.execute(
+                    f"DELETE FROM ingress_records WHERE source_id IN ({placeholders})",
+                    batch,
+                )
+                deleted += cursor.rowcount
+        return deleted
+
     async def get(
         self, source_id: str, *, include_content: bool = False
     ) -> dict[str, Any] | None:

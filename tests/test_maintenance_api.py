@@ -96,7 +96,7 @@ async def make_node(api, **kwargs):
 def test_registration_uses_host_api_only(api):
     registrations = []
     api.register(SimpleNamespace(register_web_api=lambda *args: registrations.append(args)))
-    assert len(registrations) == 18
+    assert len(registrations) == 20
     assert not any(path.endswith(("/companion/preview", "/companion/backfill")) for path, *_ in registrations)
     assert {(row[0], tuple(row[2])) for row in registrations} >= {
         ("/astrbot_plugin_neomemory/tasks", ("GET",)),
@@ -109,6 +109,8 @@ def test_registration_uses_host_api_only(api):
         ("/astrbot_plugin_neomemory/memory/versions", ("GET",)),
         ("/astrbot_plugin_neomemory/memory/relations", ("GET",)),
         ("/astrbot_plugin_neomemory/tasks/clear-completed", ("POST",)),
+        ("/astrbot_plugin_neomemory/space/clear", ("POST",)),
+        ("/astrbot_plugin_neomemory/space/delete", ("POST",)),
     }
     assert all(callable(row[1]) for row in registrations)
     api.register(SimpleNamespace())
@@ -542,6 +544,14 @@ async def test_clear_completed_api_scope_and_all_spaces(api):
 async def test_clear_completed_api_uses_existing_scope_contract(api, body):
     api.test_body = body
     payload(await api.clear_completed(), 400)
+
+
+@pytest.mark.asyncio
+async def test_space_cleanup_requires_exact_space_id_confirmation(api):
+    api.test_body = {"space_id": api.test_space["space_id"], "projects": ["sources"], "confirmation": "wrong"}
+    payload(await api.clear_space(), 400)
+    api.test_body = {"space_id": api.test_space["space_id"], "confirmation": "wrong"}
+    payload(await api.delete_space(), 400)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("sections", "kind", "topics"), [

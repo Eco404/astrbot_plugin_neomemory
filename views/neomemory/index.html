@@ -190,6 +190,24 @@
       <button id="reindex" class="mutation" disabled>重建向量索引</button>
     </div>
     <p id="extraction-hint" class="muted" role="status">正在读取待抽取数量…</p>
+    <details id="space-cleanup">
+      <summary>清除数据</summary>
+      <p class="muted">操作只作用于当前选中的记忆空间。确认时必须完整输入空间 ID，页面会在弹窗中再次展示该 ID。</p>
+      <fieldset id="space-cleanup-projects"><legend>按项目清空</legend>
+        <div class="row">
+          <label><input type="checkbox" value="sources">原始记录</label>
+          <label><input type="checkbox" value="long_term">长期记忆</label>
+          <label><input type="checkbox" value="profiles">用户画像</label>
+          <label><input type="checkbox" value="relationship">人格关系</label>
+          <label><input type="checkbox" value="short_term">短期记忆</label>
+          <button id="clear-space-projects" class="mutation danger" type="button" aria-haspopup="dialog" disabled>按项目清空</button>
+        </div>
+      </fieldset>
+      <fieldset><legend>完整删除</legend>
+        <p>删除当前空间的全部原始记录、长期记忆、画像、关系、短期记忆、任务和空间设置，并销毁这个记忆空间。</p>
+        <button id="delete-space" class="mutation danger" type="button" disabled>完整删除本记忆空间</button>
+      </fieldset>
+    </details>
     <details>
       <summary>重构记忆</summary>
       <fieldset id="section-selection"><legend>按板块重构</legend><div class="row">
@@ -371,6 +389,15 @@
   <p id="clear-completed-error" class="error" role="alert" hidden></p>
   <p id="clear-completed-progress" class="muted" role="status" hidden>正在清理，请稍候…</p>
   <div class="row"><button id="clear-completed-cancel" autofocus>取消</button><button id="clear-completed-confirm" class="danger">确认清空</button></div>
+</dialog>
+<dialog id="space-cleanup-dialog" class="confirmation-dialog" aria-labelledby="space-cleanup-title" aria-describedby="space-cleanup-description space-cleanup-target">
+  <h2 id="space-cleanup-title">确认清除空间数据</h2>
+  <p id="space-cleanup-description"></p>
+  <p>请输入完整记忆空间 ID 以确认：</p>
+  <code id="space-cleanup-target"></code>
+  <label><span>记忆空间 ID</span><input id="space-cleanup-input" type="text" autocomplete="off" spellcheck="false" /></label>
+  <p id="space-cleanup-error" class="error" role="alert" hidden>输入的记忆空间 ID 不匹配。</p>
+  <div class="row"><button id="space-cleanup-cancel" autofocus>取消</button><button id="space-cleanup-confirm" class="danger" disabled>确认</button></div>
 </dialog>
 <div id="notifications" class="notifications" role="region" aria-label="通知" aria-live="polite" aria-relevant="additions"></div>
 <dialog id="identity-confirm-dialog" class="confirmation-dialog" aria-labelledby="identity-confirm-title" aria-describedby="identity-confirm-summary">

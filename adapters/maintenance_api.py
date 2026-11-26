@@ -17,6 +17,7 @@ try:
     from ..storage.version_retention import mark_missing_version_references
     from ..storage.governance_store import validate_operation
     from ..storage.job_store import JobConflict, inspection_checkpoint
+    from ..core.space_data import SpaceDataService, PROJECTS
 except ImportError:
     from core.extraction_window import ExtractionWindowPending
     from core.model_routing import ModelSelectionRequired
@@ -25,6 +26,7 @@ except ImportError:
     from storage.version_retention import mark_missing_version_references
     from storage.governance_store import validate_operation
     from storage.job_store import JobConflict, inspection_checkpoint
+    from core.space_data import SpaceDataService, PROJECTS
 
 
 PREFIX = "/astrbot_plugin_neomemory"
@@ -112,6 +114,7 @@ class MaintenanceAPI:
             ("tasks/retry", "POST", self.retry), ("tasks/cancel", "POST", self.cancel),
             ("tasks/delete", "POST", self.delete),
             ("tasks/clear-completed", "POST", self.clear_completed),
+            ("space/clear", "POST", self.clear_space), ("space/delete", "POST", self.delete_space),
             ("memory/spaces", "GET", self.spaces), ("memory/nodes", "GET", self.nodes),
             ("memory/versions", "GET", self.versions),
             ("memory/relations", "GET", self.relations),
@@ -322,6 +325,35 @@ class MaintenanceAPI:
         body = await self._body({"scope_key"}, set())
         scope = _text(body["scope_key"], maximum=256) if "scope_key" in body else None
         return json_response(await self.plugin.maintenance.clear_completed(scope_key=scope))
+
+    def _space_data(self):
+        runtime = getattr(self.plugin, "runtime", None)
+        return SpaceDataService(
+            self.plugin.source_store, self.plugin.memory_store,
+            ingress_store=getattr(self.plugin, "ingress_store", None),
+            cache=getattr(runtime, "cache", None), image_cache=getattr(self.plugin, "image_cache", None),
+        )
+
+    @_guard
+    async def clear_space(self):
+        body = await self._body({"space_id", "projects", "confirmation"}, {"space_id", "projects", "confirmation"})
+        space_id = _text(body["space_id"], maximum=256)
+        if body["confirmation"] != space_id:
+            raise ValueError("space confirmation does not match")
+        projects = body["projects"]
+        if not isinstance(projects, list) or not projects or any(project not in PROJECTS for project in projects):
+            raise ValueError("invalid cleanup projects")
+        space = await self._space(space_id)
+        return json_response(await self._space_data().clear(space, projects))
+
+    @_guard
+    async def delete_space(self):
+        body = await self._body({"space_id", "confirmation"}, {"space_id", "confirmation"})
+        space_id = _text(body["space_id"], maximum=256)
+        if body["confirmation"] != space_id:
+            raise ValueError("space confirmation does not match")
+        space = await self._space(space_id)
+        return json_response(await self._space_data().clear(space, (), destroy=True))
 
     @_guard
     async def spaces(self):

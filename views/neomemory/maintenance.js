@@ -19,7 +19,7 @@ function fieldLabel(caption) {
 export function initMaintenance(ui) {
   const bridge = ui.bridge;
   const state = { spaces: [], nodes: [], available: false, posting: false, refreshing: false,
-    clearingTasks: false, clearScope: null, completedCounts: { total: 0, automatic_count: 0, manual_count: 0 }, taskRevision: 0,
+    clearingTasks: false, clearScope: null, cleanupMode: null, cleanupSpaceId: null, completedCounts: { total: 0, automatic_count: 0, manual_count: 0 }, taskRevision: 0,
     nodeOffset: 0, nodeRequest: 0, nodeLoading: false, taskOffset: 0, spaceOffset: 0, selectedJob: null, detail: null, rawJob: null, rawRequest: 0,
     mergeSelected: new Map(), mergeCandidates: [], mergeOffset: 0, mergeRequest: 0, ingressOffset: 0, ingressRefreshing: false, ingressReady: false, selectedSource: null };
   const pendingSubmissionKeys = new Map();
@@ -160,6 +160,10 @@ export function initMaintenance(ui) {
     document.querySelectorAll('.ingress-mutation').forEach((button) => { button.disabled = state.posting || !state.ingressReady; });
     $('clear-completed-tasks').disabled = state.posting || state.clearingTasks;
     $('clear-completed-confirm').disabled = $('clear-completed-cancel').disabled = state.clearingTasks;
+    $('clear-space-projects').disabled = !allowed || !document.querySelector('#space-cleanup-projects input:checked');
+    $('delete-space').disabled = state.posting || !allowed;
+    $('space-cleanup-confirm').disabled = state.posting || !$('space-cleanup-input').value
+      || $('space-cleanup-input').value !== state.cleanupSpaceId;
   }
   async function request(endpoint, body) {
     if (state.posting) throw new Error('已有操作正在提交。');
@@ -383,6 +387,42 @@ export function initMaintenance(ui) {
       $('clear-completed-tasks').focus({ preventScroll: true });
       await refreshTasks();
     }
+  }
+  function openSpaceCleanup(mode) {
+    const id = spaceId();
+    if (!id || state.posting || !state.available) return;
+    state.cleanupMode = mode; state.cleanupSpaceId = id;
+    const projects = [...document.querySelectorAll('#space-cleanup-projects input:checked')].map(input => input.value);
+    $('space-cleanup-title').textContent = mode === 'delete' ? '完整删除本记忆空间？' : '确认按项目清空？';
+    $('space-cleanup-description').textContent = mode === 'delete'
+      ? '这会删除当前空间的全部数据并销毁空间，操作无法恢复。'
+      : `将清空所选项目：${projects.map(project => ({sources: '原始记录', long_term: '长期记忆', profiles: '用户画像', relationship: '人格关系', short_term: '短期记忆'})[project]).join('、')}。未选择的项目会保留。`;
+    $('space-cleanup-target').textContent = id;
+    $('space-cleanup-input').value = '';
+    $('space-cleanup-error').textContent = '输入的记忆空间 ID 不匹配。';
+    $('space-cleanup-error').hidden = true;
+    $('space-cleanup-dialog').showModal();
+    $('space-cleanup-input').focus(); buttons();
+  }
+  async function confirmSpaceCleanup() {
+    if (state.posting || !state.cleanupMode || $('space-cleanup-input').value !== state.cleanupSpaceId) {
+      $('space-cleanup-error').hidden = false; return;
+    }
+    const id = state.cleanupSpaceId, mode = state.cleanupMode;
+    const projects = [...document.querySelectorAll('#space-cleanup-projects input:checked')].map(input => input.value);
+    if (mode === 'clear' && !projects.length) { $('space-cleanup-error').textContent = '至少选择一个项目。'; $('space-cleanup-error').hidden = false; return; }
+    try {
+      const result = await request(mode === 'delete' ? 'space/delete' : 'space/clear', mode === 'delete'
+        ? { space_id: id, confirmation: id }
+        : { space_id: id, confirmation: id, projects });
+      $('space-cleanup-dialog').close(); state.cleanupMode = state.cleanupSpaceId = null;
+      notify(mode === 'delete' ? '记忆空间已完整删除。' : `已清空所选空间数据（${result.source_count || 0} 条原始记录）。`);
+      if (mode === 'delete') await ui.refreshSpaces();
+      else await Promise.all([refreshTasks(), refreshBacklog(), refreshIngress(), loadNodes(), contextGovernance.refresh()]);
+    } catch (error) {
+      $('space-cleanup-error').textContent = error.message || '清除未完成，请刷新后重试。';
+      $('space-cleanup-error').hidden = false;
+    } finally { buttons(); }
   }
   function automaticStatus(automatic) {
     const panel = $('automatic-status');
@@ -771,6 +811,13 @@ export function initMaintenance(ui) {
   on('clear-completed-confirm', 'click', clearCompleted);
   on('clear-completed-cancel', 'click', () => $('clear-completed-dialog').close());
   $('clear-completed-dialog').addEventListener('cancel', event => { if (state.clearingTasks) event.preventDefault(); });
+  on('space-cleanup-projects', 'change', buttons);
+  on('clear-space-projects', 'click', () => openSpaceCleanup('clear'));
+  on('delete-space', 'click', () => openSpaceCleanup('delete'));
+  on('space-cleanup-input', 'input', buttons);
+  on('space-cleanup-cancel', 'click', () => { state.cleanupMode = state.cleanupSpaceId = null; $('space-cleanup-dialog').close(); buttons(); });
+  on('space-cleanup-confirm', 'click', confirmSpaceCleanup);
+  $('space-cleanup-dialog').addEventListener('cancel', () => { state.cleanupMode = state.cleanupSpaceId = null; buttons(); });
   on('refresh-nodes', 'click', loadNodes); on('node-select', 'change', async () => { showNode(); await prepareAction(); });
   function filterNodes() {
     nodeQuery = $('governance-node-q').value.trim();

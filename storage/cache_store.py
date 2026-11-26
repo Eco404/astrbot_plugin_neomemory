@@ -385,6 +385,16 @@ class CacheStore:
                 deleted += cursor.rowcount
         return deleted
 
+    async def invalidate_namespace(self, namespace: str) -> int:
+        """Drop all disposable vectors belonging to one memory space."""
+        if not isinstance(namespace, str) or not namespace.strip():
+            raise ValueError("cache invalidation requires a namespace")
+        async with self.database.transaction() as connection:
+            cursor = await connection.execute(
+                "DELETE FROM embedding_cache WHERE namespace=?", (namespace,)
+            )
+            return cursor.rowcount
+
     async def cleanup(self) -> int:
         """删除一批过期或超容量项；普通读写不执行全局清理。"""
         async with self.database.transaction() as connection:

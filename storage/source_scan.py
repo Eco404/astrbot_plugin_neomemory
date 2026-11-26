@@ -117,7 +117,8 @@ class SourceScanner:
                              len(rows) > limit)
 
     def _scope_query(self, space: MemorySpaceSpec | Mapping[str, Any],
-                     highwater: Mapping[str, int] | None = None) -> tuple[str, tuple[Any, ...]]:
+                     highwater: Mapping[str, int] | None = None,
+                     *, include_events: bool = False) -> tuple[str, tuple[Any, ...]]:
         spec = _spec(space)
         parameters: list[Any] = []
         prefix = ""
@@ -157,7 +158,7 @@ class SourceScanner:
                 COALESCE(json_extract(r.metadata_json,'$.replay_only'),0) AS replay_only,
                 COALESCE(json_extract(r.metadata_json,'$.delivered_proactive'),0) AS delivered
             FROM source_records r JOIN conversation_streams s USING(stream_id)
-            WHERE r.identity_pending=0 AND r.source_type='conversation'
+            WHERE r.identity_pending=0 AND r.source_type {"IN ('conversation','source_event')" if include_events else "= 'conversation'"}
             AND r.actor_kind IN ('user','agent') AND r.persona_id=?
             AND {scope} {bounds}) """
         return query, tuple(parameters)

@@ -15,6 +15,7 @@ _OPERATIONS = {
     "ingress/retry": "重试待写记录", "notes": "治理笔记", "tasks": "提交后台任务",
     "tasks/retry": "重试任务", "tasks/cancel": "取消任务", "tasks/delete": "删除任务",
     "tasks/clear-completed": "清空已完成任务",
+    "space/clear": "按项目清空记忆空间", "space/delete": "完整删除记忆空间",
 }
 
 
@@ -46,7 +47,7 @@ class AuditAPI:
                 body = await request.json(default={})
                 if isinstance(body, dict):
                     for key in ("job_id", "space_id", "scope_key", "logical_user_id", "action", "kind",
-                                "fresh", "regenerate_window", "enabled", "node_id", "note_id"):
+                                "fresh", "regenerate_window", "enabled", "node_id", "note_id", "projects"):
                         if key in body:
                             details[key] = body[key]
                     if endpoint == "identities/apply":
