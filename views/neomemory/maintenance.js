@@ -243,11 +243,10 @@ export function initMaintenance(ui) {
       $('reject-confirm').checked = false;
       buttons();
     }
-    for (const radio of $('tasks').querySelectorAll('input[name="task-choice"]')) radio.checked = radio.value === jobId;
+    for (const radio of document.querySelectorAll('#tasks input[name="task-choice"], #task-history input[name="task-choice"]')) radio.checked = radio.value === jobId;
     state.selectedJob = jobId; const epoch = ui.epoch();
     const result = await bridge.apiGet('task', { job_id: jobId });
     if (state.selectedJob !== jobId || !ui.current(epoch)) return;
-    if (result.hidden_from_task_list) { closeTaskDetails(); return; }
     state.detail = result; pretty('task-detail', result);
     const diagnostic = result.response_diagnostics || {};
     const summary = [`本窗口自动纠正 ${result.automatic_corrections || 0} 次${result.automatic_correction_limit == null ? '' : ` / 上限 ${result.automatic_correction_limit} 次`}`];
@@ -548,10 +547,14 @@ export function initMaintenance(ui) {
       state.available = available.available; automaticStatus(available.automatic);
       $('availability').textContent = !selected ? '尚无可选空间；收到可归属的会话后后台会发现空间。'
         : available.available ? '当前空间空闲。' : '当前空间暂不可启动新任务：' + available.blocking_jobs.map((job) => `${kinds[job.kind] || job.kind} (${job.job_id})`).join('；');
-      const confirming = new Set(Array.from($('tasks').querySelectorAll('.task-delete-confirm:not([hidden])'), panel => panel.closest('article').dataset.jobId));
+      const confirming = new Set(Array.from(document.querySelectorAll('#tasks .task-delete-confirm:not([hidden]), #task-history .task-delete-confirm:not([hidden])'), panel => panel.closest('article').dataset.jobId));
       $('tasks').replaceChildren();
+      $('task-history').replaceChildren();
       if (!result.items.length) $('tasks').append(element('p', '暂无任务。', 'muted'));
-      for (const job of result.items) {
+      if (result.history?.length) $('task-history-panel').querySelector('summary').textContent = `历史任务（${result.history.length}${result.history_has_more ? '以上' : ''}）`;
+      else $('task-history-panel').querySelector('summary').textContent = '历史任务';
+      if (!result.history?.length) $('task-history').append(element('p', '暂无自动完成任务。', 'muted'));
+      const renderTask = (job, target) => {
         const card = element('article', '', 'task');
         card.dataset.state = job.state;
         card.dataset.jobId = job.job_id;
@@ -603,8 +606,10 @@ export function initMaintenance(ui) {
           card.append(confirmation);
         }
         if (actions.childElementCount) card.append(actions);
-        $('tasks').append(card);
-      }
+        target.append(card);
+      };
+      for (const job of result.items) renderTask(job, $('tasks'));
+      for (const job of result.history || []) renderTask(job, $('task-history'));
       $('previous-tasks').disabled = state.taskOffset === 0; $('next-tasks').disabled = !result.has_more;
       if (state.selectedJob) await details(state.selectedJob);
       buttons();
@@ -726,6 +731,7 @@ export function initMaintenance(ui) {
   }
   function draftOperation() { $('operation').value = JSON.stringify(operation(), null, 2); notify('操作预览已生成，正常提交直接使用当前表单。'); }
   on('tasks', 'change', event => details(event.target.value));
+  on('task-history', 'change', event => details(event.target.value));
   on('task-detail-panel', 'toggle', () => {
     if (!$('task-detail-panel').open || state.selectedJob) return;
     const first = $('tasks').querySelector('input[name="task-choice"]');
@@ -784,7 +790,7 @@ export function initMaintenance(ui) {
   return {
     async refresh() { await Promise.all([audit.visible() && audit.refresh(), contextGovernance.refresh(), recall.visible() && recall.refresh(), loadNodes(), refreshTasks(), refreshBacklog(), refreshIngress()]); },
     async poll() { if (!audit.visible() && !recall.visible() && !state.clearingTasks) await Promise.all([refreshTasks(), refreshBacklog(), refreshIngress()]); },
-    changed() { contextGovernance.changed(); recall.changed(); $('task-detail-panel').open = false; $('extraction-backlog').textContent = $('extraction-hint').textContent = '正在读取当前空间的待抽取数量…'; state.nodeRequest += 1; state.nodeLoading = false; clearTaskSource(); state.rawJob = null; $('task-sources').replaceChildren(); state.available = false; state.nodeOffset = state.taskOffset = 0; state.selectedJob = state.detail = null; state.nodes = []; $('node-select').replaceChildren(); $('merge-nodes').replaceChildren(); $('node-preview').textContent = ''; $('version-detail').textContent = ''; $('tasks').replaceChildren(); $('automatic-status').hidden = true; $('task-detail').textContent = '请选择要查看的任务。'; $('restart-hint').textContent = ''; $('task-diagnostics').textContent = ''; $('operation').value = ''; $('node-title').value = ''; $('content').value = ''; $('split-parts').replaceChildren(); $('availability').textContent = '正在读取空间状态…'; buttons(); },
+    changed() { contextGovernance.changed(); recall.changed(); $('task-detail-panel').open = false; $('task-history-panel').open = false; $('extraction-backlog').textContent = $('extraction-hint').textContent = '正在读取当前空间的待抽取数量…'; state.nodeRequest += 1; state.nodeLoading = false; clearTaskSource(); state.rawJob = null; $('task-sources').replaceChildren(); state.available = false; state.nodeOffset = state.taskOffset = 0; state.selectedJob = state.detail = null; state.nodes = []; $('node-select').replaceChildren(); $('merge-nodes').replaceChildren(); $('node-preview').textContent = ''; $('version-detail').textContent = ''; $('tasks').replaceChildren(); $('task-history').replaceChildren(); $('automatic-status').hidden = true; $('task-detail').textContent = '请选择要查看的任务。'; $('restart-hint').textContent = ''; $('task-diagnostics').textContent = ''; $('operation').value = ''; $('node-title').value = ''; $('content').value = ''; $('split-parts').replaceChildren(); $('availability').textContent = '正在读取空间状态…'; buttons(); },
     async inspect(job) { showTasks(); if (job.scope_key === '*') $('all-tasks').checked = true; state.selectedJob = job.job_id; $('task-detail-panel').open = false; await refreshTasks(); }
   };
 }

@@ -176,12 +176,22 @@ class MaintenanceAPI:
             scope = _text(scope, maximum=256)
         limit = _integer(request.query.get("limit", 50), minimum=1, maximum=100)
         offset = _integer(request.query.get("offset", 0))
+        history_limit = _integer(request.query.get("history_limit", 499), minimum=1, maximum=499)
+        history_offset = _integer(request.query.get("history_offset", 0))
         jobs = await self.plugin.jobs.list(scope_key=scope, limit=limit + 1, offset=offset, visible_only=True)
         items = []
         for job in jobs[:limit]:
             items.append({**_summary(job), **await self.plugin.jobs.recovery_actions(job)})
+        history_jobs = await self.plugin.jobs.list_hidden_successes(
+            scope_key=scope, limit=history_limit + 1, offset=history_offset,
+        )
+        history = []
+        for job in history_jobs[:history_limit]:
+            history.append({**_summary(job), **await self.plugin.jobs.recovery_actions(job)})
         return json_response({"items": items,
                               "limit": limit, "offset": offset, "has_more": len(jobs) > limit,
+                              "history": history, "history_limit": history_limit,
+                              "history_offset": history_offset, "history_has_more": len(history_jobs) > history_limit,
                               "completed_counts": await self.plugin.jobs.completed_counts(scope_key=scope)})
 
     @_guard

@@ -783,6 +783,28 @@ class JobStore:
         )
         return [_job(row) for row in rows]
 
+    async def list_hidden_successes(
+        self, *, scope_key: str | None = None, limit: int = 100, offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """List automatic successful tasks that are hidden from the active list."""
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("limit must be between 1 and 500")
+        if type(offset) is not int or offset < 0:
+            raise ValueError("offset must be a nonnegative integer")
+        conditions = ["state='succeeded'", "hide_on_success=1",
+                      "json_extract(result_json,'$.replacement_job_id') IS NULL"]
+        parameters: list[Any] = []
+        if scope_key is not None:
+            _text(scope_key, "scope_key")
+            conditions.append("scope_key=?")
+            parameters.append(scope_key)
+        rows = await self.database.fetchall(
+            "SELECT * FROM memory_jobs WHERE " + " AND ".join(conditions)
+            + " ORDER BY created_at DESC,job_id LIMIT ? OFFSET ?",
+            (*parameters, limit, offset),
+        )
+        return [_job(row) for row in rows]
+
     async def latest_index(self, scope_key: str) -> dict[str, Any] | None:
         row = await self.database.fetchone(
             "SELECT state, updated_at, error_code, progress_done, progress_total, "

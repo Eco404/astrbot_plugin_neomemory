@@ -241,8 +241,13 @@ async def test_auto_success_leaves_list_but_manual_recovery_remains(api):
     job = await jobs.claim("worker")
     await jobs.finish(job["job_id"], job["lease_token"])
     assert await visible() == [first["job_id"]]
-    assert not payload(await api.tasks())["has_more"]
-    assert (await jobs.submit("extract", scope, {}, "auto2", hide_on_success=True))["state"] == "succeeded"
+    listing = payload(await api.tasks())
+    assert [item["job_id"] for item in listing["history"]] == [second["job_id"]]
+    assert not listing["has_more"]
+    api.test_body = {}
+    assert payload(await api.clear_completed())["deleted_count"] == 2
+    assert not payload(await api.tasks())["history"]
+    assert (await jobs.submit("extract", scope, {}, "auto2", hide_on_success=True))["state"] == "queued"
 
 
 @pytest.mark.asyncio

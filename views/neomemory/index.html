@@ -100,6 +100,10 @@
     <div class="row"><label><input id="all-tasks" type="checkbox" /> 查看所有空间</label><span class="muted">每 3 秒更新状态</span><button id="clear-completed-tasks" class="danger" aria-haspopup="dialog">清空已完成任务</button></div>
     <div id="tasks"></div>
     <div class="row maintenance-pagination"><button id="previous-tasks" disabled>上一页</button><button id="next-tasks" disabled>下一页</button></div>
+    <details id="task-history-panel">
+      <summary>历史任务</summary>
+      <div id="task-history"></div>
+    </details>
     <details id="task-detail-panel">
       <summary>详细结果</summary>
       <p id="task-diagnostics" class="muted"></p>
