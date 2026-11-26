@@ -243,12 +243,23 @@
           </div>
         </form>
         <p id="governance-node-count" class="muted" role="status"></p>
-        <label id="governance-action-label"><span>治理动作</span><select id="action"><option value="edit">修改标题 / 正文 / 重要性 / 情绪</option><option value="split">拆分节点</option><option value="merge">合并节点</option><option value="disable">禁用</option><option value="restore">恢复已禁用节点</option><option value="delete">删除</option><option value="protect">开启人工保护</option><option value="unprotect">解除人工保护</option></select></label>
+        <label id="governance-action-label"><span>治理动作</span><select id="action"><option value="edit">修改标题 / 正文 / 重要性 / 情绪</option><option value="reconstruct">根据依据重建正文</option><option value="split">拆分节点</option><option value="merge">合并节点</option><option value="disable">禁用</option><option value="restore">恢复已禁用节点</option><option value="delete">删除</option><option value="protect">开启人工保护</option><option value="unprotect">解除人工保护</option></select></label>
         <label><span>选择节点</span><select id="node-select"><option value="">请先选择空间</option></select></label>
         <div class="row"><button id="refresh-nodes">刷新节点</button><button id="previous-nodes" disabled>上一页</button><button id="next-nodes" disabled>下一页</button><button id="versions">查阅版本和来源</button></div>
         <details id="node-json-details"><summary>原始 JSON</summary><pre id="node-preview">尚未选择节点。</pre></details>
         <details><summary>正文版本、标题操作、来源与关系</summary><pre id="version-detail">点击“查阅版本和来源”。</pre></details>
       </div>
+      <fieldset id="reconstruction-editor" hidden>
+        <button id="generate-node-draft" type="button">选择模型并生成草稿</button>
+        <p id="node-draft-status" class="muted" role="status"></p>
+        <div id="node-draft-review" hidden>
+          <div class="node-draft-comparison">
+            <label>原正文<textarea id="draft-original" readonly></textarea></label>
+            <label>候选正文<textarea id="draft-body"></textarea></label>
+          </div>
+          <div class="row"><button id="apply-node-draft" class="primary" type="button">应用正文</button><button id="discard-node-draft" type="button">放弃草稿</button></div>
+        </div>
+      </fieldset>
       <fieldset id="governance-editor">
         <label><span>标题</span><input id="node-title" type="text" placeholder="简短、具体地概括正文" /></label>
         <p id="title-hint" class="muted">标题最多 60 个语义字符；完整用户占位符按一个字符计算。仅改标题不会改变正文版本、强度或人工保护。</p>

@@ -11,6 +11,7 @@ from astrbot.api.web import error_response, json_response, request
 
 try:
     from ..core.extraction_window import ExtractionWindowPending
+    from ..core import node_reconstruction as reconstruction
     from ..core.model_routing import ModelSelectionRequired
     from ..storage.topic_store import TopicStore
     from ..storage.console_store import ConsoleStore
@@ -20,6 +21,7 @@ try:
     from ..core.space_data import SpaceDataService, PROJECTS
 except ImportError:
     from core.extraction_window import ExtractionWindowPending
+    from core import node_reconstruction as reconstruction
     from core.model_routing import ModelSelectionRequired
     from storage.topic_store import TopicStore
     from storage.console_store import ConsoleStore
@@ -30,7 +32,7 @@ except ImportError:
 
 
 PREFIX = "/astrbot_plugin_neomemory"
-KINDS = frozenset({"extract", "rebuild", "reindex", "governance", "reject", "topic_consolidate", "topic_rebuild", "profile_rebuild", "relationship_rebuild", "section_rebuild"})
+KINDS = frozenset({"node_draft", "node_apply", "extract", "rebuild", "reindex", "governance", "reject", "topic_consolidate", "topic_rebuild", "profile_rebuild", "relationship_rebuild", "section_rebuild"})
 SUMMARY_FIELDS = (
     "job_id", "kind", "scope_key", "state", "step", "progress_done", "progress_total",
     "attempt", "max_attempts", "automatic_origin", "error_type", "error_code", "created_at", "updated_at", "available_at",
@@ -72,6 +74,8 @@ def _guard(handler):
             return error_response("维护服务尚未就绪。", status_code=503, data={"error_code": "maintenance_unavailable"})
         try:
             return await handler(self, *args, **kwargs)
+        except reconstruction.ReconstructionUnavailable as exc:
+            return error_response(str(exc), status_code=409, data={"error_code": "reconstruction_unavailable"})
         except JobConflict:
             return error_response("当前操作与运行任务或已有版本冲突，请刷新后重试。", status_code=409,
                                   data={"error_type": "JobConflict", "error_code": "maintenance_conflict"})
@@ -116,8 +120,8 @@ class MaintenanceAPI:
             ("tasks/clear-completed", "POST", self.clear_completed),
             ("space/clear", "POST", self.clear_space), ("space/delete", "POST", self.delete_space),
             ("memory/spaces", "GET", self.spaces), ("memory/nodes", "GET", self.nodes),
-            ("memory/versions", "GET", self.versions),
-            ("memory/relations", "GET", self.relations),
+            ("memory/versions", "GET", self.versions), ("memory/node-draft", "GET", self.node_draft),
+            ("memory/relations", "GET", self.relations), ("memory/node-draft/discard", "POST", self.discard_node_draft),
         ):
             register(f"{PREFIX}/{endpoint}", handler, [method], f"NeoMemory maintenance {endpoint}")
 
@@ -244,8 +248,43 @@ class MaintenanceAPI:
         return kind, False
 
     @_guard
+    async def node_draft(self):
+        space = await self._space(request.query.get("space_id"))
+        node_id = _text(request.query.get("node_id"))
+        row = await self.plugin.memory_store.database.fetchone(
+            "SELECT job_id FROM memory_jobs WHERE scope_key=? AND kind='node_draft' "
+            "AND json_extract(payload_json,'$.operation.node_id')=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+            (space["space_id"], node_id))
+        if not row:
+            return json_response({"job": None})
+        job = await self.plugin.jobs.get(row["job_id"])
+        result = job and job["result"] or {}
+        disposition = None
+        if result.get("discarded"):
+            disposition = "discarded"
+        elif "content" in result:
+            applied = await self.plugin.memory_store.database.fetchone(
+                "SELECT a.state,r.job_id AS receipt FROM memory_jobs a LEFT JOIN governance_receipts r USING(job_id) "
+                "WHERE a.scope_key=? AND a.kind='node_apply' AND json_extract(a.payload_json,'$.operation.draft_id')=? "
+                "ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1", (space["space_id"], row["job_id"]))
+            if applied and applied["receipt"]:
+                disposition = "applied"
+            elif applied and applied["state"] in {"queued", "running", "retry_wait"}:
+                disposition = "applying"
+        return json_response({"job": _summary(job) if job else None, "disposition": disposition, "draft": {
+            k: result[k] for k in ("original", "content", "source_count", "member_count", "missing_versions", "missing_sources")
+            if k in result}, "version": result.get("snapshot", {}).get("content_version")})
+
+    @_guard
+    async def discard_node_draft(self):
+        body = await self._body({"job_id", "space_id"}, {"job_id", "space_id"})
+        space = await self._space(body["space_id"])
+        await self.plugin.jobs.discard_node_draft(space["space_id"], _text(body["job_id"]))
+        return json_response({"discarded": True})
+
+    @_guard
     async def model_preview(self):
-        body = await self._body({"kind", "space_id", "sections", "job_id"}, set())
+        body = await self._body({"kind", "space_id", "sections", "job_id", "node_id"}, set())
         if "job_id" in body:
             job = await self.plugin.jobs.get(_text(body["job_id"]))
             if not job:
@@ -258,6 +297,13 @@ class MaintenanceAPI:
         else:
             space = await self._space(body.get("space_id"))
             kind, include_topics = self._sections(_text(body.get("kind")), body, space)
+        if kind == "node_draft":
+            node_id = job["payload"]["operation"]["node_id"] if "job_id" in body else _text(body.get("node_id"))
+            engine = self.plugin.maintenance
+            node, _, members, records, info = await reconstruction.reconstruction_input(engine, space, node_id)
+            route = await reconstruction.model_route(engine, space, node, members, records, {})
+            lane = "topic" if node["node_type"] == "topic" else "window"
+            return json_response({lane: engine._route_summary([route]), "evidence": info})
         return json_response(await self.plugin.maintenance.model_preview(
             kind, space, include_topics=include_topics, retry="job_id" in body))
 
@@ -277,6 +323,13 @@ class MaintenanceAPI:
             if "failed_job_id" in body:
                 raise ValueError("governance cannot reject a task")
             operation = validate_operation(body.get("operation"))
+        elif kind in {"node_draft", "node_apply"}:
+            operation = body.get("operation")
+            fields = {"node_id"} if kind == "node_draft" else {"draft_id", "content"}
+            if not isinstance(operation, dict) or set(operation) != fields:
+                raise ValueError("invalid reconstruction operation")
+            for field in fields:
+                _text(operation[field], maximum=120_000 if field == "content" else 200)
         elif "operation" in body:
             raise ValueError("only governance accepts operation")
         if kind == "reject":

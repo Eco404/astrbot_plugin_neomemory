@@ -29,6 +29,8 @@ const retryReasons = {
   source_storage_full: '磁盘空间不足，释放空间后可提前重试。'
 };
 const failureHints = {
+  reconstruction_evidence_insufficient: '现有依据不足以重建正文。',
+  reconstruction_changed: '条目或依据已经变化，请重新生成草稿。',
   storage_busy: '等待数据库释放写锁，再从断点重试。',
   storage_full: '释放插件数据目录所在磁盘的空间，然后从断点重试。',
   provider_access_denied: '请检查所选模型的凭据和访问权限，确认连通后重试。',

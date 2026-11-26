@@ -680,3 +680,6 @@ button.primary, button.primary:hover:not(:disabled) { background: var(--accent-s
 .task-model-field label { display: grid; gap: 5px; margin-block: 8px; }
 .task-model-field select { width: 100%; }
 #task-model-form > .row { justify-content: flex-end; margin-top: 20px; }
+
+.node-draft-comparison { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 1rem; }
+.node-draft-comparison textarea { min-height: 12rem; width: 100%; }

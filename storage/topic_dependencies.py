@@ -32,3 +32,14 @@ async def invalidate_unlocked_reviews(connection, node_id):
         "DELETE FROM topic_reviews WHERE node_id=? OR node_id IN ("
         "SELECT e.target_node_id FROM memory_edges e JOIN memory_nodes n ON n.node_id=e.source_node_id "
         "WHERE n.node_id=? AND n.node_type='topic' AND e.relation_type='contains')", (node_id, node_id))
+
+
+async def reconstruction_members(connection, topic_id):
+    """Read the complete current membership and all text used to rebuild a topic."""
+    cursor = await connection.execute(
+        """SELECT n.node_id,n.content_version,n.status,n.title,v.content_text,
+                  COALESCE(json_extract(n.metadata_json,'$.summary_stale'),0) AS stale
+           FROM memory_edges e JOIN memory_nodes n ON n.node_id=e.target_node_id
+           JOIN memory_node_versions v ON v.node_id=n.node_id AND v.version_no=n.content_version
+           WHERE e.source_node_id=? AND e.relation_type='contains' ORDER BY n.node_id""", (topic_id,))
+    return [dict(row) for row in await cursor.fetchall()]

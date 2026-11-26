@@ -96,7 +96,7 @@ async def make_node(api, **kwargs):
 def test_registration_uses_host_api_only(api):
     registrations = []
     api.register(SimpleNamespace(register_web_api=lambda *args: registrations.append(args)))
-    assert len(registrations) == 20
+    assert len(registrations) == 22
     assert not any(path.endswith(("/companion/preview", "/companion/backfill")) for path, *_ in registrations)
     assert {(row[0], tuple(row[2])) for row in registrations} >= {
         ("/astrbot_plugin_neomemory/tasks", ("GET",)),
@@ -107,6 +107,8 @@ def test_registration_uses_host_api_only(api):
         ("/astrbot_plugin_neomemory/recall/recording", ("POST",)),
         ("/astrbot_plugin_neomemory/tasks", ("POST",)),
         ("/astrbot_plugin_neomemory/memory/versions", ("GET",)),
+        ("/astrbot_plugin_neomemory/memory/node-draft", ("GET",)),
+        ("/astrbot_plugin_neomemory/memory/node-draft/discard", ("POST",)),
         ("/astrbot_plugin_neomemory/memory/relations", ("GET",)),
         ("/astrbot_plugin_neomemory/tasks/clear-completed", ("POST",)),
         ("/astrbot_plugin_neomemory/space/clear", ("POST",)),

@@ -557,6 +557,18 @@ class JobStore:
                 raise JobConflict("running tasks must be stopped before deletion")
             return await self._delete_stopped(connection, job, invalidate_nodes=invalidate_nodes)
 
+    async def discard_node_draft(self, space_id, job_id):
+        async with self.database.transaction() as connection:
+            await assert_scope_available(connection, space_id)
+            job = await _get(connection, job_id)
+            if not job or job["scope_key"] != space_id or job["kind"] != "node_draft":
+                raise KeyError(job_id)
+            if job["state"] != "succeeded":
+                raise JobConflict("draft is not ready")
+            await connection.execute("UPDATE memory_jobs SET result_json=? WHERE job_id=?",
+                                     (_json({"discarded": True}), job_id))
+        await self._log_job(job, "已放弃单条正文草稿")
+
     async def clear_completed(self, *, scope_key=None, invalidate_nodes=None) -> dict[str, Any]:
         """Clear all successful tasks in the selected scope in one transaction."""
         async with self.database.transaction() as connection:

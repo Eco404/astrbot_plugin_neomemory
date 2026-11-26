@@ -64,11 +64,11 @@ function modelField(title, step, available, lane, mainField) {
 
 export function initTaskModels(ui) {
   let request = 0;
-  return async function confirmTask({ kind, space_id, sections, job_id }, title, description, confirm) {
+  return async function confirmTask({ kind, space_id, sections, job_id, node_id }, title, description, confirm) {
     const dialog = $('section-rebuild-dialog');
     if (dialog.open) return null;
     const id = ++request, epoch = ui.epoch();
-    const body = job_id ? { job_id } : { kind, space_id, ...(sections && { sections }) };
+    const body = job_id ? { job_id } : { kind, space_id, ...(node_id && { node_id }), ...(sections && { sections }) };
     const preview = await ui.bridge.apiPost('tasks/model-preview', body);
     if (id !== request || !ui.current(epoch) || ui.page() !== 'maintenance') return null;
     if (preview.waiting_message) { notify(preview.waiting_message); return null; }
@@ -86,6 +86,11 @@ export function initTaskModels(ui) {
     const selected = Array.from($('space').options).find(item => item.value === space_id);
     $('section-rebuild-scope').textContent = selected ? '记忆空间 · ' + selected.textContent : '任务 ' + job_id;
     $('section-rebuild-title').textContent = title;
+    if (preview.evidence) {
+      const e = preview.evidence;
+      description += preview.topic ? ` 当前主题包含 ${e.member_count} 个成员。` : ` 可用原文 ${e.source_count} 条。`;
+      if (e.missing_sources.length || e.missing_versions) description += ` 有 ${e.missing_sources.length} 条原文、${e.missing_versions} 份历史版本依据缺失，请核对草稿。`;
+    }
     if (impact) {
       const { eligible_members, protected_members, old_topics } = impact;
       description += `当前可用成员 ${eligible_members} 个，受保护成员 ${protected_members} 个，将替换现有主题 ${old_topics} 个（含人工保护的主题）。`;

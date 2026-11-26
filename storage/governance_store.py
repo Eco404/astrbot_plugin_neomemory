@@ -20,7 +20,7 @@ must appear in expected_versions. New split refs need no expected version.
 
 from __future__ import annotations
 
-from .topic_dependencies import invalidate_unlocked_reviews
+from .topic_dependencies import invalidate_unlocked_reviews, reconstruction_members, write_member_dependencies
 
 import hashlib
 import json
@@ -30,6 +30,7 @@ import uuid
 from typing import Any
 
 try:
+    from ..core.extraction_apply import digest
     from ..core.memory_emotions import encode_emotion, validate_emotion
     from ..core.text_lengths import encoded_text_limit, validate_readable_text
     from ..core.memory_nodes import (
@@ -39,6 +40,7 @@ try:
         validate_title,
     )
 except ImportError:
+    from core.extraction_apply import digest
     from core.memory_emotions import encode_emotion, validate_emotion
     from core.text_lengths import encoded_text_limit, validate_readable_text
     from core.memory_nodes import (
@@ -320,6 +322,7 @@ class GovernanceService:
         reason: str = "",
         job_id: str,
         lease_token: str,
+        reconstruction=None, draft_model=None, draft_id=None,
     ) -> dict[str, Any]:
         operation = validate_operation(operation)
         _string(actor, "actor", 200)
@@ -332,6 +335,7 @@ class GovernanceService:
                     "operation": operation,
                     "actor": actor,
                     "reason": reason,
+                    **({"draft_id": draft_id, "basis": reconstruction} if reconstruction else {}),
                 }
             ).encode("utf-8")
         ).hexdigest()
@@ -411,7 +415,29 @@ class GovernanceService:
             parents = await self._parents(connection, affected)
             refs = {}
             self_stale = set()
-            if action == "edit":
+            if reconstruction:
+                target = nodes[affected[0]]
+                content = operation["patch"]["content_text"]
+                changed = target["content_text"] != content
+                if target["node_type"] == "topic":
+                    members = await reconstruction_members(connection, target["node_id"])
+                    if digest(members) != reconstruction["member_digest"]:
+                        raise ValueError("topic members changed since draft")
+                    await write_member_dependencies(connection, target["node_id"], reconstruction["members"], now=now, replace=True)
+                if changed:
+                    await connection.execute(
+                        """INSERT INTO memory_node_versions(node_version_id,node_id,version_no,content_text,
+                           metadata_json,change_kind,editor_kind,created_at,title,emotion_json)
+                           VALUES (?,?,?,?,?,'rebuild','rebuild',?,?,?)""",
+                        (_id("nodever"), target["node_id"], target["content_version"] + 1, content,
+                         target["content_metadata_json"], now, target["title"], target["emotion_json"]))
+                    await self._invalidate_coverage(connection, affected)
+                if changed or json.loads(target["node_metadata_json"]).get("summary_stale"):
+                    await connection.execute(
+                        """UPDATE memory_nodes SET content_version=?,updated_at=?,
+                           metadata_json=json_remove(metadata_json,'$.summary_stale','$.summary_stale_job_id')
+                           WHERE node_id=?""", (target["content_version"] + int(changed), now, target["node_id"]))
+            elif action == "edit":
                 node = nodes[affected[0]]
                 await self._edit(
                     connection,
@@ -464,7 +490,7 @@ class GovernanceService:
                 await self._state(connection, nodes[affected[0]], action, now, reason)
             # Pure protection changes do not invalidate the parent's factual text.
             stale = []
-            if action not in {"protect", "unprotect"} and not title_only:
+            if action not in {"protect", "unprotect"} and not title_only and (not reconstruction or changed):
                 parents.update(
                     await self._parents(connection, affected + list(refs.values()))
                 )
@@ -499,7 +525,15 @@ class GovernanceService:
             if action == "delete":
                 result["deletion_kind"] = "derived_tombstone"
             await self._receipt(connection, result, lease_token, actor, reason, request_digest, now)
-            if action == "split":
+            if reconstruction:
+                target_id = affected[0]
+                await record_derivation(connection, "node", target_id, after[target_id]["content_version"],
+                    operation="reconstruct" if changed else "confirm", editor_kind="rebuild", governance_job_id=job_id, now=now,
+                    base_versions=[version_reference("node", k, v) for k, v in reconstruction["members"].items()],
+                    sources=[(sid, "source_record") for sid in reconstruction["sources"]],
+                    source_observations=reconstruction["sources"], context_sources=reconstruction["context_sources"],
+                    semantic={"draft_id": draft_id, "model_route": draft_model})
+            elif action == "split":
                 original_id = affected[0]
                 source_rows = await _all(connection, "SELECT * FROM node_sources WHERE node_id=?", (original_id,))
                 source_kinds = {row["source_id"]: row["source_kind"] for row in source_rows}

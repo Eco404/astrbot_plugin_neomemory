@@ -22,6 +22,7 @@ export function initMaintenance(ui) {
     clearingTasks: false, clearScope: null, cleanupMode: null, cleanupSpaceId: null, completedCounts: { total: 0, automatic_count: 0, manual_count: 0 }, taskRevision: 0,
     nodeOffset: 0, nodeRequest: 0, nodeLoading: false, taskOffset: 0, spaceOffset: 0, selectedJob: null, detail: null, rawJob: null, rawRequest: 0,
     mergeSelected: new Map(), mergeCandidates: [], mergeOffset: 0, mergeRequest: 0, ingressOffset: 0, ingressRefreshing: false, ingressReady: false, selectedSource: null };
+  let visibleDraft = null, draftRequest = 0;
   const pendingSubmissionKeys = new Map();
   let nodeQuery = '';
   let backlogEpoch = null;
@@ -30,7 +31,7 @@ export function initMaintenance(ui) {
   const audit = initAuditLog(ui);
   const contextGovernance = initContextGovernance(ui, operation => submit('governance', { operation }));
   const confirmModelTask = initTaskModels(ui);
-  const modelJobs = new Set(['extract', 'rebuild', 'section_rebuild', 'topic_consolidate', 'topic_rebuild', 'profile_rebuild', 'relationship_rebuild', 'context_rebuild', 'short_term']);
+  const modelJobs = new Set(['node_draft', 'extract', 'rebuild', 'section_rebuild', 'topic_consolidate', 'topic_rebuild', 'profile_rebuild', 'relationship_rebuild', 'context_rebuild', 'short_term']);
   setupTabs('[data-maintenance-tab]', tab => {
     for (const section of document.querySelectorAll('[data-maintenance-content]')) {
       section.hidden = section.dataset.maintenanceContent !== tab.dataset.maintenanceTab;
@@ -43,7 +44,7 @@ export function initMaintenance(ui) {
   function showTasks() { document.querySelector('[data-maintenance-tab="tasks"]').click(); }
   const activeStates = new Set(['queued', 'running', 'retry_wait']);
   const states = { queued: '排队中', running: '执行中', retry_wait: '自动重试中', failed: '失败', succeeded: '完成', cancelled: '已取消' };
-  const kinds = { identity: '账号关联管理', note: '笔记更新', model_test: '模型连通测试', extract: '整理抽取', topic_consolidate: '整理主题', topic_rebuild: '主题重构', profile_rebuild: '用户画像重构', relationship_rebuild: '人格关系重构', context_rebuild: '画像与人格关系重构', section_rebuild: '按板块重构', rebuild: '重构记忆', reindex: '重建索引', governance: '人工治理', reject: '放弃失败批次', short_term: '短期滚动摘要' };
+  const kinds = { node_draft: '生成单条正文草稿', node_apply: '应用重建正文', identity: '账号关联管理', note: '笔记更新', model_test: '模型连通测试', extract: '整理抽取', topic_consolidate: '整理主题', topic_rebuild: '主题重构', profile_rebuild: '用户画像重构', relationship_rebuild: '人格关系重构', context_rebuild: '画像与人格关系重构', section_rebuild: '按板块重构', rebuild: '重构记忆', reindex: '重建索引', governance: '人工治理', reject: '放弃失败批次', short_term: '短期滚动摘要' };
   const actionLabels = { active: '活跃', historical: '历史', disabled: '禁用', superseded: '已替代', deleted: '已删除' };
   function stepLabel(step) {
     const labels = { companion_receipts: '按送达时间补录分段', identity_apply: '更新账号关联', topic_prepare: '准备主题归纳材料', topic_model: '生成主题概况与成员', topic_validate: '校验主题候选', topic_index: '准备主题向量', topic_publish: '发布重构后的主题', prepared: '窗口已准备', model: '生成记忆候选', validate: '校验候选', correcting: '自动纠正候选', replay: '回放原始记录', index: '准备记忆向量', window_index: '更新向量索引', switch: '启用构建结果', governance: '应用人工治理', complete: '完成' };
@@ -142,6 +143,10 @@ export function initMaintenance(ui) {
   function buttons() {
     const allowed = Boolean(spaceId()) && state.available && !state.posting;
     contextGovernance.setAvailable(allowed);
+    const node = selectedNode();
+    $('generate-node-draft').disabled = !allowed || !node || state.nodeLoading || ['deleted', 'superseded'].includes(node.status);
+    $('discard-node-draft').disabled = !allowed || !visibleDraft;
+    $('apply-node-draft').disabled = !allowed || !visibleDraft || visibleDraft.nodeId !== node?.node_id || !$('draft-body').value.trim();
     $('governance-editor').disabled = state.nodeLoading;
     $('governance-editor').setAttribute('aria-busy', String(state.nodeLoading));
     $('action').disabled = state.nodeLoading;
@@ -191,7 +196,60 @@ export function initMaintenance(ui) {
     state.selectedJob = job.job_id; $('task-detail-panel').open = false;
     try { await refreshTasks(); }
     catch { if (ui.current(epoch)) notify('任务已提交，任务列表刷新失败。请刷新列表查看进度。', true); }
+    return job;
   }
+  async function readNodeDraft() {
+    const node = selectedNode(), epoch = ui.epoch(), seq = ++draftRequest;
+    if ($('action').value !== 'reconstruct' || !node || ui.page() !== 'maintenance') return;
+    if (visibleDraft?.nodeId !== node.node_id) {
+      visibleDraft = null;
+      $('node-draft-review').hidden = true;
+      $('node-draft-status').textContent = '';
+    }
+    const { job, draft, version, disposition } = await bridge.apiGet('memory/node-draft', { space_id: spaceId(), node_id: node.node_id });
+    if (seq !== draftRequest || !ui.current(epoch) || selectedNode()?.node_id !== node.node_id || $('action').value !== 'reconstruct') return;
+    const ready = job?.state === 'succeeded' && version === node.content_version && !disposition;
+    $('node-draft-review').hidden = !ready;
+    if (ready) {
+      if (visibleDraft?.id !== job.job_id) {
+        $('draft-original').value = draft.original;
+        $('draft-body').value = draft.content;
+      }
+      visibleDraft = { id: job.job_id, nodeId: node.node_id };
+      const basis = draft.member_count ? `主题成员 ${draft.member_count} 个` : `来源原文 ${draft.source_count} 条`;
+      $('node-draft-status').textContent = basis + (draft.missing_versions || draft.missing_sources.length ? ' · 部分历史依据缺失' : '');
+    } else {
+      visibleDraft = null;
+      $('node-draft-status').textContent = !job || disposition === 'discarded' ? '' :
+        disposition === 'applied' ? '重建正文已应用。' : disposition === 'applying' ? '正在应用正文…' :
+        job.state === 'succeeded' ? '条目版本已变化，请重新生成。' :
+        job.state === 'failed' ? '生成失败。' + (taskFeedback(job).textContent || job.error_code || '') : states[job.state];
+    }
+    buttons();
+  }
+  on('generate-node-draft', 'click', async () => {
+    const node = selectedNode(), epoch = ui.epoch();
+    const selected = await confirmModelTask({kind: 'node_draft', space_id: spaceId(), node_id: node.node_id},
+      '重建所选条目正文', node.node_type === 'topic' ? '根据现有成员概括主题。' : '根据所选条目的来源生成候选正文。', '生成草稿');
+    if (selected && ui.current(epoch) && selectedNode()?.node_id === node.node_id) {
+      await submit('node_draft', { operation: {node_id: node.node_id}, model_selection: selected });
+      await readNodeDraft();
+    }
+  });
+  on('apply-node-draft', 'click', async () => {
+    const draft = visibleDraft;
+    if (!draft) return;
+    if (await submit('node_apply', { operation: {draft_id: draft.id, content: $('draft-body').value} })) {
+      await readNodeDraft();
+    }
+  });
+  on('discard-node-draft', 'click', async () => {
+    if (visibleDraft) {
+      await request('memory/node-draft/discard', { space_id: spaceId(), job_id: visibleDraft.id });
+      await readNodeDraft();
+    }
+  });
+  on('draft-body', 'input', buttons);
   function showNode() {
     const node = selectedNode();
     pretty('node-preview', node || '尚未选择节点。');
@@ -635,7 +693,7 @@ export function initMaintenance(ui) {
         if (['failed', 'cancelled'].includes(job.state)) {
           if (!job.restart_required && job.recovery_action !== 'review' && job.error_code !== 'model_required') taskAction(actions, '从断点重试', () => taskMutation('tasks/retry', job));
           if (job.regenerate_window_available) taskAction(actions, '重新生成当前窗口', () => taskMutation('tasks/retry', job, { regenerate_window: true }));
-          if (!['note', 'identity'].includes(job.kind)) taskAction(actions, '重新准备后重试', () => taskMutation('tasks/retry', job, { fresh: true }));
+          if (!['note', 'identity', 'node_apply'].includes(job.kind)) taskAction(actions, '重新准备后重试', () => taskMutation('tasks/retry', job, { fresh: true }));
         }
         if (job.state !== 'running') {
           const confirmation = element('div', '', 'task-delete-confirm'); confirmation.hidden = !confirming.has(job.job_id);
@@ -664,6 +722,9 @@ export function initMaintenance(ui) {
   }
   function renderAction() {
     const action = $('action').value, node = selectedNode();
+    $('reconstruction-editor').hidden = action !== 'reconstruct';
+    $('governance-editor').hidden = action === 'reconstruct';
+    if (action === 'reconstruct') readNodeDraft().catch(error => notify(error.message, true));
     $('merge-editor').hidden = action !== 'merge'; $('split-editor').hidden = action !== 'split';
     $('delete-confirm-row').hidden = action !== 'delete';
     $('node-title').closest('label').hidden = !['edit', 'merge'].includes(action);
@@ -836,8 +897,8 @@ export function initMaintenance(ui) {
   on('merge-prev', 'click', () => { state.mergeOffset = Math.max(0, state.mergeOffset - 50); return loadMergeCandidates(); }); on('delete-confirm', 'input', buttons);
   return {
     async refresh() { await Promise.all([audit.visible() && audit.refresh(), contextGovernance.refresh(), recall.visible() && recall.refresh(), loadNodes(), refreshTasks(), refreshBacklog(), refreshIngress()]); },
-    async poll() { if (!audit.visible() && !recall.visible() && !state.clearingTasks) await Promise.all([refreshTasks(), refreshBacklog(), refreshIngress()]); },
-    changed() { contextGovernance.changed(); recall.changed(); $('task-detail-panel').open = false; $('task-history-panel').open = false; $('extraction-backlog').textContent = $('extraction-hint').textContent = '正在读取当前空间的待抽取数量…'; state.nodeRequest += 1; state.nodeLoading = false; clearTaskSource(); state.rawJob = null; $('task-sources').replaceChildren(); state.available = false; state.nodeOffset = state.taskOffset = 0; state.selectedJob = state.detail = null; state.nodes = []; $('node-select').replaceChildren(); $('merge-nodes').replaceChildren(); $('node-preview').textContent = ''; $('version-detail').textContent = ''; $('tasks').replaceChildren(); $('task-history').replaceChildren(); $('automatic-status').hidden = true; $('task-detail').textContent = '请选择要查看的任务。'; $('restart-hint').textContent = ''; $('task-diagnostics').textContent = ''; $('operation').value = ''; $('node-title').value = ''; $('content').value = ''; $('split-parts').replaceChildren(); $('availability').textContent = '正在读取空间状态…'; buttons(); },
+    async poll() { if (!audit.visible() && !recall.visible() && !state.clearingTasks) await Promise.all([refreshTasks(), refreshBacklog(), refreshIngress(), readNodeDraft()]); },
+    changed() { visibleDraft = null; draftRequest++; $('node-draft-review').hidden = true; contextGovernance.changed(); recall.changed(); $('task-detail-panel').open = false; $('task-history-panel').open = false; $('extraction-backlog').textContent = $('extraction-hint').textContent = '正在读取当前空间的待抽取数量…'; state.nodeRequest += 1; state.nodeLoading = false; clearTaskSource(); state.rawJob = null; $('task-sources').replaceChildren(); state.available = false; state.nodeOffset = state.taskOffset = 0; state.selectedJob = state.detail = null; state.nodes = []; $('node-select').replaceChildren(); $('merge-nodes').replaceChildren(); $('node-preview').textContent = ''; $('version-detail').textContent = ''; $('tasks').replaceChildren(); $('task-history').replaceChildren(); $('automatic-status').hidden = true; $('task-detail').textContent = '请选择要查看的任务。'; $('restart-hint').textContent = ''; $('task-diagnostics').textContent = ''; $('operation').value = ''; $('node-title').value = ''; $('content').value = ''; $('split-parts').replaceChildren(); $('availability').textContent = '正在读取空间状态…'; buttons(); },
     async inspect(job) { showTasks(); if (job.scope_key === '*') $('all-tasks').checked = true; state.selectedJob = job.job_id; $('task-detail-panel').open = false; await refreshTasks(); }
   };
 }

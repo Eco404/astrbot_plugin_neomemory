@@ -56,6 +56,7 @@ from .parallel_rebuild import rebuild_sections
 from .context_rebuild import MODELS as CONTEXT_REBUILD_MODELS, model_schema, scoped_messages
 from .model_routing import ModelRoutingMixin, ModelSelectionRequired, fixed_route, topic_model_policy, validate_selection
 from .jobs import JobRunner, RetryableJobError, ReviewRequired, deadline_failure, provider_failure
+from . import node_reconstruction as reconstruction
 from .attempts import observe_action, observe_commit, observed_call
 from .memory_spaces import RetiredIdentity
 from .persona_policy import is_supported_persona
@@ -89,6 +90,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
         self.governance = GovernanceService(memory)
         handlers = {**dict.fromkeys(CONTEXT_REBUILD_MODELS, self._rebuild), "extract": self._extract, "rebuild": self._rebuild, "reindex": self._reindex,
                     "governance": self._govern, "reject": self._reject,
+                    "node_draft": self._node_draft, "node_apply": self._node_apply,
                     "topic_consolidate": self._consolidate_topics, "topic_rebuild": self._replace_topics}
         self.runner = JobRunner(self.jobs, {kind: partial(self._supported_handler, handler)
                                             for kind, handler in handlers.items()}, concurrency=config.job_concurrency, lease_seconds=config.job_lease_seconds,
@@ -320,7 +322,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                        failed_job_id=None, include_topics=False, automatic=False, model_selection=None, replaces=None):
         if self.closing:
             raise ValueError("maintenance is stopping")
-        if kind not in {"extract", "rebuild", "reindex", "governance", "reject", "topic_consolidate", "topic_rebuild", *CONTEXT_REBUILD_MODELS}:
+        if kind not in {"node_draft", "node_apply", "extract", "rebuild", "reindex", "governance", "reject", "topic_consolidate", "topic_rebuild", *CONTEXT_REBUILD_MODELS}:
             raise ValueError("unsupported maintenance task")
         request = {"kind": kind, "space_id": space_id,
                    "operation_digest": digest(operation) if operation is not None else None,
@@ -333,7 +335,7 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             request["include_topics"] = True
         if model_selection:
             validate_selection(model_selection)
-            if kind not in {"extract", "rebuild", "topic_consolidate", "topic_rebuild", *CONTEXT_REBUILD_MODELS}:
+            if kind not in {"node_draft", "extract", "rebuild", "topic_consolidate", "topic_rebuild", *CONTEXT_REBUILD_MODELS}:
                 raise ValueError("this task does not use an extraction model")
             request["model_selection"] = model_selection
         if replaces is None:
@@ -350,6 +352,28 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
                    "expected_generation_id": generation["generation_id"]}
         if include_topics:
             payload["include_topics"] = True
+        if kind == "node_draft":
+            node, basis, members, records, _ = await reconstruction.reconstruction_input(self, space, operation["node_id"])
+            route = await reconstruction.model_route(self, space, node, members, records, model_selection or {})
+            if not route:
+                raise ModelSelectionRequired("model_required")
+            payload.update(operation=operation, basis_digest=digest(basis), model_route=route)
+        if kind == "node_apply":
+            draft = await self.jobs.get(operation["draft_id"])
+            if not draft or draft["kind"] != "node_draft" or draft["scope_key"] != space_id or draft["state"] != "succeeded":
+                raise reconstruction.ReconstructionUnavailable("草稿已清除或尚未生成，请重新生成。")
+            result = draft["result"]
+            if result.get("discarded"):
+                raise reconstruction.ReconstructionUnavailable("草稿已放弃，请重新生成。")
+            frozen = result["snapshot"]
+            _, current, *_ = await reconstruction.reconstruction_input(self, space, frozen["node_id"])
+            if current != frozen:
+                raise reconstruction.ReconstructionUnavailable("条目或依据已经变化，请重新生成草稿。")
+            try:
+                body = reconstruction.validate_body(operation["content"], frozen["node_type"], result["allowed_users"])
+            except ValueError as exc:
+                raise reconstruction.ReconstructionUnavailable(str(exc)) from exc
+            payload.update(operation=operation, basis=frozen, body=body, draft_model=result["model_route"])
         if kind == "extract":
             try:
                 records, decision = await self.manual_extraction_plan(space, generation["generation_id"])
@@ -497,6 +521,8 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             raise ValueError("task must be failed or cancelled before retry")
         if job["kind"] == "model_test" and self.model_tests is not None:
             return await self.model_tests.retry(job_id, fresh=fresh)
+        if job["kind"] == "node_apply":
+            return await self.jobs.retry(job_id)
         if job["kind"] == "note" and fresh:
             raise ValueError("refresh and edit the note again; do not discard its version check")
         if not fresh or await self._has_committed_window(job):
@@ -1170,6 +1196,47 @@ class MaintenanceEngine(ModelRoutingMixin, TopicMaintenanceMixin):
             raise ReviewRequired("context_changed")
         await self._save(job, {}, "index")
         return await self._index_generation(job, payload["space_id"], generation["generation_id"])
+
+    async def _node_draft(self, job):
+        return await reconstruction.generate_draft(self, job)
+
+    async def _node_apply(self, job):
+        payload = job["payload"]
+        basis = payload["basis"]
+        node_id = basis["node_id"]
+        operation = {"action": "edit", "node_id": node_id, "expected_generation_id": basis["generation_id"],
+                     "expected_versions": {node_id: basis["content_version"]}, "expected_titles": {node_id: basis["title"]},
+                     "expected_updated_at": {node_id: basis["updated_at"]}, "patch": {"content_text": payload["body"]}}
+        await self._save(job, {}, "governance", 0, 1)
+        committed = await self.memory.database.fetchone("SELECT 1 FROM governance_receipts WHERE job_id=?", (job["job_id"],))
+        if not committed:
+            cited = set(basis["sources"]) | set(basis["context_sources"])
+            if set(await self.sources.get_observation_times(tuple(cited))) != cited:
+                raise ReviewRequired("reconstruction_changed")
+        try:
+            result = await self.governance.apply(job["scope_key"], operation, job_id=job["job_id"],
+                lease_token=job["lease_token"], reason="根据依据重建正文", reconstruction=basis,
+                draft_model=payload["draft_model"], draft_id=payload["operation"]["draft_id"])
+        except ValueError as exc:
+            raise ReviewRequired("reconstruction_changed") from exc
+        if not result["replayed"]:
+            observe_commit()
+        if result["before_versions"][node_id] != result["nodes"][node_id]["content_version"]:
+            if self.runtime.cache:
+                await self.runtime.cache.invalidate_nodes(job["scope_key"], [node_id, *result["stale_parent_ids"]])
+            if self._index_configured():
+                await self._save(job, {}, "window_index", 0, 1)
+                if self.runtime.recall is None:
+                    raise ReviewRequired("index_provider_required")
+                current = await self.memory.get_node(node_id)
+                if current and current["content_version"] == result["nodes"][node_id]["content_version"]:
+                    try:
+                        async with asyncio.timeout(self.config.index_timeout_seconds):
+                            await node_vectors(self.runtime.recall.embeddings, [current], job["scope_key"],
+                                deadline=time.monotonic() + self.config.index_timeout_seconds, require_persisted=True)
+                    except Exception as exc:
+                        raise self._embedding_failure(exc) from None
+        return result
 
     async def _govern(self, job):
         payload = job["payload"]
