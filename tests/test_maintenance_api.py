@@ -217,6 +217,25 @@ async def test_task_list_has_safe_projection_filter_and_pagination(api):
 
 
 @pytest.mark.asyncio
+async def test_task_history_shows_latest_50_in_scope(api):
+    jobs = api.plugin.jobs
+    scope = api.test_space["space_id"]
+    ids = []
+    for i in range(52):
+        job = await jobs.submit("extract", scope if i < 51 else "other-space", {}, f"auto-{i}", hide_on_success=True)
+        running = await jobs.claim("worker")
+        await jobs.finish(job["job_id"], running["lease_token"])
+        ids.append(job["job_id"])
+    for query, expected in (({"scope_key": scope}, ids[:-1]), ({}, ids)):
+        api.test_query.clear()
+        api.test_query.update(query)
+        listing = payload(await api.tasks())
+        assert [job["job_id"] for job in listing["history"]] == expected[-50:][::-1]
+        assert listing["history_has_more"]
+        assert listing["completed_counts"]["total"] == len(expected)
+
+
+@pytest.mark.asyncio
 async def test_auto_success_leaves_list_but_manual_recovery_remains(api):
     jobs = api.plugin.jobs
     scope = api.test_space["space_id"]

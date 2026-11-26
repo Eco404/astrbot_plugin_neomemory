@@ -179,7 +179,7 @@ class MaintenanceAPI:
             scope = _text(scope, maximum=256)
         limit = _integer(request.query.get("limit", 50), minimum=1, maximum=100)
         offset = _integer(request.query.get("offset", 0))
-        history_limit = _integer(request.query.get("history_limit", 499), minimum=1, maximum=499)
+        history_limit = _integer(request.query.get("history_limit", 50), minimum=1, maximum=499)
         history_offset = _integer(request.query.get("history_offset", 0))
         jobs = await self.plugin.jobs.list(scope_key=scope, limit=limit + 1, offset=offset, visible_only=True)
         items = []

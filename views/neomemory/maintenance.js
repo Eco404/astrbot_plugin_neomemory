@@ -591,7 +591,7 @@ export function initMaintenance(ui) {
       $('tasks').replaceChildren();
       $('task-history').replaceChildren();
       if (!result.items.length) $('tasks').append(element('p', '暂无任务。', 'muted'));
-      if (result.history?.length) $('task-history-panel').querySelector('summary').textContent = `历史任务（${result.history.length}${result.history_has_more ? '以上' : ''}）`;
+      if (result.history?.length) $('task-history-panel').querySelector('summary').textContent = `历史任务（${result.history_has_more ? '最近 ' : ''}${result.history.length} 条）`;
       else $('task-history-panel').querySelector('summary').textContent = '历史任务';
       if (!result.history?.length) $('task-history').append(element('p', '暂无自动完成任务。', 'muted'));
       const renderTask = (job, target) => {
