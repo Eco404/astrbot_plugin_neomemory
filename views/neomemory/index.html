@@ -313,8 +313,10 @@
     </form>
     <div class="row"><button id="audit-refresh">刷新日志</button><button id="audit-clear" class="danger">清空日志</button></div>
     <p id="audit-status" class="muted" role="status"></p><div id="audit-list"></div>
-    <nav id="audit-pages" class="row" aria-label="日志分页" hidden><button id="audit-prev">上一页</button><span id="audit-page"></span><button id="audit-next">下一页</button></nav>
   </section>
+  <nav id="audit-pages" data-maintenance-content="logs" class="row floating-pagination" aria-label="日志分页" hidden><button id="audit-prev"><span data-icon="arrowLeft" aria-hidden="true"></span>上一页</button><button id="audit-page" type="button" aria-controls="audit-picker" aria-expanded="false" title="选择页码">第 1 页</button>
+    <div class="page-picker" id="audit-picker" hidden><div class="page-options" role="group" aria-label="页码"></div></div>
+    <button id="audit-next">下一页<span data-icon="arrowRight" aria-hidden="true"></span></button></nav>
   <section data-maintenance-content="status" hidden>
     <h2 class="section-title"><span data-icon="storage" aria-hidden="true"></span>存储状态</h2>
     <div class="storage-charts">

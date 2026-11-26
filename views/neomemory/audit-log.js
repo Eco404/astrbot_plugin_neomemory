@@ -1,4 +1,4 @@
-import { $, date, element, on, notify } from './ui.js';
+import { $, button, date, element, on, notify } from './ui.js';
 
 const levels = { debug: '调试', info: '信息', warning: '警告', error: '错误' };
 const categories = { task: '后台任务', operation: '操作', system: '插件运行' };
@@ -13,6 +13,26 @@ export function initAuditLog(ui) {
   const enabled = $('audit-enabled'), days = $('audit-days'), save = $('audit-save');
   const dialog = $('audit-confirm-dialog'), status = $('audit-status');
   let saved, request = 0, next = null, cursors = [''], filters = {}, writing = false;
+  const pageTrigger = $('audit-page'), pagePicker = $('audit-picker'), pageOptions = pagePicker.querySelector('.page-options');
+  function closePicker() {
+    pagePicker.hidden = true;
+    pageTrigger.setAttribute('aria-expanded', 'false');
+  }
+  function openPicker() {
+    if (pagePicker.hidden === false) { closePicker(); return; }
+    pageOptions.replaceChildren();
+    const pageCount = cursors.length + (next ? 1 : 0);
+    for (let page = 1; page <= pageCount; page += 1) {
+      const target = page === cursors.length + 1 ? [...cursors, next] : cursors.slice(0, page);
+      const choice = button(String(page), () => load(target));
+      choice.setAttribute('aria-label', '第 ' + page + ' 页');
+      if (page === cursors.length) choice.setAttribute('aria-current', 'page');
+      pageOptions.append(choice);
+    }
+    pagePicker.hidden = false;
+    pageTrigger.setAttribute('aria-expanded', 'true');
+    pageOptions.querySelector('[aria-current]')?.focus({ preventScroll: true });
+  }
   function dirty() {
     return saved && (enabled.checked !== saved.enabled || days.valueAsNumber !== saved.days);
   }
@@ -60,11 +80,14 @@ export function initAuditLog(ui) {
       $('audit-pages').hidden = !next && cursors.length === 1;
       $('audit-prev').disabled = cursors.length === 1;
       $('audit-next').disabled = !next;
-      $('audit-page').textContent = '第 ' + cursors.length + ' 页';
+      pageTrigger.textContent = '第 ' + cursors.length + ' 页';
+      pageTrigger.disabled = cursors.length === 1 && !next;
+      closePicker();
     } catch {
       if (request !== version) return;
       $('audit-list').replaceChildren();
       $('audit-pages').hidden = true;
+      closePicker();
       status.textContent = '读取日志失败，请刷新重试。';
     } finally { controls(); }
   }
@@ -79,6 +102,13 @@ export function initAuditLog(ui) {
   on('audit-refresh', 'click', search);
   on('audit-prev', 'click', () => load(cursors.slice(0, -1)));
   on('audit-next', 'click', () => load([...cursors, next]));
+  pageTrigger.addEventListener('click', openPicker);
+  document.addEventListener('pointerdown', event => {
+    if (!pagePicker.hidden && !pageTrigger.contains(event.target) && !pagePicker.contains(event.target)) closePicker();
+  });
+  pagePicker.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { closePicker(); pageTrigger.focus({ preventScroll: true }); }
+  });
   on('audit-preferences', 'input', controls);
   on('audit-preferences', 'submit', async () => {
     writing = true; controls();
