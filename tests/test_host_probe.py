@@ -47,6 +47,16 @@ class FakeContext:
         self.registered_web_apis.append((route, handler, methods, desc))
 
 
+def assert_registered_web_apis(context):
+    prefix = "/astrbot_plugin_neomemory/"
+    routes = {(path, tuple(methods)) for path, _, methods, _ in context.registered_web_apis}
+    assert len(context.registered_web_apis) == len(routes) == 53
+    assert all(path.startswith(prefix) for path, _ in routes)
+    assert (prefix + "tasks/clear-completed", ("POST",)) in routes
+    assert (prefix + "memory/node-draft", ("GET",)) in routes
+    assert (prefix + "memory/node-draft/discard", ("POST",)) in routes
+
+
 class FakeEvent:
     def __init__(self, *, message_id: str, text: str, group_id: str = "") -> None:
         self.message_str = text
@@ -223,13 +233,7 @@ async def test_stage_one_host_capture_and_restart(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ASTRBOT_ROOT", str(tmp_path / "astrbot"))
     context = FakeContext()
     plugin = NeoMemoryPlugin(context, {})
-    assert len(context.registered_web_apis) == 51
-    assert any(path.endswith("/tasks/clear-completed") and methods == ["POST"]
-               for path, _, methods, _ in context.registered_web_apis)
-    assert all(
-        route.startswith("/astrbot_plugin_neomemory/")
-        for route, *_ in context.registered_web_apis
-    )
+    assert_registered_web_apis(context)
 
     await plugin.initialize()
     event = FakeEvent(message_id="m-1", text="hello from host")
@@ -342,8 +346,6 @@ async def test_stage_one_plugin_manager_loads_real_plugin_layout(
     )
     assert metadata.star_cls is not None
     assert metadata.star_cls.ready is True
-    assert len(context.registered_web_apis) == 51
-    assert any(path.endswith("/tasks/clear-completed") and methods == ["POST"]
-               for path, _, methods, _ in context.registered_web_apis)
+    assert_registered_web_apis(context)
     await manager._terminate_plugin(metadata)
     manager._cleanup_plugin_state("astrbot_plugin_neomemory", False)

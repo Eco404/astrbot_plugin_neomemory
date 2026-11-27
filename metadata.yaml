@@ -1,7 +1,7 @@
 name: astrbot_plugin_neomemory
 display_name: NeoMemory
 author: NeoMemory Contributors
-version: 1.2.4-dev.1
+version: 1.2.4
 desc: AstrBot 的可重放聊天陪伴记忆基础设施
 short_desc: 按人格和会话空间组织、抽取与召回记忆
 astrbot_version: ">=4.29.3"

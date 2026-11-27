@@ -239,6 +239,8 @@ def test_unknown_prose_reference_is_rejected_at_field_path(batch, candidate, pat
     for part in path[:-1]:
         target = target[part]
     target[path[-1]] = "{{user:" + invalid + "}}"
+    if path == ("node_changes", 0, "content"):
+        target[path[-1]] += "参加排练。"
     with pytest.raises(ReferenceValidationError) as caught:
         refs.decode(json.dumps(wire))
     expected_path = "$" + "".join(f"[{p}]" if isinstance(p, int) else f".{p}" for p in path)

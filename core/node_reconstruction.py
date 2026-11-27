@@ -213,7 +213,7 @@ async def generate_draft(engine, job):
             if not isinstance(result["content"], str):
                 raise ValueError("content 应为字符串。")
             body = validate_body(users.decode_text(result["content"]), kind, users.identities.values())
-            return {**info, "protocol": "node-reconstruction.v1-dev.1", "snapshot": snapshot, "original": node["content_text"], "content": body,
+            return {**info, "protocol": "node-reconstruction.v1", "snapshot": snapshot, "original": node["content_text"], "content": body,
                     "allowed_users": list(users.identities.values()), "model_route": route}
         except (ValueError, KeyError) as exc:
             if attempt == retries:

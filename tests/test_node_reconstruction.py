@@ -12,6 +12,7 @@ async def draft(env, target, body, *, key="draft", selection=None):
                                    model_selection=selection)
     result = await execute(env, task)
     assert result["state"] == "succeeded", result["error_code"]
+    assert result["result"]["protocol"] == "node-reconstruction.v1"
     return result
 
 
