@@ -19,6 +19,7 @@ try:
     from ..core.adaptive_recall import selection_request
     from ..core.model_routing import window_route
     from ..core.source_ingest import recall_addresses
+    from ..core.image_capture import media_placeholder
     from ..core.shared_recall import deliver_shared, search_shared
     from ..core.active_recall import ActiveFilters, merge_active_result
     from ..core.context_bundle import assemble_context
@@ -39,6 +40,7 @@ except ImportError:
     from core.adaptive_recall import selection_request
     from core.model_routing import window_route
     from core.source_ingest import recall_addresses
+    from core.image_capture import media_placeholder
     from core.shared_recall import deliver_shared, search_shared
     from core.active_recall import ActiveFilters, merge_active_result
     from core.context_bundle import assemble_context
@@ -400,6 +402,8 @@ class MemoryRuntime:
                 if space is None:
                     return
                 result = RecallResult(space["space_id"])
+                if ticket is not None or (self.config.recall_enabled and self.recall is not None):
+                    query = str(event.get_message_str() or "")
                 current_names = await self._current_user_name(space, identity)
             conversation_id = getattr(event, "_neomemory_conversation_id", None)
             host_contexts = getattr(req, "contexts", None)
@@ -437,9 +441,6 @@ class MemoryRuntime:
             history_task = asyncio.create_task(recent_history())
 
             async def long_term():
-                nonlocal query
-                if ticket is not None or (self.config.recall_enabled and self.recall is not None):
-                    query = str(event.get_message_str() or "")
                 if not self.config.recall_enabled or self.recall is None:
                     return RecallResult(space["space_id"])
                 history = await history_task
@@ -520,8 +521,12 @@ class MemoryRuntime:
                 reason = "被动长期记忆召回已关闭"
             elif self.recall is None:
                 reason = "向量召回服务尚未就绪"
-            await self.recall_history.append(ticket, space["space_id"], recall_snapshot(
-                "passive", query, started, result, text=injected, hits=returned, reason=reason))
+            record = recall_snapshot("passive", query, started, result, text=injected, hits=returned, reason=reason)
+            if not query.strip():
+                label = media_placeholder(getattr(event, "message_obj", None))
+                if label:
+                    record["media_placeholder"] = label
+            await self.recall_history.append(ticket, space["space_id"], record)
 
     def _schedule_short_term(self, space_id, conversation_id, stream_id, host_contexts) -> None:
         service = copy.copy(getattr(self.plugin, "short_term", None))

@@ -38,7 +38,6 @@ async def test_background_slow_write_persists_without_repeated_embedding(cache, 
     )
     assert missing == 1 and vectors == await exact(embedding)
     assert context.embedding.calls == [[NODE["content_text"]]]
-    assert embedding.last_cache_error is None
     assert await node_vectors(
         embedding, [NODE], "space", deadline=time.monotonic() + 2, require_persisted=True,
     ) == (vectors, 0)
@@ -95,10 +94,11 @@ async def test_online_slow_cache_returns_computed_vector_without_waiting_for_wri
             stopped.set()
 
     monkeypatch.setattr(cache, "put_vectors", slow_write)
+    errors = {}
     async with asyncio.timeout(1):
-        vectors = await embedding.embed([NODE["content_text"]], namespace="space", timeout_seconds=2)
+        vectors = await embedding.embed([NODE["content_text"]], namespace="space", timeout_seconds=2, cache_errors=errors)
     assert vectors and stopped.is_set()
-    assert embedding.last_cache_error == "TimeoutError"
+    assert errors == {"write": "TimeoutError"}
     assert context.embedding.calls == [[NODE["content_text"]]]
     assert (await cache.health())["entry_count"] == 0
 

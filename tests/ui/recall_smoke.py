@@ -20,7 +20,9 @@ const snapshot = (mode, query) => ({
 window.AstrBotPluginView.apiGet = async (endpoint,args={}) => {
   if (endpoint !== 'recall/history') return get(endpoint,args);
   const sample = {enabled: recording, records: recording && args.space_id === 'space-1' ?
-    ['passive','active','external'].map(mode => snapshot(mode,'第一空间的查询')) : []};
+    [...['passive','active','external'].map(mode => snapshot(mode,'第一空间的查询')),
+     {...snapshot('passive',''),media_placeholder:'[图片] [表情]', cache_errors:{write:'TimeoutError'}},
+     snapshot('passive','')] : []};
   if (window.holdHistory) {
     window.holdHistory = false;
     await new Promise(resolve => window.resumeHistory=resolve);
@@ -74,7 +76,10 @@ async def main():
                 await expect(result.get_by_text('低于相似度阈值', exact=False)).to_be_visible()
                 await expect(history).to_contain_text('已关闭')
                 await toggle.check()
-                await expect(history.locator('details')).to_have_count(3)
+                await expect(history.locator('details')).to_have_count(5)
+                await history.get_by_text('[图片] [表情]', exact=False).click()
+                await expect(history.get_by_text('写入向量缓存失败（TimeoutError）')).to_be_visible()
+                await expect(history.get_by_text('[无文字]', exact=False)).to_be_visible()
                 await history.get_by_text('外部记忆接口', exact=False).click()
                 await expect(history.get_by_text('外部接口返回内容')).to_be_visible()
                 await page.evaluate('window.holdHistory=true; window.holdTest=true')

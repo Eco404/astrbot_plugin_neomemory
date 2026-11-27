@@ -85,13 +85,12 @@ class EmbeddingService:
         self.batch_size = batch_size
         self.revision = revision
         self._lock = asyncio.Lock()
-        self.last_cache_error: str | None = None
 
-    async def _cache_dimension(self, fingerprint: str) -> int:
+    async def _cache_dimension(self, fingerprint: str, cache_errors: dict[str, str]) -> int:
         try:
             return await self.cache.get_dimension(fingerprint)
         except (OSError, sqlite3.Error, RuntimeError) as exc:
-            self.last_cache_error = type(exc).__name__
+            cache_errors.setdefault("read", type(exc).__name__)
             return 0
 
     @property
@@ -120,16 +119,18 @@ class EmbeddingService:
         kind: str,
         identities: Sequence[CacheIdentity] | None,
         *,
+        cache_errors: dict[str, str],
         allow_text_reuse: bool = True,
         read_only: bool = False,
     ) -> tuple[list[list[float] | None], bool]:
+        read_options = {"touch": not read_only, "cache_errors": cache_errors}
         try:
             vectors = await self.cache.get_vectors(
-                fingerprint, namespace, hashes, kind=kind, identities=identities, touch=not read_only
+                fingerprint, namespace, hashes, kind=kind, identities=identities, **read_options,
             )
         except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
             # 缓存损坏或不可读等同未命中，调用方仍决定是否允许联网补算。
-            self.last_cache_error = type(exc).__name__
+            cache_errors.setdefault("read", type(exc).__name__)
             vectors = [None] * len(hashes)
         missing_node_keys = kind == "node" and any(vector is None for vector in vectors)
         if missing_node_keys and allow_text_reuse:
@@ -138,10 +139,10 @@ class EmbeddingService:
             missing = [index for index, vector in enumerate(vectors) if vector is None]
             try:
                 previous = await self.cache.get_node_vectors_by_text(
-                    fingerprint, namespace, [hashes[index] for index in missing], touch=not read_only,
+                    fingerprint, namespace, [hashes[index] for index in missing], **read_options,
                 )
             except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
-                self.last_cache_error = type(exc).__name__
+                cache_errors.setdefault("read", type(exc).__name__)
                 previous = [None] * len(missing)
             for index, vector in zip(missing, previous, strict=True):
                 vectors[index] = vector
@@ -149,14 +150,14 @@ class EmbeddingService:
             if missing:
                 try:
                     messages = await self.cache.get_vectors(
-                        fingerprint, namespace, [hashes[index] for index in missing], touch=not read_only,
+                        fingerprint, namespace, [hashes[index] for index in missing], **read_options,
                     )
                 except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
-                    self.last_cache_error = type(exc).__name__
+                    cache_errors.setdefault("read", type(exc).__name__)
                     messages = [None] * len(missing)
                 for index, vector in zip(missing, messages, strict=True):
                     vectors[index] = vector
-        dimension = await self._cache_dimension(fingerprint)
+        dimension = await self._cache_dimension(fingerprint, cache_errors)
         declared = self.adapter.embedding_dimension(self.provider_id)
         if self.fingerprint != fingerprint:
             raise EmbeddingValidationError("embedding provider configuration changed during request")
@@ -178,11 +179,14 @@ class EmbeddingService:
         identities: Sequence[CacheIdentity] | None = None,
         allow_text_reuse: bool = True,
         read_only: bool = False,
+        cache_errors: dict[str, str] | None = None,
     ) -> list[list[float] | None]:
         """Read vectors only; disable text reuse to require exact node/version keys."""
         hashes, fingerprint = self._inputs(texts, namespace, kind, identities)
+        if cache_errors is None:
+            cache_errors = {}
         vectors, _ = await self._cached(hashes, fingerprint, namespace, kind, identities,
-                                      allow_text_reuse=allow_text_reuse, read_only=read_only)
+                                      allow_text_reuse=allow_text_reuse, read_only=read_only, cache_errors=cache_errors)
         return vectors
 
     async def embed(
@@ -196,6 +200,7 @@ class EmbeddingService:
         diagnostics: dict[str, Any] | None = None,
         require_persisted: bool = False,
         read_only: bool = False,
+        cache_errors: dict[str, str] | None = None,
     ) -> list[list[float]]:
         """Use the call deadline for required index writes, short writes otherwise.
 
@@ -208,6 +213,8 @@ class EmbeddingService:
         hashes, _ = self._inputs(texts, namespace, kind, identities)
         if not texts:
             return []
+        if cache_errors is None:
+            cache_errors = {}
         loop = asyncio.get_running_loop()
         started = loop.time()
         deadline = started + timeout
@@ -226,7 +233,7 @@ class EmbeddingService:
                     cache_started = loop.time()
                     fingerprint = self.fingerprint
                     cached, missing_node_keys = await self._cached(
-                        hashes, fingerprint, namespace, kind, identities, read_only=read_only)
+                        hashes, fingerprint, namespace, kind, identities, read_only=read_only, cache_errors=cache_errors)
                     if diagnostics is not None:
                         diagnostics["service_cache_seconds"] = loop.time() - cache_started
                         diagnostics["cache_hit_count"] = sum(vector is not None for vector in cached)
@@ -260,7 +267,7 @@ class EmbeddingService:
                         await asyncio.gather(*tasks, return_exceptions=True)
                         raise
                     stage = "response_validation"
-                    dimension = await self._cache_dimension(fingerprint)
+                    dimension = await self._cache_dimension(fingerprint, cache_errors)
                     declared = self.adapter.embedding_dimension(self.provider_id)
                     returned = [vector for batch in results for vector in batch]
                     if returned:
@@ -285,7 +292,7 @@ class EmbeddingService:
                                     fingerprint, namespace, hashes, result, kind=kind, identities=identities
                                 )
                         except (OSError, sqlite3.Error, RuntimeError) as exc:
-                            self.last_cache_error = type(exc).__name__
+                            cache_errors.setdefault("write", type(exc).__name__)
                             if require_persisted:
                                 from .jobs import storage_error
                                 failure = storage_error(exc)

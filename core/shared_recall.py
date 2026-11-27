@@ -56,6 +56,7 @@ async def search_shared(memory, sources, service, local, current, query, deadlin
     candidate_limit = max(limit * 3, service.policy.candidate_per_query)
     policy = replace(service.policy, max_neighbors=0, ranking_strategy="gated")
     candidates = []
+    cache_errors = local.diagnostics.setdefault("cache_errors", {})
     for space in spaces:
         if time.monotonic() >= deadline:
             break
@@ -67,14 +68,14 @@ async def search_shared(memory, sources, service, local, current, query, deadlin
         if not nodes:
             continue
         vectors = await service.embeddings.cached([n["content_text"] for n in nodes], namespace=sid,
-            kind="node", identities=[(n["node_id"], n["content_version"]) for n in nodes], read_only=True)
+            kind="node", identities=[(n["node_id"], n["content_version"]) for n in nodes], read_only=True, cache_errors=cache_errors)
         if all(v is None for v in vectors):
             continue
         if vector is None:
             if local.diagnostics.get("embedding_degraded") or local.diagnostics.get("embedding_changed"):
                 break
             vector, = await service.embeddings.embed([query], namespace=local.space_id,
-                timeout_seconds=max(.001, deadline - time.monotonic()), read_only=preview)
+                timeout_seconds=max(.001, deadline - time.monotonic()), read_only=preview, cache_errors=cache_errors)
         if service.embeddings.fingerprint != fingerprint or vector is None:
             return []
         ranked = await asyncio.to_thread(rank_candidates, snapshot, vectors, [(vector, 1., True)],

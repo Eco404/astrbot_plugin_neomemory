@@ -54,6 +54,10 @@ function renderSnapshot(snapshot) {
     content.append(element('p', `查询向量复用 ${reused} / ${total} · 向量模型调用 ${provider_calls} 次`, 'muted'));
   }
   if (snapshot.reason) content.append(element('p', snapshot.reason));
+  const cacheOperations = {read: '读取向量缓存', write: '写入向量缓存', touch: '更新缓存访问时间'};
+  for (const [operation, errorType] of Object.entries(snapshot.cache_errors || {})) {
+    content.append(element('p', `${cacheOperations[operation]}失败（${errorType}）`));
+  }
   if (items.length) content.append(nodeList(items));
   if (snapshot.preview_candidates?.length) {
     const excluded = element('details');
@@ -83,7 +87,8 @@ export function initRecallInspector(ui) {
     for (const record of records) {
       const entry = element('details', '', 'card');
       const type = { active: '主动回忆', passive: '被动召回', external: '外部记忆接口' }[record.mode];
-      entry.append(element('summary', `${date(record.created_at)} · ${type} · ${record.query}`), renderSnapshot(record));
+      const queryLabel = record.query?.trim() || record.media_placeholder || '[无文字]';
+      entry.append(element('summary', `${date(record.created_at)} · ${type} · ${queryLabel}`), renderSnapshot(record));
       history.append(entry);
     }
     if (!records.length) {

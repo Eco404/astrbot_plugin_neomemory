@@ -30,8 +30,9 @@ async def test_fast_cached_normalization_never_bypasses_cache_integrity(tmp_path
     try:
         await cache.put_vectors(service.fingerprint, "space", [text_hash("query")], [[1, 2]])
         await cache.database.execute("UPDATE embedding_cache SET vector_json=?", (encoded,))
-        assert await service.cached(["query"], namespace="space") == [None]
-        assert service.last_cache_error == "ValueError"
+        errors = {}
+        assert await service.cached(["query"], namespace="space", cache_errors=errors) == [None]
+        assert errors == {"read": "ValueError"}
         assert context.embedding.calls == []
     finally:
         await cache.close()

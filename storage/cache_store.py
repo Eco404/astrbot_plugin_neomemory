@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import math
+import sqlite3
 import time
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
@@ -203,6 +204,18 @@ class CacheStore:
         )
         return int(row[0]) if row else 0
 
+    async def _touch_vectors(self, keys: Iterable[str], now: float, cache_errors: dict[str, str] | None) -> None:
+        try:
+            async with self.database.transaction() as connection:
+                await connection.executemany(
+                    "UPDATE embedding_cache SET accessed_at=MAX(accessed_at,?) WHERE cache_key=?",
+                    [(now, key) for key in keys],
+                )
+        except (OSError, sqlite3.Error, RuntimeError) as exc:
+            if cache_errors is None:
+                raise
+            cache_errors.setdefault("touch", type(exc).__name__)
+
     async def get_vectors(
         self,
         fingerprint: str,
@@ -212,6 +225,7 @@ class CacheStore:
         kind: str = "message",
         identities: Sequence[CacheIdentity] | None = None,
         touch: bool = True,
+        cache_errors: dict[str, str] | None = None,
     ) -> list[list[float] | None]:
         keys, _ = self._keys(fingerprint, namespace, hashes, kind, identities)
         if not keys:
@@ -239,15 +253,12 @@ class CacheStore:
         # safely and cannot continue to the access-time update below.
         vectors = await asyncio.to_thread(_decode_vectors, raw_vectors, dimension)
         if touch and vectors:
-            async with self.database.transaction() as connection:
-                await connection.executemany(
-                    "UPDATE embedding_cache SET accessed_at = MAX(accessed_at, ?) WHERE cache_key = ?",
-                    [(now, key) for key in vectors],
-                )
+            await self._touch_vectors(vectors, now, cache_errors)
         return [vectors.get(key) for key in keys]
 
     async def get_node_vectors_by_text(
         self, fingerprint: str, namespace: str, hashes: Sequence[str], *, touch: bool = True,
+        cache_errors: dict[str, str] | None = None,
     ) -> list[list[float] | None]:
         """Reuse exact node text without claiming any requested version was indexed."""
         self._keys(fingerprint, namespace, hashes, "message", None)
@@ -280,11 +291,7 @@ class CacheStore:
                     raw_vectors[digest], keys[digest] = encoded, key
         vectors = await asyncio.to_thread(_decode_vectors, raw_vectors, dimension)
         if touch and vectors:
-            async with self.database.transaction() as connection:
-                await connection.executemany(
-                    "UPDATE embedding_cache SET accessed_at=MAX(accessed_at,?) WHERE cache_key=?",
-                    [(now, keys[digest]) for digest in vectors],
-                )
+            await self._touch_vectors((keys[digest] for digest in vectors), now, cache_errors)
         return [vectors.get(digest) for digest in hashes]
 
     async def put_vectors(

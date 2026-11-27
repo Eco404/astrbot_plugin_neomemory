@@ -28,7 +28,7 @@ from core.identity import extract_event_identity  # noqa: E402
 from core.retrieval import RecallResult  # noqa: E402
 from core.source_ingest import normalize_event  # noqa: E402
 from main import NeoMemoryPlugin  # noqa: E402
-from storage.cache_store import CacheStore  # noqa: E402
+from storage.cache_store import CacheStore, text_hash  # noqa: E402
 from tests.test_host_probe import FakeContext as HostContext  # noqa: E402
 from tests.test_host_probe import FakeEvent as HostEvent  # noqa: E402
 from tests.test_providers import FakeContext as ProviderContext  # noqa: E402
@@ -684,3 +684,57 @@ async def test_recall_recording_survives_plugin_restart_and_disable_clears_on_di
     await after_clear.set_enabled(True)
     await after_clear.append(ticket, space_id, snapshot)
     assert await after_clear.list(space_id) == []
+
+
+@pytest.mark.asyncio
+async def test_media_only_recall_history_labels_do_not_enter_search(plugin_factory):
+    plugin = await plugin_factory()
+    space, _ = await seed(plugin, RuntimeEvent())
+    await warm(plugin, space)
+    history = plugin.runtime.recall_history
+    await history.set_enabled(True)
+    event = RuntimeEvent(text="")
+    event.message_obj.message = [SimpleNamespace(type="Image"), {"type": "Face"},
+                                 {"type": "Image"}, {"type": "Reply", "chain": [{"type": "Image"}]}]
+    event.message_obj.raw_message = {"message": [
+        {"type": "image", "data": {}}, {"type": "image", "data": {"sub_type": 1}}]}
+    before = list(plugin.context.embedding.calls)
+    await plugin.inject_memory(event, ProviderRequest())
+    record, = await history.list(space["space_id"])
+    assert record["query"] == "" and record["media_placeholder"] == "[图片] [表情] [表情]"
+    assert not record["items"] and plugin.context.embedding.calls == before
+
+
+@pytest.mark.asyncio
+async def test_cache_warning_in_history_is_scoped_to_each_recall(plugin_factory, monkeypatch):
+    plugin = await plugin_factory()
+    event = RuntimeEvent(text="第一次查询")
+    space, _ = await seed(plugin, event)
+    await warm(plugin, space)
+    history = plugin.runtime.recall_history
+    await history.set_enabled(True)
+    cache = plugin.runtime.cache
+    original = cache.put_vectors
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fail_first(fingerprint, namespace, hashes, *args, **kwargs):
+        if hashes == [text_hash(event.message_str)]:
+            entered.set()
+            await release.wait()
+            raise OSError("private synthetic details")
+        return await original(fingerprint, namespace, hashes, *args, **kwargs)
+
+    monkeypatch.setattr(cache, "put_vectors", fail_first)
+    first = asyncio.create_task(plugin.inject_memory(event, ProviderRequest()))
+    await asyncio.wait_for(entered.wait(), timeout=3)
+    second = asyncio.create_task(plugin.inject_memory(RuntimeEvent(text="同时查询"), ProviderRequest()))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(first, second)
+    await plugin.inject_memory(RuntimeEvent(text="之后查询"), ProviderRequest())
+    records = {r["query"]: r for r in await history.list(space["space_id"])}
+    assert records[event.message_str]["cache_errors"] == {"write": "OSError"}
+    assert "private synthetic details" not in str(records)
+    assert all("cache_errors" not in records[q] for q in ("同时查询", "之后查询"))

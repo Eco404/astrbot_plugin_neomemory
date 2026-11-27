@@ -540,7 +540,7 @@ async def test_cache_failure_degrades_recall_without_network_rebuild(failing_kin
     else:
         assert [hit["node_id"] for hit in result.hits] == [item["node_id"]]
         assert [call[1] for call in embeddings.calls if call[0] == "embed"] == [["query"]]
-    assert result.diagnostics["cache_degraded"] == "OperationalError"
+    assert result.diagnostics["cache_errors"] == {"read": "OperationalError"}
     assert "sensitive" not in str(result.diagnostics)
 
 

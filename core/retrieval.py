@@ -472,7 +472,8 @@ class RecallService:
                      group_sender="", addresses=(), chat_origin="") -> RecallResult:
         result = RecallResult(space_id)
         exclusions = [] if preview else None
-        cache_options = {"read_only": True} if preview else {}
+        cache_errors: dict[str, str] = {}
+        cache_options = {"cache_errors": cache_errors, "read_only": preview}
         if preview:
             result.diagnostics.update(preview_candidates=[], similarity_threshold=self.policy.similarity_threshold,
                                       min_strength=self.policy.min_strength)
@@ -504,11 +505,9 @@ class RecallService:
                     vectors = await self.embeddings.cached([node["content_text"] for node in snapshot["nodes"]],
                         namespace=space_id, kind="node", identities=[(node["node_id"], node["content_version"]) for node in snapshot["nodes"]], **cache_options)
                 except Exception as exc:
-                    result.diagnostics["cache_degraded"] = type(exc).__name__
+                    cache_errors.setdefault("read", type(exc).__name__)
                     return result
                 result.diagnostics["missing_node_vectors"] = sum(vector is None for vector in vectors)
-                if cache_error := getattr(self.embeddings, "last_cache_error", None):
-                    result.diagnostics["cache_degraded"] = cache_error
                 if all(vector is None for vector in vectors):
                     return result
                 gated = not active and self.policy.ranking_strategy == "gated"
@@ -547,7 +546,7 @@ class RecallService:
                 try:
                     query_vectors = await self.embeddings.cached(texts, namespace=space_id, **cache_options)
                 except Exception as exc:
-                    result.diagnostics["cache_degraded"] = type(exc).__name__
+                    cache_errors.setdefault("read", type(exc).__name__)
                     query_vectors = [None] * len(texts)
                 result.diagnostics["query_cache_seconds"] = time.monotonic() - cache_started
                 result.diagnostics["cached_query_count"] = sum(vector is not None for vector in query_vectors)
@@ -565,8 +564,6 @@ class RecallService:
                     result.diagnostics["embedding_degraded"] = type(exc).__name__
                 finally:
                     result.diagnostics["query_embedding_seconds"] = time.monotonic() - embedding_started
-                if cache_error := getattr(self.embeddings, "last_cache_error", None):
-                    result.diagnostics["cache_degraded"] = cache_error
                 try:
                     if getattr(self.embeddings, "fingerprint", None) != fingerprint:
                         result.diagnostics["embedding_changed"] = True
@@ -650,6 +647,8 @@ class RecallService:
         except TimeoutError:
             result.diagnostics["deadline_exceeded"] = True
         finally:
+            if cache_errors:
+                result.diagnostics["cache_errors"] = cache_errors
             result.diagnostics["total_seconds"] = time.monotonic() - started
         return result
 

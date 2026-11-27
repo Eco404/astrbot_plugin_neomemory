@@ -27,7 +27,24 @@ def _onebot_image_hints(raw):
 
 
 def _sticker(data):
-    return (data.get("sub_type") in (1, "1") or data.get("summary") in {"[动画表情]", "[商城表情]"})
+    subtype = data.get("sub_type") if isinstance(data, Mapping) else getattr(data, "sub_type", None)
+    summary = data.get("summary") if isinstance(data, Mapping) else getattr(data, "summary", None)
+    return subtype in (1, "1") or summary in {"[动画表情]", "[商城表情]"}
+
+
+def media_placeholder(message):
+    """Label direct attachments when a recorded message has no query text."""
+    hints = iter(_onebot_image_hints(getattr(message, "raw_message", None)))
+    labels = []
+    for part in getattr(message, "message", ()) or ():
+        tag = kind(part)
+        if tag == "image":
+            data = part.get("data", part) if isinstance(part, Mapping) else part
+            sticker = _sticker(next(hints, {})) or _sticker(data)
+            labels.append("[表情]" if sticker else "[图片]")
+        elif tag == "face":
+            labels.append("[表情]")
+    return " ".join(labels)
 
 
 def project_images(components, *, private, raw=None, references=None):

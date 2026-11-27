@@ -85,19 +85,21 @@ def recall_snapshot(mode, query, started, result, *, text=None, hits=None, reaso
             reason = "向量检索暂时不可用"
         elif diagnostics.get("embedding_changed"):
             reason = "向量模型设置已切换，请重新查询"
-        elif diagnostics.get("cache_degraded"):
-            reason = "向量缓存读取异常"
         elif diagnostics.get("current_attachment"):
             reason = "本轮所指为当前附件，跳过历史记忆检索"
         elif diagnostics.get("acknowledgement"):
             reason = "本轮为简短应答，跳过被动长期记忆检索"
         elif diagnostics.get("missing_node_vectors"):
-            reason = f"有 {diagnostics['missing_node_vectors']} 条记忆缺少向量"
+            missing = diagnostics["missing_node_vectors"]
+            reason = (f"本次有 {missing} 条记忆未读到向量" if "read" in diagnostics.get("cache_errors", {})
+                      else f"有 {missing} 条记忆缺少向量")
         elif not items and not rendered:
             reason = "没有可返回的记忆"
     snapshot = {"mode": mode, "query": query[:4000], "created_at": time.time(),
                 "elapsed_ms": round((time.monotonic() - started) * 1000),
                 "text": rendered, "items": items, "reason": reason}
+    if errors := diagnostics.get("cache_errors"):
+        snapshot["cache_errors"] = dict(errors)
     if "evidence_selection" in diagnostics:
         snapshot["selection"] = {key: diagnostics[key] for key in
             ("recall_route", "contextual_query", "hybrid_candidates", "evidence_selection", "selection_fallback")

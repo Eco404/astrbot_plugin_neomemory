@@ -21,10 +21,11 @@ async def test_cache_read_failure_recomputes_only_requested_vectors(cache, monke
     if method == "get_vectors":
         assert await embedding.cached(["query"], namespace="space") == [None]
         assert context.embedding.calls == []
-    vectors = await embedding.embed(["query", "query"], namespace="space")
+    errors = {}
+    vectors = await embedding.embed(["query", "query"], namespace="space", cache_errors=errors)
     assert len(vectors) == 2 and vectors[0] == vectors[1]
     assert context.embedding.calls == [["query"]]
-    assert embedding.last_cache_error == "OperationalError"
+    assert errors == {"read": "OperationalError"}
 
 
 @pytest.mark.asyncio
@@ -38,10 +39,11 @@ async def test_cache_write_failure_keeps_computed_vectors(cache, monkeypatch, sl
         raise OSError("synthetic write failure")
 
     monkeypatch.setattr(cache, "put_vectors", fail)
-    vectors = await embedding.embed(["query"], namespace="space", timeout_seconds=1)
+    errors = {}
+    vectors = await embedding.embed(["query"], namespace="space", timeout_seconds=1, cache_errors=errors)
     assert vectors and len(vectors[0]) == 2
     assert len(context.embedding.calls) == 1
-    assert embedding.last_cache_error == ("TimeoutError" if slow else "OSError")
+    assert errors == {"write": "TimeoutError" if slow else "OSError"}
     assert (await cache.health())["entry_count"] == 0
 
 
@@ -95,3 +97,17 @@ async def test_background_cleanup_reclaims_overflow_and_stops_on_close(tmp_path)
     finally:
         await store.close()
     assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_access_timestamp_write_failure_preserves_cached_vector(cache):
+    embedding, context = service(cache)
+    await embedding.embed(["query"], namespace="space")
+    await cache.database.execute(
+        "CREATE TRIGGER fail_touch BEFORE UPDATE OF accessed_at ON embedding_cache "
+        "BEGIN SELECT RAISE(ABORT, 'synthetic touch failure'); END"
+    )
+    errors = {}
+    vector, = await embedding.cached(["query"], namespace="space", cache_errors=errors)
+    assert vector and errors == {"touch": "IntegrityError"}
+    assert context.embedding.calls == [["query"]]
